@@ -1,19 +1,20 @@
-// funcionaaaa
 // src/App.js
 import React, { useState, useRef } from 'react';
 import './App.css'; // Importa nosso CSS
 
-// A URL da nossa API Flask.
-const API_URL = 'http://127.0.0.1:5000';
+// Mapeamento dos nossos servidores de API
+const API_URLS = {
+  '1': 'http://127.0.0.1:5000', // URL para o app_modelo1.py
+  '2': 'http://127.0.0.1:5001', // URL para o app_modelo2.py
+};
 
 function App() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [pageRange, setPageRange] = useState('');
-  const [statusMessage, setStatusMessage] = useState('');
+  const [modelType, setModelType] = useState('1'); // Começa com o Modelo 1 selecionado
+  const [statusMessage, setStatusMessage] = useState('Aguardando arquivo...');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [uploadSuccess, setUploadSuccess] = useState(false);
   
-  // Ref para o input de arquivo escondido
   const fileInputRef = useRef(null);
 
   const handleFileSelect = (event) => {
@@ -21,7 +22,6 @@ function App() {
     if (file && file.type === 'application/pdf') {
       setSelectedFile(file);
       setStatusMessage(`Arquivo selecionado: ${file.name}`);
-      setUploadSuccess(false); // Reseta o status de sucesso ao selecionar novo arquivo
     } else {
       setSelectedFile(null);
       setStatusMessage('Por favor, selecione um arquivo PDF.');
@@ -29,7 +29,6 @@ function App() {
   };
   
   const handleUploadClick = () => {
-    // Abre o explorador de arquivos ao clicar no botão
     fileInputRef.current.click();
   };
 
@@ -44,50 +43,53 @@ function App() {
     }
 
     setIsProcessing(true);
-    setStatusMessage('Enviando e processando o arquivo...');
+    setStatusMessage('Enviando e processando o arquivo... Isso pode levar um momento.');
+
+    // Seleciona a URL correta com base no modelo escolhido
+    const apiUrl = `${API_URLS[modelType]}/process`;
+    console.log(`Enviando requisição para: ${apiUrl}`); // Log para debug
 
     const formData = new FormData();
     formData.append('pdf_file', selectedFile);
+    formData.append('pages', pageRange);
+    // Não precisamos mais enviar 'model_type', pois cada servidor só lida com um tipo.
 
     try {
-      // 1. Faz o upload do arquivo
-      const uploadResponse = await fetch(`${API_URL}/upload`, {
+      const response = await fetch(apiUrl, {
         method: 'POST',
         body: formData,
       });
 
-      const uploadResult = await uploadResponse.json();
-      if (!uploadResult.success) {
-        throw new Error(`Erro no Upload: ${uploadResult.message}`);
-      }
-      
-      setStatusMessage('Upload concluído. Iniciando processamento...');
-      
-      // 2. Inicia o processamento
-      const processResponse = await fetch(`${API_URL}/process`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filename: uploadResult.filename,
-          pages: pageRange,
-        }),
-      });
-
-      const processResult = await processResponse.json();
-      if (!processResult.success) {
-        throw new Error(`Erro no Processamento: ${processResult.message}`);
+      if (!response.ok) {
+        const errorResult = await response.json();
+        throw new Error(errorResult.message || 'Ocorreu um erro no servidor.');
       }
 
-      // 3. Sucesso! Mostra o pop-up e aciona o download
-      alert('Processo finalizado com sucesso!');
-      window.location.href = `${API_URL}/download/${processResult.download_filename}`;
+      const blob = await response.blob();
       
-      setStatusMessage(`Download do arquivo ${processResult.download_filename} iniciado.`);
-      setUploadSuccess(true); // Marca que o processo foi um sucesso
+      const contentDisposition = response.headers.get('Content-Disposition');
+      let filename = 'resultado.csv';
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename="(.+)"/);
+        if (filenameMatch && filenameMatch.length > 1) {
+          filename = filenameMatch[1];
+        }
+      }
+      
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+
+      setStatusMessage(`Processo finalizado! O download de '${filename}' foi iniciado.`);
 
     } catch (error) {
       console.error('Ocorreu um erro:', error);
-      setStatusMessage(error.message);
+      setStatusMessage(`Erro: ${error.message}`);
     } finally {
       setIsProcessing(false);
     }
@@ -100,8 +102,18 @@ function App() {
       </header>
 
       <main className="menu">
-        <h2>1. Escolha o arquivo PDF</h2>
-        {/* Input de arquivo escondido, controlado pelo Ref */}
+        <h2>1. Escolha o modelo do PDF</h2>
+        <select 
+          className="modelSelect"
+          value={modelType}
+          onChange={(e) => setModelType(e.target.value)}
+        >
+          <option value="1">JBS Ponto (Padrão)</option>
+          <option value="2">Cartão de Ponto (Modelo 2)</option>
+          {/* Adicione mais <option> aqui para futuros modelos */}
+        </select>
+
+        <h2>2. Escolha o arquivo PDF</h2>
         <input
           type="file"
           accept=".pdf"
@@ -115,25 +127,25 @@ function App() {
           Procurar Arquivo PDF
         </button>
 
-        <h2>2. Defina as páginas</h2>
+        <h2>3. Defina as páginas</h2>
         <input
           type="text"
           className="pageInput"
-          placeholder="Ex: 0-20"
+          placeholder="Ex: 216-272"
           value={pageRange}
           onChange={(e) => setPageRange(e.target.value)}
         />
         
-        <h2>3. Inicie o processo</h2>
+        <h2>4. Inicie o processo</h2>
         <button
           className="buttonStart"
           onClick={handleProcess}
           disabled={!selectedFile || !pageRange || isProcessing}
         >
-          {isProcessing ? 'Processando...' : 'INICIAR'}
+          {isProcessing ? 'Processando...' : 'INICIAR E BAIXAR'}
         </button>
         
-        <p id="status-message" style={{ color: uploadSuccess ? 'green' : 'red' }}>
+        <p id="status-message">
           {statusMessage}
         </p>
       </main>
