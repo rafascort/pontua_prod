@@ -73,3 +73,80 @@ body {
   font-size: 1.1em;
   min-height: 24px; /* Evita que o layout pule */
 }
+
+body {
+  background-color: #f4f6f8;
+  margin: 0;
+  font-family: 'Segoe UI', sans-serif;
+}
+
+.login-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+}
+
+.login-card {
+  background-color: white;
+  width: 350px;
+  padding: 30px;
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+}
+
+.login-header {
+  background-color: #0066f5;
+  padding: 20px;
+  text-align: center;
+  border-radius: 10px 10px 0 0;
+  color: white;
+}
+
+.login-icon {
+  font-size: 24px;
+  margin-bottom: 5px;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  margin-top: 20px;
+}
+
+.login-form label {
+  margin-top: 10px;
+  margin-bottom: 5px;
+  font-weight: bold;
+}
+
+.login-form input {
+  padding: 10px;
+  border: 1px solid #ccc;
+  border-radius: 5px;
+}
+
+.login-form button {
+  margin-top: 20px;
+  background-color: #0066f5;
+  color: white;
+  padding: 12px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.model-options {
+  margin-top: 15px;
+  background-color: #fff;
+  padding: 15px;
+  border-radius: 10px;
+  box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+  text-align: left;
+}
+.model-options label {
+  display: block;
+  margin: 10px 0;
+  font-weight: 500;
+}
