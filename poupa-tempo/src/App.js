@@ -6,6 +6,7 @@ import Login from './Login';
 const API_URLS = {
   '1': 'http://127.0.0.1:5000',
   '2': 'http://127.0.0.1:5001',
+  'teste': 'http://127.0.0.1:5002', // Nova URL para o modo de teste
 };
 
 function App() {
@@ -58,6 +59,8 @@ function App() {
     const formData = new FormData();
     formData.append('pdf_file', selectedFile);
     formData.append('pages', pageRange);
+    // Adiciona o tipo de modelo ao formulário para o backend de diagnóstico
+    formData.append('model_type', modelType);
 
     try {
       const response = await fetch(apiUrl, {
@@ -146,6 +149,20 @@ function App() {
                 }}
               />
               Cartão de Ponto (Modelo 2)
+            </label>
+            {/* Nova opção de teste */}
+            <label>
+              <input
+                type="radio"
+                name="modelType"
+                value="teste"
+                checked={modelType === 'teste'}
+                onChange={(e) => {
+                  setModelType(e.target.value);
+                  setSelectedModelImage(null); // Não mostrar imagem para o modo de teste
+                }}
+              />
+              Teste (Debug)
             </label>
 
             {selectedModelImage && (
