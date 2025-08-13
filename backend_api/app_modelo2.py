@@ -11,12 +11,12 @@ app = Flask(__name__)
 CORS(app)
 
 # ==============================================================================
-# FUNÇÃO DE EXTRAÇÃO (SEM ALTERAÇÃO)
+# FUNÇÕES DE PROCESSAMENTO PARA O MODELO 2
 # ==============================================================================
 
 def extrair_tabelas_camelot_stream(file_object, paginas_str):
     """
-    Função genérica que extrai tabelas de um PDF usando o modo 'stream' do Camelot.
+    Extrai tabelas de um PDF e retorna uma lista de DataFrames, um para cada página.
     """
     print(f"\nIniciando extração com Camelot (modo STREAM) nas páginas: {paginas_str}...")
     try:
@@ -28,71 +28,72 @@ def extrair_tabelas_camelot_stream(file_object, paginas_str):
         print("Nenhuma tabela foi detectada pelo Camelot nas páginas especificadas.")
         return None
     print(f"SUCESSO NA EXTRAÇÃO! Foram detectadas {len(tabelas)} tabelas.")
-    return pd.concat([tabela.df for tabela in tabelas], ignore_index=True)
+    # Retorna a lista de DataFrames de cada tabela/página encontrada
+    return [tabela.df for tabela in tabelas]
 
-# ==============================================================================
-# FUNÇÃO DE LIMPEZA (LÓGICA DE FATIAMENTO)
-# ==============================================================================
-
-def limpar_dataframe_modelo_2(df_bruto):
+def limpar_dataframe_modelo_2(lista_dfs_brutos):
     """
-    Lógica que ignora a estrutura de linhas do Camelot e extrai os dados
-    com base em padrões no texto completo, resolvendo o problema de dias na mesma linha.
+    Lógica final e definitiva para o Modelo 2, que processa cada página individualmente
+    para corrigir o problema do mês e usa fatiamento de texto para a máxima precisão.
     """
-    print("Aplicando regras de limpeza do Modelo 2 (lógica de fatiamento)...")
+    print("Aplicando regras de limpeza do Modelo 2 (lógica final)...")
     
-    # Etapa 1: Juntar toda a tabela em um único bloco de texto
-    texto_completo = ' '.join(df_bruto.apply(lambda row: ' '.join(row.astype(str)), axis=1))
-    
-    # Etapa 2: Encontrar o Mês/Ano de referência nesse texto
+    dados_limpos_geral = []
     meses_map = {'janeiro': '01', 'fevereiro': '02', 'março': '03', 'abril': '04', 'maio': '05', 'junho': '06', 'julho': '07', 'agosto': '08', 'setembro': '09', 'outubro': '10', 'novembro': '11', 'dezembro': '12'}
-    match_competencia = re.search(r"Mes/Ano Competencia\s*:\s*(\w+)\s*/\s*(\d{4})", texto_completo, re.IGNORECASE)
-    if not match_competencia:
-        print("ERRO: Não foi possível encontrar o 'Mes/Ano Competencia' no cabeçalho.")
-        return pd.DataFrame()
-        
-    mes_nome, ano = match_competencia.group(1).lower(), match_competencia.group(2)
-    mes = meses_map.get(mes_nome)
-    if not mes:
-        print(f"ERRO: Mês '{mes_nome}' não reconhecido.")
-        return pd.DataFrame()
 
-    # Etapa 3: Encontrar TODAS as ocorrências de dias na tabela
-    # O padrão procura por 3 letras (dia da semana), espaço, e uma data (dd/mm/aa)
-    ocorrencias_de_dias = re.findall(r"(\w{3}\s+\d{2}/\d{2}/\d{2})", texto_completo)
-    
-    dados_limpos = []
-    # Itera sobre as ocorrências para "fatiar" o texto
-    for i, dia_str in enumerate(ocorrencias_de_dias):
-        # Define o início do trecho de texto para este dia
-        inicio = texto_completo.find(dia_str)
-        # Define o fim do trecho (o início do próximo dia, ou o fim do texto)
-        fim = -1
-        if i + 1 < len(ocorrencias_de_dias):
-            fim = texto_completo.find(ocorrencias_de_dias[i+1], inicio)
+    # Itera sobre cada DataFrame de página retornado pelo Camelot
+    for df_pagina in lista_dfs_brutos:
+        # Etapa 1: Juntar toda a página em um único bloco de texto
+        texto_pagina = ' '.join(df_pagina.apply(lambda row: ' '.join(row.astype(str)), axis=1))
         
-        trecho_do_dia = texto_completo[inicio:fim] if fim != -1 else texto_completo[inicio:]
+        # Etapa 2: Encontrar o Mês/Ano de referência para ESTA PÁGINA
+        match_competencia = re.search(r"Mes/Ano Competencia\s*:\s*(\w+)\s*/\s*(\d{4})", texto_pagina, re.IGNORECASE)
+        if not match_competencia:
+            print(f"AVISO: Não foi possível encontrar o 'Mes/Ano Competencia' em uma das páginas. Pulando página.")
+            continue
+        mes_nome, ano = match_competencia.group(1).lower(), match_competencia.group(2)
+        mes = meses_map.get(mes_nome)
+        if not mes:
+            print(f"AVISO: Mês '{mes_nome}' não reconhecido. Pulando página.")
+            continue
 
-        # Extrai a data e os horários deste trecho
-        dia = re.search(r"(\d{2})/\d{2}/\d{2}", dia_str).group(1)
-        data_completa = f"{dia}/{mes}/{ano}"
+        # Etapa 3: Encontrar todas as ocorrências de dias na página
+        ocorrencias_de_dias = re.findall(r"(\w{3}\s+\d{2}/\d{2}/\d{2})", texto_pagina)
         
-        horarios = re.findall(r'(\d{2}:\d{2})', trecho_do_dia)
-        horarios.extend([0] * (4 - len(horarios)))
-        
-        dados_limpos.append({
-            'Data': data_completa,
-            'Entrada1': horarios[0],
-            'Saida1': horarios[1],
-            'Entrada2': horarios[2],
-            'Saida2': horarios[3]
-        })
+        # Etapa 4: Fatiar o texto e extrair os dados para cada dia
+        for i, dia_str in enumerate(ocorrencias_de_dias):
+            inicio = texto_pagina.find(dia_str)
+            fim = -1
+            if i + 1 < len(ocorrencias_de_dias):
+                fim = texto_pagina.find(ocorrencias_de_dias[i+1], inicio + len(dia_str))
+            
+            trecho_do_dia = texto_pagina[inicio:fim] if fim != -1 else texto_pagina[inicio:]
+            
+            dia = re.search(r"(\d{2})/\d{2}/\d{2}", dia_str).group(1)
+            data_completa = f"{dia}/{mes}/{ano}"
+            
+            # Refina o trecho para terminar antes de palavras-chave indesejadas
+            limites = ["FOLGA", "Jornada", "Hora Extra", "CONSULTA"]
+            posicao_limite = len(trecho_do_dia)
+            for limite in limites:
+                pos = trecho_do_dia.find(limite)
+                if pos != -1 and pos < posicao_limite:
+                    posicao_limite = pos
+            trecho_refinado = trecho_do_dia[:posicao_limite]
 
-    if not dados_limpos: 
+            horarios = re.findall(r'(\d{2}:\d{2})', trecho_refinado)
+            horarios.extend([0] * (4 - len(horarios)))
+            
+            dados_limpos_geral.append({
+                'Data': data_completa, 'Entrada1': horarios[0], 'Saida1': horarios[1],
+                'Entrada2': horarios[2], 'Saida2': horarios[3]
+            })
+
+    if not dados_limpos_geral: 
         print("Nenhum dado válido foi extraído após a limpeza.")
         return pd.DataFrame()
         
-    return pd.DataFrame(dados_limpos)
+    return pd.DataFrame(dados_limpos_geral)
 
 # ==============================================================================
 # ROTA DA API (VOLTANDO AO MODO DE PRODUÇÃO)
@@ -109,11 +110,11 @@ def process_file_direct():
     if not all([file, paginas_str]):
         return jsonify({'success': False, 'message': 'Dados insuficientes. Forneça pdf_file e pages.'}), 400
         
-    df_bruto = extrair_tabelas_camelot_stream(file, paginas_str)
-    if df_bruto is None or df_bruto.empty:
+    lista_dfs_brutos = extrair_tabelas_camelot_stream(file, paginas_str)
+    if lista_dfs_brutos is None:
         return jsonify({'success': False, 'message': 'Falha na extração. Nenhuma tabela encontrada.'}), 500
 
-    df_limpo = limpar_dataframe_modelo_2(df_bruto)
+    df_limpo = limpar_dataframe_modelo_2(lista_dfs_brutos)
     if df_limpo.empty:
         return jsonify({'success': False, 'message': 'Não foi possível limpar os dados com o modelo selecionado.'}), 500
 

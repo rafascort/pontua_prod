@@ -148,7 +148,7 @@ function App() {
                   setSelectedModelImage('/modelo2.png');
                 }}
               />
-              Cartão de Ponto (Modelo 2)
+              Ponto Santander (Modelo 2)
             </label>
             {/* Nova opção de teste */}
             <label>
