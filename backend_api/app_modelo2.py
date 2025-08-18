@@ -37,10 +37,9 @@ def limpar_dataframe_modelo_2(lista_dfs_brutos):
     para corrigir o problema do mês e usa fatiamento de texto para a máxima precisão.
     """
     print("Aplicando regras de limpeza do Modelo 2 (lógica final)...")
-    
     dados_limpos_geral = []
     meses_map = {'janeiro': '01', 'fevereiro': '02', 'março': '03', 'abril': '04', 'maio': '05', 'junho': '06', 'julho': '07', 'agosto': '08', 'setembro': '09', 'outubro': '10', 'novembro': '11', 'dezembro': '12'}
-
+    
     # Itera sobre cada DataFrame de página retornado pelo Camelot
     for df_pagina in lista_dfs_brutos:
         # Etapa 1: Juntar toda a página em um único bloco de texto
@@ -51,12 +50,13 @@ def limpar_dataframe_modelo_2(lista_dfs_brutos):
         if not match_competencia:
             print(f"AVISO: Não foi possível encontrar o 'Mes/Ano Competencia' em uma das páginas. Pulando página.")
             continue
+        
         mes_nome, ano = match_competencia.group(1).lower(), match_competencia.group(2)
         mes = meses_map.get(mes_nome)
         if not mes:
             print(f"AVISO: Mês '{mes_nome}' não reconhecido. Pulando página.")
             continue
-
+        
         # Etapa 3: Encontrar todas as ocorrências de dias na página
         ocorrencias_de_dias = re.findall(r"(\w{3}\s+\d{2}/\d{2}/\d{2})", texto_pagina)
         
@@ -68,32 +68,75 @@ def limpar_dataframe_modelo_2(lista_dfs_brutos):
                 fim = texto_pagina.find(ocorrencias_de_dias[i+1], inicio + len(dia_str))
             
             trecho_do_dia = texto_pagina[inicio:fim] if fim != -1 else texto_pagina[inicio:]
-            
             dia = re.search(r"(\d{2})/\d{2}/\d{2}", dia_str).group(1)
             data_completa = f"{dia}/{mes}/{ano}"
             
-            # Refina o trecho para terminar antes de palavras-chave indesejadas
-            limites = ["FOLGA", "Jornada", "Hora Extra", "CONSULTA"]
-            posicao_limite = len(trecho_do_dia)
-            for limite in limites:
-                pos = trecho_do_dia.find(limite)
-                if pos != -1 and pos < posicao_limite:
-                    posicao_limite = pos
-            trecho_refinado = trecho_do_dia[:posicao_limite]
-
-            horarios = re.findall(r'(\d{2}:\d{2})', trecho_refinado)
-            horarios.extend([0] * (4 - len(horarios)))
+            # LÓGICA MAIS RIGOROSA: Encontrar especificamente os horários de ponto
+            # Primeiro, identifica onde termina a data e onde começam as outras colunas
+            pos_data = trecho_do_dia.find(dia_str) + len(dia_str)
+            
+            # Encontra a posição da primeira palavra-chave que indica outra coluna
+            primeira_coluna_pos = len(trecho_do_dia)
+            colunas_identificadoras = ["Falta", "FOLGA", "Jornada", "Hora Extra", "QTDE", "Justificativa", "Ocorrencia"]
+            
+            for palavra in colunas_identificadoras:
+                pos = trecho_do_dia.find(palavra, pos_data)
+                if pos != -1 and pos < primeira_coluna_pos:
+                    primeira_coluna_pos = pos
+            
+            # A seção de marcação de ponto fica entre o fim da data e o início da primeira coluna identificada
+            secao_marcacao = trecho_do_dia[pos_data:primeira_coluna_pos].strip()
+            
+            # VALIDAÇÃO ADICIONAL: Se a seção está muito pequena ou contém palavras de outras colunas, 
+            # provavelmente não tem marcação de ponto
+            if len(secao_marcacao) < 5:  # Muito pequena para conter horários
+                horarios = []
+            elif any(palavra in secao_marcacao for palavra in ["Falta", "FOLGA", "Jornada Incompleta"]):
+                # Se contém essas palavras, provavelmente não tem horários de ponto válidos
+                horarios = []
+            else:
+                # Extrai horários apenas da seção de marcação identificada
+                horarios_encontrados = re.findall(r'(\d{2}:\d{2})', secao_marcacao)
+                
+                # FILTRO ADICIONAL: Remove horários que estão claramente em contexto de outras colunas
+                # Procura por padrões que indicam que o horário não é de marcação de ponto
+                horarios = []
+                for horario in horarios_encontrados:
+                    # Verifica o contexto ao redor do horário
+                    pos_horario = secao_marcacao.find(horario)
+                    contexto_antes = secao_marcacao[max(0, pos_horario-20):pos_horario]
+                    contexto_depois = secao_marcacao[pos_horario:pos_horario+20]
+                    contexto_completo = contexto_antes + contexto_depois
+                    
+                    # Se o contexto contém palavras que indicam outras colunas, ignora o horário
+                    if not any(palavra in contexto_completo for palavra in ["QTD", "Quantidade", "=", "DSC", "EMK"]):
+                        horarios.append(horario)
+            
+            # Remove duplicatas mantendo a ordem
+            horarios_unicos = []
+            for horario in horarios:
+                if horario not in horarios_unicos:
+                    horarios_unicos.append(horario)
+            
+            # Limita a 4 horários e preenche com 0 se necessário
+            horarios_unicos = horarios_unicos[:4]
+            horarios_unicos.extend([0] * (4 - len(horarios_unicos)))
             
             dados_limpos_geral.append({
-                'Data': data_completa, 'Entrada1': horarios[0], 'Saida1': horarios[1],
-                'Entrada2': horarios[2], 'Saida2': horarios[3]
+                'Data': data_completa, 
+                'Entrada1': horarios_unicos[0], 
+                'Saida1': horarios_unicos[1],
+                'Entrada2': horarios_unicos[2], 
+                'Saida2': horarios_unicos[3]
             })
-
-    if not dados_limpos_geral: 
+    
+    if not dados_limpos_geral:
         print("Nenhum dado válido foi extraído após a limpeza.")
         return pd.DataFrame()
-        
+    
     return pd.DataFrame(dados_limpos_geral)
+
+
 
 # ==============================================================================
 # ROTA DA API (VOLTANDO AO MODO DE PRODUÇÃO)
