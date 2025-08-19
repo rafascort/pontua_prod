@@ -9,7 +9,7 @@ const Login = ({ onLogin }) => {
   const handleLogin = (e) => {
     e.preventDefault();
     if (usuario === 'admin' && senha === '1990') {
-      onLogin(); // chama a função de login
+      onLogin();
     } else {
       setErro('Usuário ou senha inválidos');
     }
@@ -19,31 +19,45 @@ const Login = ({ onLogin }) => {
     <div className="login-container">
       <div className="login-card">
         <div className="login-header">
-          <div className="login-icon">🔑</div>
           <h2>Pontua</h2>
-          <p>Atutomação de Cartão Ponto</p>
+          <p>Automação de Cartão Ponto</p>
+          <small>Sistema Seguro</small>
         </div>
+
         <form onSubmit={handleLogin} className="login-form">
-          <label>Usuário</label>
-          <input
-            type="text"
-            placeholder="Digite seu usuário"
-            value={usuario}
-            onChange={(e) => setUsuario(e.target.value)}
-          />
-          <label>Senha</label>
-          <input
-            type="password"
-            placeholder="Digite sua senha"
-            value={senha}
-            onChange={(e) => setSenha(e.target.value)}
-          />
-          <small style={{ color: 'blue', marginTop: '4px' }}>
-            Esqueci minha senha
-          </small>
-          {erro && <p style={{ color: 'red' }}>{erro}</p>}
-          <button type="submit">🔐 Autenticar</button>
+          <div className="input-group">
+            <label>Usuário</label>
+            <input
+              type="text"
+              placeholder="Digite seu usuário"
+              value={usuario}
+              onChange={(e) => setUsuario(e.target.value)}
+            />
+          </div>
+
+          <div className="input-group">
+            <label>Senha</label>
+            <input
+              type="password"
+              placeholder="Digite sua senha"
+              value={senha}
+              onChange={(e) => setSenha(e.target.value)}
+            />
+          </div>
+
+          <div className="forgot-password">
+            <a href="#">Esqueci minha senha</a>
+          </div>
+
+          {erro && <p className="error-message">{erro}</p>}
+
+          <button type="submit">Autenticar</button>
         </form>
+
+        <div className="login-footer">
+          <span>24/7</span>
+          <span>Criptografado</span>
+        </div>
       </div>
     </div>
   );
