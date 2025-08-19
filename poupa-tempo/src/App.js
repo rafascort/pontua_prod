@@ -1,17 +1,15 @@
 import React, { useState, useRef } from 'react';
 import './App.css';
-import './style.css';
 import Login from './Login';
 
 const API_URLS = {
   '1': 'http://127.0.0.1:5000',
   '2': 'http://127.0.0.1:5001',
-  'teste': 'http://127.0.0.1:5002', // Nova URL para o modo de teste
+  'teste': 'http://127.0.0.1:5002',
 };
 
 function App() {
   const [logado, setLogado] = useState(false);
-
   const [selectedFile, setSelectedFile] = useState(null);
   const [pageRange, setPageRange] = useState('');
   const [modelType, setModelType] = useState('1');
@@ -59,7 +57,6 @@ function App() {
     const formData = new FormData();
     formData.append('pdf_file', selectedFile);
     formData.append('pages', pageRange);
-    // Adiciona o tipo de modelo ao formulário para o backend de diagnóstico
     formData.append('model_type', modelType);
 
     try {
@@ -113,7 +110,6 @@ function App() {
       </header>
 
       <main className="menu">
-
         <h2>1. Escolha o modelo do PDF</h2>
         <button
           className="buttonUpload"
@@ -150,7 +146,6 @@ function App() {
               />
               Ponto Santander (Modelo 2)
             </label>
-            {/* Nova opção de teste */}
             <label>
               <input
                 type="radio"
@@ -159,7 +154,7 @@ function App() {
                 checked={modelType === 'teste'}
                 onChange={(e) => {
                   setModelType(e.target.value);
-                  setSelectedModelImage(null); // Não mostrar imagem para o modo de teste
+                  setSelectedModelImage(null);
                 }}
               />
               Teste (Debug)
