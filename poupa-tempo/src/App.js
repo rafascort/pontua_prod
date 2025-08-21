@@ -1,6 +1,7 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import './App.css';
 import Login from './Login';
+import ProgressModal from './ProgressModal'; // Importar seu modal
 
 const API_URLS = {
   '1': 'http://127.0.0.1:5000',
@@ -18,7 +19,18 @@ function App() {
   const [showModelOptions, setShowModelOptions] = useState(false);
   const [selectedModelImage, setSelectedModelImage] = useState('/modelo1.png');
 
+  // Estados para o modal de progresso
+  const [showProgressModal, setShowProgressModal] = useState(false);
+  const [currentTaskId, setCurrentTaskId] = useState(null);
+  const [progressData, setProgressData] = useState({
+    current_step: 0,
+    total_steps: 10,
+    progress: 0,
+    message: 'Iniciando...'
+  });
+
   const fileInputRef = useRef(null);
+  const progressIntervalRef = useRef(null);
 
   const handleLogin = () => {
     setLogado(true);
@@ -39,6 +51,61 @@ function App() {
     fileInputRef.current.click();
   };
 
+  const checkProgress = async (taskId) => {
+    try {
+      const response = await fetch(`${API_URLS[modelType]}/progress/${taskId}`);
+
+      if (response.ok) {
+        const data = await response.json();
+
+        // Atualizar dados do progresso
+        setProgressData({
+          current_step: data.current_step || 0,
+          total_steps: data.total_steps || 10,
+          progress: data.progress || 0,
+          message: data.message || 'Processando...'
+        });
+
+        setStatusMessage(data.message || 'Processando...');
+
+        if (data.status === 'completed') {
+          // Download automático
+          const downloadUrl = `${API_URLS[modelType]}/download/${taskId}`;
+          const a = document.createElement('a');
+          a.href = downloadUrl;
+          a.download = data.filename || 'resultado.xlsx';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+
+          setStatusMessage(`Processo finalizado! Download iniciado: ${data.filename}`);
+          setIsProcessing(false);
+          setShowProgressModal(false);
+          setCurrentTaskId(null);
+
+          // Limpar intervalo
+          if (progressIntervalRef.current) {
+            clearInterval(progressIntervalRef.current);
+            progressIntervalRef.current = null;
+          }
+        } else if (data.status === 'error') {
+          setStatusMessage(`Erro: ${data.error || 'Erro desconhecido'}`);
+          setIsProcessing(false);
+          setShowProgressModal(false);
+          setCurrentTaskId(null);
+
+          // Limpar intervalo
+          if (progressIntervalRef.current) {
+            clearInterval(progressIntervalRef.current);
+            progressIntervalRef.current = null;
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Erro ao verificar progresso:', error);
+    }
+  };
+
   const handleProcess = async () => {
     if (!selectedFile) {
       alert('Por favor, selecione um arquivo primeiro.');
@@ -50,7 +117,14 @@ function App() {
     }
 
     setIsProcessing(true);
-    setStatusMessage('Enviando e processando o arquivo... Isso pode levar um momento.');
+    setShowProgressModal(true);
+    setProgressData({
+      current_step: 0,
+      total_steps: 10,
+      progress: 0,
+      message: 'Iniciando processamento...'
+    });
+    setStatusMessage('Iniciando processamento...');
 
     const apiUrl = `${API_URLS[modelType]}/process`;
 
@@ -67,37 +141,39 @@ function App() {
 
       if (!response.ok) {
         const errorResult = await response.json();
-        throw new Error(errorResult.message || 'Ocorreu um erro no servidor.');
+        throw new Error(errorResult.error || 'Ocorreu um erro no servidor.');
       }
 
-      const blob = await response.blob();
+      const result = await response.json();
+      const taskId = result.task_id;
+      setCurrentTaskId(taskId);
 
-      const contentDisposition = response.headers.get('Content-Disposition');
-      let filename = 'resultado.csv';
-      if (contentDisposition) {
-        const filenameMatch = contentDisposition.match(/filename="(.+)"/);
-        if (filenameMatch && filenameMatch.length > 1) {
-          filename = filenameMatch[1];
-        }
-      }
+      // Iniciar monitoramento do progresso
+      progressIntervalRef.current = setInterval(() => {
+        checkProgress(taskId);
+      }, 1000); // Verificar a cada 1 segundo
 
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
-
-      setStatusMessage(`Processo finalizado! O download de '${filename}' foi iniciado.`);
     } catch (error) {
       console.error('Ocorreu um erro:', error);
       setStatusMessage(`Erro: ${error.message}`);
-    } finally {
       setIsProcessing(false);
+      setShowProgressModal(false);
     }
   };
+
+  const handleCloseModal = () => {
+    // Permitir fechar o modal, mas continuar o processamento em background
+    setShowProgressModal(false);
+  };
+
+  // Limpar intervalo quando o componente for desmontado
+  useEffect(() => {
+    return () => {
+      if (progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current);
+      }
+    };
+  }, []);
 
   if (!logado) {
     return <Login onLogin={handleLogin} />;
@@ -204,6 +280,15 @@ function App() {
 
         <p id="status-message">{statusMessage}</p>
       </main>
+
+      {/* Modal de Progresso */}
+      {showProgressModal && (
+        <ProgressModal
+          current={progressData.current_step}
+          total={progressData.total_steps}
+          onClose={handleCloseModal}
+        />
+      )}
     </div>
   );
 }
