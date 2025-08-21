@@ -1,120 +1,335 @@
-import os
-import re
-import io
-import camelot
-import pandas as pd
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
+import os
+import tempfile
+import pandas as pd
+from io import BytesIO
+import cv2
+import numpy as np
+import pytesseract
+from pdf2image import convert_from_path
+from PIL import Image
+import re
+from datetime import datetime
 
-# --- Configuração do Servidor Flask ---
 app = Flask(__name__)
-CORS(app) 
+CORS(app)
 
-# ==============================================================================
-# FUNÇÕES DE PROCESSAMENTO PARA O MODELO 1
-# ==============================================================================
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
-def extrair_tabelas_camelot_stream(file_object, paginas_str):
-    """
-    Função genérica que extrai tabelas de um PDF usando o modo 'stream' do Camelot.
-    """
-    print(f"\nIniciando extração com Camelot (modo STREAM) nas páginas: {paginas_str}...")
-    try:
-        tabelas = camelot.read_pdf(file_object, pages=paginas_str, flavor='stream', row_tol=10)
-    except Exception as e:
-        print(f"Ocorreu um erro ao ler o PDF com Camelot: {e}")
-        return None
-    if not tabelas or len(tabelas) == 0:
-        print("Nenhuma tabela foi detectada pelo Camelot nas páginas especificadas.")
-        return None
-    print(f"SUCESSO NA EXTRAÇÃO! Foram detectadas {len(tabelas)} tabelas.")
-    return pd.concat([tabela.df for tabela in tabelas], ignore_index=True)
+class ExtractorPontoEletronico:
+    def __init__(self, model_type='1'):
+        self.model_type = model_type
+        self.config_ocr = r'--oem 3 --psm 6 -l por'
+    
+    def converter_pdf_imagens(self, pdf_path, pages_range=None, dpi=300):
+        """Converte PDF para imagens"""
+        try:
+            if pages_range:
+                if '-' in pages_range:
+                    start, end = map(int, pages_range.split('-'))
+                    first_page = start
+                    last_page = end
+                else:
+                    first_page = last_page = int(pages_range)
+                imagens = convert_from_path(
+                    pdf_path,
+                    dpi=dpi,
+                    first_page=first_page,
+                    last_page=last_page
+                )
+            else:
+                imagens = convert_from_path(pdf_path, dpi=dpi)
+            return imagens
+        except Exception:
+            return []
 
-def limpar_dataframe_modelo_1(df_bruto):
-    """
-    Função de limpeza especializada para o layout do "Modelo 1" (JBS Ponto).
-    """
-    print("Aplicando regras de limpeza do Modelo 1...")
-    df = df_bruto.copy()
-    df.columns = range(df.shape[1])
+    def extrair_texto_completo(self, imagem):
+        """Extrai todo o texto da página usando OCR"""
+        try:
+            img_cv = cv2.cvtColor(np.array(imagem), cv2.COLOR_RGB2BGR)
+            gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+            gray = cv2.bilateralFilter(gray, 9, 75, 75)
+            return pytesseract.image_to_string(gray, config=self.config_ocr)
+        except Exception:
+            return ""
 
-    header_row_index = -1
-    for i, row in df.iterrows():
-        if row.astype(str).str.contains("Marcação").any():
-            header_row_index = i
-            break
-    if header_row_index == -1: header_row_index = 0
+    def detectar_inicio_tabela(self, linhas):
+        """Detecta onde a tabela de ponto começa"""
+        for i, linha in enumerate(linhas):
+            if re.search(r'\b(Dia|Data)\b', linha) and re.search(r'\b(Marcação|Situação)\b', linha):
+                return i
+        return 0
 
-    header_series = df.iloc[header_row_index].astype(str)
-    col_inicio, col_fim = -1, -1
-    for i, cell in header_series.items():
-        if "Dia" in cell: col_inicio = i
-        if "FALTAS" in cell: col_fim = i; break
-    if col_inicio == -1 or col_fim == -1: col_inicio, col_fim = 0, 3
+    def detectar_fim_tabela(self, linhas, indice_inicio):
+        """Detecta onde a tabela de ponto termina"""
+        for i in range(indice_inicio, len(linhas)):
+            linha = linhas[i].strip()
+            if not linha:
+                return i
+            if re.search(r'\b(assinatura|funcionário|chefia|visto|total|observações)\b', linha, re.IGNORECASE):
+                return i
+        return len(linhas)
 
-    df_relevante = df.iloc[:, col_inicio:col_fim]
-    linhas_completas = df_relevante.apply(lambda row: ' '.join(row.astype(str)), axis=1)
+    def validar_horarios(self, horarios_validos):
+        """
+        Valida os horários seguindo as regras:
+        1. Se apenas 1 horário, zerar todos
+        2. Se tiver entrada sem saída correspondente, zerar ambos
+        3. Se tiver saída sem entrada correspondente, zerar a saída
+        """
+        # Garantir que temos exatamente 4 posições
+        while len(horarios_validos) < 4:
+            horarios_validos.append("0")
+        horarios_validos = horarios_validos[:4]
+        
+        # Contar horários válidos (diferentes de "0")
+        horarios_nao_zero = [h for h in horarios_validos if h != "0"]
+        
+        # Regra 1: Se apenas 1 horário, zerar todos
+        if len(horarios_nao_zero) == 1:
+            return ["0", "0", "0", "0"]
+        
+        # Aplicar as regras de validação
+        entrada1, saida1, entrada2, saida2 = horarios_validos
+        
+        # Se tem entrada1 mas não tem saida1, zerar ambos
+        if entrada1 != "0" and saida1 == "0":
+            entrada1 = "0"
+            saida1 = "0"
+        
+        # Se tem saida1 mas não tem entrada1, zerar saida1
+        if entrada1 == "0" and saida1 != "0":
+            saida1 = "0"
+        
+        # Se tem entrada2 mas não tem saida2, zerar ambos
+        if entrada2 != "0" and saida2 == "0":
+            entrada2 = "0"
+            saida2 = "0"
+        
+        # Se tem saida2 mas não tem entrada2, zerar saida2
+        if entrada2 == "0" and saida2 != "0":
+            saida2 = "0"
+        
+        return [entrada1, saida1, entrada2, saida2]
 
-    dados_limpos = []
-    for linha_texto in linhas_completas:
-        match_linha = re.search(r"(\d{2}/\d{2}/\d{4}\s+\w{3}-\w+)", linha_texto)
-        if match_linha:
-            data = re.search(r"(\d{2}/\d{2}/\d{4})", match_linha.group(1)).group(1)
-            horarios = re.findall(r'(\d{2}:\d{2})', linha_texto)
-            horarios.extend([0] * (4 - len(horarios)))
-            dados_limpos.append({
-                'Data': data, 'Entrada1': horarios[0], 'Saida1': horarios[1], 
-                'Entrada2': horarios[2], 'Saida2': horarios[3]
-            })
-    if not dados_limpos: return pd.DataFrame()
-    return pd.DataFrame(dados_limpos)
+    def processar_texto_ponto(self, texto):
+        """Processa o texto extraído para encontrar dados de ponto"""
+        linhas = texto.split('\n')
+        indice_inicio = self.detectar_inicio_tabela(linhas)
+        indice_fim = self.detectar_fim_tabela(linhas, indice_inicio)
+        linhas_tabela = linhas[indice_inicio:indice_fim]
+        
+        colunas_proibidas = [
+            'Marcação ou', 'MARCAÇÃO OU', 'marcação ou',
+            'FALTAS', 'FALTA', 'Faltas', 'Falta', 'faltas', 'falta',
+            'AD.NOT', 'AD NOT', 'ADNOT', 'ad.not', 'ad not', 'adnot',
+            'H.E.100%', 'H E 100%', 'HE 100%', 'h.e.100%', 'he100%',
+            'H.E.NEG', 'H E NEG', 'HE NEG', 'h.e.neg', 'heneg',
+            'FALTS', 'FALT', 'FAULT', 'FAULTS',
+            'A.NOT', 'ANOT', 'AD-NOT', 'ADNOT.',
+            'H.E100%', 'HE.100%', 'HE100%', 'H.E.100', 'HE.100',
+            'H.E50%', 'HE.50%', 'HE50%', 'H.E.50', 'HE.50',
+            'H.NEG', 'HNEG', 'H NEG', 'H-NEG', 'H.N', 'HN', 'NEG',
+            'C.DIA', 'CDIA', 'C DIA', 'C-DIA', 'C.D', 'CD', 'COMP.DIA',
+            'S.POS', 'SPOS', 'S POS', 'S-POS', 'S.P', 'SP', 'POS',
+            'S.NEG', 'SNEG', 'S NEG', 'S-NEG', 'S.N', 'SN',
+            'H.SUP', 'HSUP', 'H SUP', 'H-SUP', 'H.S', 'HS', 'SUP',
+            'SALDO', 'SALD', 'SAL', 'TOTAL', 'TOT',
+            'VISTO', 'CHEFIA', 'ASSINATURA', 'FUNCIONARIO', 'FUNCIONÁRIO',
+            'ATESTADO', 'MEDICO', 'MÉDICO', 'LICENÇA', 'LICENCA',
+            'FALTA JUSTIFICADA', 'FALTA ABONADA', 'FÉRIAS', 'FERIAS'
+        ]
+        
+        dados_extraidos = []
+        dias_semana = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab', 'Dom']
+        
+        for linha in linhas_tabela:
+            linha = linha.strip()
+            if not linha:
+                continue
+            
+            data_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', linha)
+            if data_match:
+                data = data_match.group(1)
+                
+                # Buscar dia da semana
+                dia_semana = ""
+                for dia in dias_semana:
+                    if dia in linha:
+                        dia_semana = dia
+                        break
+                
+                if not dia_semana:
+                    if any(variacao in linha for variacao in ['Sáb', 'SAB', 'sab', 'Sabado', 'sábado']):
+                        dia_semana = 'Sab'
+                
+                # Definir área de busca dos horários
+                pos_data = linha.find(data)
+                inicio_busca = pos_data + len(data)
+                
+                if dia_semana and dia_semana in linha:
+                    pos_dia = linha.find(dia_semana)
+                    if pos_dia > pos_data:
+                        inicio_busca = pos_dia + len(dia_semana)
+                
+                substring_horarios = linha[inicio_busca:]
+                linha_upper = substring_horarios.upper()
+                pos_fim = len(substring_horarios)
+                
+                # Procurar colunas proibidas para delimitar fim
+                for coluna in colunas_proibidas:
+                    coluna_upper = coluna.upper()
+                    if coluna_upper in linha_upper:
+                        pos_temp = linha_upper.find(coluna_upper)
+                        if pos_temp >= 0 and pos_temp < pos_fim:
+                            pos_fim = pos_temp
+                            break
+                
+                parte_horarios = substring_horarios[:pos_fim]
+                
+                # Buscar horários
+                horarios = re.findall(r'\b([0-2]?\d:[0-5]\d)\b', parte_horarios)
+                
+                # Processar horários
+                horarios_validos = []
+                for h in horarios[:4]: # Máximo 4 horários
+                    if ':' in h:
+                        try:
+                            horas, minutos = h.split(':')
+                            horas_int = int(horas)
+                            minutos_int = int(minutos)
+                            if 0 <= horas_int <= 23 and 0 <= minutos_int <= 59:
+                                if horas_int == 0 and minutos_int == 0:
+                                    horarios_validos.append("24:00")
+                                else:
+                                    horarios_validos.append(f"{horas_int:02d}:{minutos_int:02d}")
+                        except Exception:
+                            continue
+                
+                # Verificar dias especiais primeiro
+                palavras_especiais = ['FOLG', 'COMP', 'FER', 'INTEGRAÇÃO', 'INTERAÇÃO',
+                                    'ATESTADO', 'MÉDICO', 'FALTA', 'LICENÇA', 'FÉRIAS']
+                if any(palavra in linha.upper() for palavra in palavras_especiais):
+                    horarios_validos = ["0", "0", "0", "0"]
+                else:
+                    # Aplicar validação de horários
+                    horarios_validos = self.validar_horarios(horarios_validos)
+                
+                dados_linha = {
+                    'Dia': data,
+                    'Dia_Semana': dia_semana,
+                    'Entrada1': horarios_validos[0],
+                    'Saida1': horarios_validos[1],
+                    'Entrada2': horarios_validos[2],
+                    'Saida2': horarios_validos[3]
+                }
+                dados_extraidos.append(dados_linha)
+        
+        return dados_extraidos
 
-# ==============================================================================
-# ROTA DA API PARA O MODELO 1
-# ==============================================================================
+    def processar_pagina(self, imagem, num_pagina):
+        """Processa uma página completa usando OCR direto"""
+        texto_completo = self.extrair_texto_completo(imagem)
+        if not texto_completo:
+            return pd.DataFrame()
+        
+        dados_extraidos = self.processar_texto_ponto(texto_completo)
+        if dados_extraidos:
+            df = pd.DataFrame(dados_extraidos)
+            df['Pagina'] = num_pagina
+            return df
+        else:
+            return pd.DataFrame()
+
+    def processar_pdf_completo(self, pdf_path, pages_range=None):
+        """Processa PDF completo"""
+        imagens = self.converter_pdf_imagens(pdf_path, pages_range)
+        if not imagens:
+            return []
+        
+        todas_tabelas = []
+        for i, imagem in enumerate(imagens, 1):
+            if pages_range and '-' in pages_range:
+                start_page = int(pages_range.split('-')[0])
+                num_pagina_real = start_page + i - 1
+            else:
+                num_pagina_real = i
+            
+            df_pagina = self.processar_pagina(imagem, num_pagina_real)
+            if not df_pagina.empty:
+                todas_tabelas.append(df_pagina)
+        
+        if todas_tabelas:
+            df_consolidado = pd.concat(todas_tabelas, ignore_index=True)
+            return [df_consolidado]
+        else:
+            return []
 
 @app.route('/process', methods=['POST'])
-def process_file_direct():
-    if 'pdf_file' not in request.files:
-        return jsonify({'success': False, 'message': 'Nenhum arquivo PDF enviado.'}), 400
-    
-    file = request.files['pdf_file']
-    paginas_str = request.form.get('pages')
-
-    if not all([file, paginas_str]):
-        return jsonify({'success': False, 'message': 'Dados insuficientes. Forneça pdf_file e pages.'}), 400
+def process_pdf():
+    """Endpoint principal para processar PDF"""
+    try:
+        if 'pdf_file' not in request.files:
+            return jsonify({'error': 'Nenhum arquivo PDF foi enviado'}), 400
         
-    df_bruto = extrair_tabelas_camelot_stream(file, paginas_str)
-    if df_bruto is None or df_bruto.empty:
-        return jsonify({'success': False, 'message': 'Falha na extração. Nenhuma tabela encontrada.'}), 500
-
-    df_limpo = limpar_dataframe_modelo_1(df_bruto)
-    if df_limpo.empty:
-        return jsonify({'success': False, 'message': 'Não foi possível limpar os dados com o modelo selecionado.'}), 500
-
-    dias_semana_map = {0: 'SEG', 1: 'TER', 2: 'QUA', 3: 'QUI', 4: 'SEX', 5: 'SÁB', 6: 'DOM'}
-    df_limpo['Data_dt'] = pd.to_datetime(df_limpo['Data'], format='%d/%m/%Y')
-    df_limpo['DiaSemana'] = df_limpo['Data_dt'].dt.weekday.map(dias_semana_map)
-
-    ordem_colunas_final = ['Data', 'DiaSemana', 'Entrada1', 'Saida1', 'Entrada2', 'Saida2']
-    df_final = df_limpo.reindex(columns=ordem_colunas_final, fill_value=0)
-
-    buffer = io.BytesIO()
-    df_final.to_csv(buffer, index=False, header=False, sep=';', encoding='utf-8-sig')
-    buffer.seek(0)
-
-    nome_base = os.path.splitext(file.filename)[0]
-    nome_arquivo_saida = f"resultado_modelo1_{nome_base}_pag_{paginas_str.replace('-', '_')}.csv"
-
-    print(f"Enviando arquivo '{nome_arquivo_saida}' para download direto.")
+        file = request.files['pdf_file']
+        pages = request.form.get('pages', '')
+        model_type = request.form.get('model_type', '1')
+        
+        if file.filename == '':
+            return jsonify({'error': 'Nenhum arquivo selecionado'}), 400
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+            file.save(tmp_file.name)
+            pdf_path = tmp_file.name
+        
+        try:
+            extrator = ExtractorPontoEletronico(model_type)
+            tabelas = extrator.processar_pdf_completo(pdf_path, pages)
+            
+            if not tabelas:
+                return jsonify({'error': 'Nenhuma tabela foi encontrada no PDF'}), 404
+            
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df_final = tabelas[0]
+                
+                colunas_finais = ['Dia', 'Dia_Semana', 'Entrada1', 'Saida1', 'Entrada2', 'Saida2']
+                for col in colunas_finais:
+                    if col not in df_final.columns:
+                        df_final[col] = "0"
+                
+                df_final = df_final[colunas_finais]
+                df_final = df_final.fillna("0")
+                df_final = df_final.replace("", "0")
+                
+                df_final.to_excel(writer, sheet_name='Ponto_Extraido', index=False)
+            
+            output.seek(0)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f'JBS_ponto_extraido_{timestamp}.xlsx'
+            
+            return send_file(
+                BytesIO(output.read()),
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                as_attachment=True,
+                download_name=filename
+            )
+        
+        finally:
+            os.unlink(pdf_path)
     
-    return send_file(
-        buffer,
-        as_attachment=True,
-        download_name=nome_arquivo_saida,
-        mimetype='text/csv'
-    )
+    except Exception as e:
+        return jsonify({'error': f'Erro interno: {str(e)}'}), 500
 
-if __name__ == "__main__":
-    # Para o modelo 1, podemos usar a porta 5000
-    app.run(host='0.0.0.0', port=5000, debug=True)
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({
+        'status': 'OK',
+        'message': 'Servidor JBS Ponto funcionando',
+        'model': 'JBS Ponto Eletrônico - Com validação de horários'
+    })
+
+if __name__ == '__main__':
+    app.run(host='127.0.0.1', port=5000, debug=False)
