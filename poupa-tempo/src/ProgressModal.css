@@ -1,0 +1,170 @@
+.progress-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  backdrop-filter: blur(5px);
+}
+
+.progress-modal {
+  background: white;
+  border-radius: 20px;
+  padding: 30px;
+  max-width: 400px;
+  width: 90%;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  animation: modalSlideIn 0.3s ease-out;
+}
+
+.progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 30px;
+}
+
+.progress-header h3 {
+  margin: 0;
+  color: #333;
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.close-button {
+  background: none;
+  border: none;
+  font-size: 2rem;
+  color: #999;
+  cursor: pointer;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: all 0.2s ease;
+}
+
+.close-button:hover {
+  background: #f0f0f0;
+  color: #666;
+}
+
+.progress-content {
+  text-align: center;
+}
+
+.progress-circle {
+  position: relative;
+  margin: 0 auto 30px;
+  width: 120px;
+  height: 120px;
+}
+
+.progress-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.percentage {
+  font-size: 1.8rem;
+  font-weight: bold;
+  color: #28a745;
+}
+
+.progress-info {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.page-counter {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 5px;
+  font-size: 1.2rem;
+}
+
+.current-page {
+  font-size: 2rem;
+  font-weight: bold;
+  color: #28a745;
+}
+
+.separator {
+  font-size: 1.5rem;
+  color: #666;
+  margin: 0 5px;
+}
+
+.total-pages {
+  font-size: 1.5rem;
+  color: #666;
+}
+
+.pages-label {
+  font-size: 1rem;
+  color: #999;
+  margin-left: 5px;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 6px;
+  background: #e0e6ed;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #28a745, #20c997);
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+
+.status-text {
+  color: #666;
+  font-size: 0.95rem;
+  font-weight: 500;
+}
+
+@keyframes modalSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-30px) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Responsividade */
+@media (max-width: 480px) {
+  .progress-modal {
+    padding: 20px;
+    margin: 20px;
+  }
+  
+  .progress-header h3 {
+    font-size: 1.3rem;
+  }
+  
+  .current-page {
+    font-size: 1.8rem;
+  }
+  
+  .total-pages {
+    font-size: 1.3rem;
+  }
+}

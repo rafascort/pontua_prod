@@ -87,3 +87,55 @@ body {
   margin: 10px 0;
   font-weight: 500;
 }
+/* Adicionar ao App.css existente */
+
+.file-status {
+  margin: 15px 0 25px 0;
+  padding: 15px;
+  border-radius: 8px;
+  border: 2px dashed #ddd;
+  background: #f9f9f9;
+}
+
+.file-selected {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #28a745;
+  border-color: #28a745;
+  background: #f8fff9;
+}
+
+.file-icon {
+  font-size: 2rem;
+}
+
+.file-info {
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+}
+
+.file-info strong {
+  font-size: 1rem;
+  margin-bottom: 2px;
+}
+
+.file-info small {
+  color: #666;
+  font-size: 0.85rem;
+}
+
+.no-file-selected {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: #999;
+  font-style: italic;
+}
+
+.no-file-icon {
+  font-size: 1.5rem;
+  opacity: 0.7;
+}
