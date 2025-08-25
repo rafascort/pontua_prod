@@ -10,6 +10,14 @@ const API_URLS = {
   'teste': '/api3',
 };
 
+// --- NOVO: Mapeamento de caminhos das imagens dos modelos --- 
+const MODEL_IMAGE_PATHS = {
+  '1': process.env.PUBLIC_URL + '/Modelo1.png',
+  '2': process.env.PUBLIC_URL + '/Modelo2.png',
+  'teste': null, // Não tem imagem para o modelo de teste
+};
+// ------------------------------------------------------------------
+
 function MainApp() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [pageRange, setPageRange] = useState('');
@@ -17,11 +25,9 @@ function MainApp() {
   const [statusMessage, setStatusMessage] = useState('Aguardando arquivo...');
   const [isProcessing, setIsProcessing] = useState(false);
   const [showModelOptions, setShowModelOptions] = useState(false);
-
-  // --- ALTERAÇÃO AQUI: Usar process.env.PUBLIC_URL no estado inicial ---
-  const [selectedModelImage, setSelectedModelImage] = useState(process.env.PUBLIC_URL + '/modelo1.png');
-  // -------------------------------------------------------------------
-
+  // --- ALTERAÇÃO AQUI: selectedModelImage agora usa o mapa MODEL_IMAGE_PATHS --- 
+  const [selectedModelImage, setSelectedModelImage] = useState(MODEL_IMAGE_PATHS['1']);
+  // --------------------------------------------------------------------------------
   const [showProgressModal, setShowProgressModal] = useState(false);
   const [currentTaskId, setCurrentTaskId] = useState(null);
   const [progressData, setProgressData] = useState({
@@ -33,6 +39,20 @@ function MainApp() {
 
   const fileInputRef = useRef(null);
   const progressIntervalRef = useRef(null);
+
+  // --- NOVO useEffect para pré-carregar imagens --- 
+  useEffect(() => {
+    Object.values(MODEL_IMAGE_PATHS).forEach(path => {
+      if (path) { // Garante que só tenta carregar se o path não for null
+        const img = new Image();
+        img.src = path;
+        // Opcional: pode adicionar um listener para saber quando carregou
+        // img.onload = () => console.log(`${path} carregado!`);
+        // img.onerror = () => console.error(`Erro ao carregar ${path}`);
+      }
+    });
+  }, []); // Array de dependências vazio para rodar apenas uma vez na montagem
+  // ------------------------------------------------------------------
 
   const handleFileSelect = (event) => {
     const file = event.target.files[0];
@@ -182,9 +202,9 @@ function MainApp() {
                 checked={modelType === '1'}
                 onChange={(e) => {
                   setModelType(e.target.value);
-                  // --- ALTERAÇÃO AQUI: Usar process.env.PUBLIC_URL ---
-                  setSelectedModelImage(process.env.PUBLIC_URL + '/Modelo1.png');
-                  // ---------------------------------------------------
+                  // --- ALTERAÇÃO AQUI: Usa o mapa de caminhos --- 
+                  setSelectedModelImage(MODEL_IMAGE_PATHS['1']);
+                  // --------------------------------------------------
                 }}
               />
               JBS Ponto (Padrão)
@@ -197,9 +217,9 @@ function MainApp() {
                 checked={modelType === '2'}
                 onChange={(e) => {
                   setModelType(e.target.value);
-                  // --- ALTERAÇÃO AQUI: Usar process.env.PUBLIC_URL ---
-                  setSelectedModelImage(process.env.PUBLIC_URL + '/Modelo2.png');
-                  // ---------------------------------------------------
+                  // --- ALTERAÇÃO AQUI: Usa o mapa de caminhos --- 
+                  setSelectedModelImage(MODEL_IMAGE_PATHS['2']);
+                  // --------------------------------------------------
                 }}
               />
               Ponto Santander (Modelo 2)
@@ -217,10 +237,11 @@ function MainApp() {
               />
               Teste (Debug)
             </label>
-            {selectedModelImage && (
+            {/* Renderiza a imagem com base no modelType, usando o mapa de caminhos */}
+            {MODEL_IMAGE_PATHS[modelType] && (
               <div style={{ marginTop: '15px' }}>
                 <img
-                  src={selectedModelImage}
+                  src={MODEL_IMAGE_PATHS[modelType]} // AQUI USAMOS O MAPA DIRETO
                   alt="Modelo selecionado"
                   style={{ width: '100%', maxWidth: '500px', borderRadius: '8px' }}
                 />
