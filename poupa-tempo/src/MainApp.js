@@ -10,7 +10,7 @@ const API_URLS = {
   'teste': '/api3',
 };
 
-// --- NOVO: Mapeamento de caminhos das imagens dos modelos --- 
+// --- NOVO: Mapeamento de caminhos das imagens dos modelos ---
 const MODEL_IMAGE_PATHS = {
   '1': process.env.PUBLIC_URL + '/Modelo1.png',
   '2': process.env.PUBLIC_URL + '/Modelo2.png',
@@ -25,9 +25,7 @@ function MainApp() {
   const [statusMessage, setStatusMessage] = useState('Aguardando arquivo...');
   const [isProcessing, setIsProcessing] = useState(false);
   const [showModelOptions, setShowModelOptions] = useState(false);
-  // --- ALTERAÇÃO AQUI: selectedModelImage agora usa o mapa MODEL_IMAGE_PATHS --- 
   const [selectedModelImage, setSelectedModelImage] = useState(MODEL_IMAGE_PATHS['1']);
-  // --------------------------------------------------------------------------------
   const [showProgressModal, setShowProgressModal] = useState(false);
   const [currentTaskId, setCurrentTaskId] = useState(null);
   const [progressData, setProgressData] = useState({
@@ -40,19 +38,15 @@ function MainApp() {
   const fileInputRef = useRef(null);
   const progressIntervalRef = useRef(null);
 
-  // --- NOVO useEffect para pré-carregar imagens --- 
+  // --- NOVO useEffect para pré-carregar imagens ---
   useEffect(() => {
     Object.values(MODEL_IMAGE_PATHS).forEach(path => {
       if (path) { // Garante que só tenta carregar se o path não for null
         const img = new Image();
         img.src = path;
-        // Opcional: pode adicionar um listener para saber quando carregou
-        // img.onload = () => console.log(`${path} carregado!`);
-        // img.onerror = () => console.error(`Erro ao carregar ${path}`);
       }
     });
   }, []); // Array de dependências vazio para rodar apenas uma vez na montagem
-  // ------------------------------------------------------------------
 
   const handleFileSelect = (event) => {
     const file = event.target.files[0];
@@ -81,7 +75,6 @@ function MainApp() {
           message: data.message || 'Processando...'
         });
         setStatusMessage(data.message || 'Processando...');
-
         if (data.status === 'completed') {
           const downloadUrl = `${API_URLS[modelType]}/download/${taskId}`;
           const a = document.createElement('a');
@@ -123,7 +116,6 @@ function MainApp() {
       alert('Por favor, informe o intervalo de páginas.');
       return;
     }
-
     setIsProcessing(true);
     setShowProgressModal(true);
     setProgressData({
@@ -133,32 +125,26 @@ function MainApp() {
       message: 'Iniciando processamento...'
     });
     setStatusMessage('Iniciando processamento...');
-
     const apiUrl = `${API_URLS[modelType]}/process`;
     const formData = new FormData();
     formData.append('pdf_file', selectedFile);
     formData.append('pages', pageRange);
     formData.append('model_type', modelType);
-
     try {
       const response = await fetch(apiUrl, {
         method: 'POST',
         body: formData,
       });
-
       if (!response.ok) {
         const errorResult = await response.json();
         throw new Error(errorResult.error || 'Ocorreu um erro no servidor.');
       }
-
       const result = await response.json();
       const taskId = result.task_id;
       setCurrentTaskId(taskId);
-
       progressIntervalRef.current = setInterval(() => {
         checkProgress(taskId);
       }, 1000);
-
     } catch (error) {
       console.error('Ocorreu um erro:', error);
       setStatusMessage(`Erro: ${error.message}`);
@@ -202,12 +188,10 @@ function MainApp() {
                 checked={modelType === '1'}
                 onChange={(e) => {
                   setModelType(e.target.value);
-                  // --- ALTERAÇÃO AQUI: Usa o mapa de caminhos --- 
                   setSelectedModelImage(MODEL_IMAGE_PATHS['1']);
-                  // --------------------------------------------------
                 }}
               />
-              JBS Ponto (Padrão)
+              JBS Ponto (Modelo 1)
             </label>
             <label>
               <input
@@ -217,12 +201,10 @@ function MainApp() {
                 checked={modelType === '2'}
                 onChange={(e) => {
                   setModelType(e.target.value);
-                  // --- ALTERAÇÃO AQUI: Usa o mapa de caminhos --- 
                   setSelectedModelImage(MODEL_IMAGE_PATHS['2']);
-                  // --------------------------------------------------
                 }}
               />
-              Ponto Santander (Modelo 2)
+              Ponto Eletrônico (Modelo 2) {/* Alterado aqui */}
             </label>
             <label>
               <input
@@ -241,7 +223,7 @@ function MainApp() {
             {MODEL_IMAGE_PATHS[modelType] && (
               <div style={{ marginTop: '15px' }}>
                 <img
-                  src={MODEL_IMAGE_PATHS[modelType]} // AQUI USAMOS O MAPA DIRETO
+                  src={MODEL_IMAGE_PATHS[modelType]}
                   alt="Modelo selecionado"
                   style={{ width: '100%', maxWidth: '500px', borderRadius: '8px' }}
                 />
@@ -290,3 +272,4 @@ function MainApp() {
 }
 
 export default MainApp;
+
