@@ -1,0 +1,13 @@
+[0;1;31m×[0m brf-ponto-modelo2.service - BRF Ponto - Modelo 2
+     Loaded: loaded (]8;;file://srv/etc/systemd/system/brf-ponto-modelo2.service/etc/systemd/system/brf-ponto-modelo2.service]8;;; [0;1;32menabled[0m; preset: [0;1;32menabled[0m)
+     Active: [0;1;31mfailed[0m (Result: exit-code) since Tue 2025-08-26 17:32:19 UTC; 1min 43s ago
+   Duration: 6ms
+    Process: 39235 ExecStart=/root/pontua/AutoPonto/backend_api/venv/bin/gunicorn --bind 0.0.0.0:5001 --workers 2 app_modelo2:app # Substitua pelo nome correto se necessário [0;1;31m(code=exited, status=200/CHDIR)[0m
+   Main PID: 39235 (code=exited, status=200/CHDIR)
+        CPU: 3ms
+
+Aug 26 17:32:18 srv systemd[1]: [0;1;38;5;185m[0;1;39m[0;1;38;5;185mbrf-ponto-modelo2.service: Failed with result 'exit-code'.[0m
+Aug 26 17:32:19 srv systemd[1]: brf-ponto-modelo2.service: Scheduled restart job, restart counter is at 5.
+Aug 26 17:32:19 srv systemd[1]: [0;1;38;5;185m[0;1;39m[0;1;38;5;185mbrf-ponto-modelo2.service: Start request repeated too quickly.[0m
+Aug 26 17:32:19 srv systemd[1]: [0;1;38;5;185m[0;1;39m[0;1;38;5;185mbrf-ponto-modelo2.service: Failed with result 'exit-code'.[0m
+Aug 26 17:32:19 srv systemd[1]: [0;1;31m[0;1;39m[0;1;31mFailed to start brf-ponto-modelo2.service - BRF Ponto - Modelo 2.[0m
