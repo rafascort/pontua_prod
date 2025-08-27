@@ -2,23 +2,23 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom'; // Importe useNavigate
 import './style.css';
-
 const Login = ({ onLogin }) => {
   const [usuario, setUsuario] = useState('');
   const [senha, setSenha] = useState('');
   const [erro, setErro] = useState('');
   const navigate = useNavigate(); // Inicialize useNavigate
-
   const handleLogin = (e) => {
     e.preventDefault();
     if (usuario === 'admin' && senha === '1990') {
+      onLogin(); // Atualiza o estado de logado no App.js
+      navigate('/app', { replace: true }); // Redireciona para /app
+    } else if (usuario === 'Luiz' && senha === 'Perito@2025') { // Nova condição adicionada
       onLogin(); // Atualiza o estado de logado no App.js
       navigate('/app', { replace: true }); // Redireciona para /app
     } else {
       setErro('Usuário ou senha inválidos');
     }
   };
-
   return (
     <div className="login-container">
       <div className="login-card">
@@ -60,5 +60,4 @@ const Login = ({ onLogin }) => {
     </div>
   );
 };
-
 export default Login;
