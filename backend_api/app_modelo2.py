@@ -153,92 +153,70 @@ class ExtractorPontoEletronico:
         """Processa o texto extraído para encontrar dados de ponto."""
         if not self.extrair_periodo_documento(texto):
             return []
+    
         linhas = texto.split('\n')
         indice_inicio = self.detectar_inicio_tabela(linhas)
         indice_fim = self.detectar_fim_tabela(linhas, indice_inicio)
+    
         if indice_inicio >= indice_fim:
-            if indice_inicio < len(linhas):
-                indice_fim = len(linhas)
-            else:
-                return []
+            return []
+    
         linhas_tabela = linhas[indice_inicio:indice_fim]
         palavras_especiais = [
-            'FOLG', 'COMP', 'FER', 'INTEGRAÇÃO', 'INTERAÇÃO', 'ATESTADO', 'MÉDICO',
-            'FALTA', 'LICENÇA', 'FÉRIAS', 'COMPENSADO', 'REPOSO REMUNERADO',
-            'FOLGA', 'DESCANSO', 'FERIADO', 'ABONO', '0100'
+            'FOLG', 'COMP', 'FER', 'ATESTADO', 'REPOSO', 'FOLGA', 'DESCANSO', 'FERIADO', 'ABONO', 'FÉRIAS', '0100'
         ]
+        
         dados_extraidos = []
         current_date_tracker = self.periodo_inicio
         processed_dates = set()
-        for i, linha in enumerate(linhas_tabela):
-            linha = linha.strip()
-            if not linha:
-                continue
-            data_str = None
-            day_match = re.search(r'^\s*(\d{1,2})\s+[A-Z]', linha)
-            if day_match:
-                day_num = int(day_match.group(1))
-                try:
-                    potential_date_current_month = datetime(current_date_tracker.year, current_date_tracker.month, day_num)
-                    if potential_date_current_month >= current_date_tracker:
-                        current_date_tracker = potential_date_current_month
-                    else:
-                        raise ValueError("Day is earlier, likely next month")
-                except ValueError:
-                    try:
-                        next_month = current_date_tracker.month % 12 + 1
-                        next_year = current_date_tracker.year + (1 if next_month == 1 else 0)
-                        potential_date_next_month = datetime(next_year, next_month, day_num)
-                        if self.periodo_inicio <= potential_date_next_month <= self.periodo_fim:
-                            current_date_tracker = potential_date_next_month
-                        else:
-                            continue
-                    except ValueError:
-                        continue
-                if not (self.periodo_inicio <= current_date_tracker <= self.periodo_fim):
+    
+        while current_date_tracker <= self.periodo_fim:
+            data_str = current_date_tracker.strftime('%d.%m.%Y')
+            found_entry = False
+            
+            for linha in linhas_tabela:
+                linha = linha.strip()
+                if not linha:
                     continue
-                data_str = current_date_tracker.strftime('%d.%m.%Y')
-            else:
-                continue
-            if data_str in processed_dates:
-                continue
-            dia_semana = ""
-            try:
-                data_obj = datetime.strptime(data_str, '%d.%m.%Y')
-                dia_semana_abrev = data_obj.strftime('%a')
-                dia_semana = self.dias_semana_map.get(dia_semana_abrev, '')
-            except ValueError:
-                pass
-            parte_para_horarios = linha[day_match.end():]
-            horarios = re.findall(r'\b([0-2]?\d:[0-5]\d)\b', parte_para_horarios)
-            horarios_processados = []
-            for h in horarios:
-                if ':' in h:
-                    try:
-                        horas, minutos = map(int, h.split(':'))
-                        if 0 <= horas <= 23 and 0 <= minutos <= 59:
-                            horarios_processados.append(f"{horas:02d}:{minutos:02d}")
-                    except ValueError:
-                        continue
-            is_special_day = False
-            for palavra in palavras_especiais:
-                if re.search(r'\b' + re.escape(palavra) + r'\b', linha, re.IGNORECASE):
-                    is_special_day = True
-                    break
-            if is_special_day:
-                horarios_finais = ["0", "0", "0", "0"]
-            else:
-                horarios_finais = self.validar_horarios(horarios_processados)
-            dados_linha = {
-                'Dia': data_str,
-                'Dia_Semana': dia_semana,
-                'Entrada1': horarios_finais[0],
-                'Saida1': horarios_finais[1],
-                'Entrada2': horarios_finais[2],
-                'Saida2': horarios_finais[3]
-            }
-            dados_extraidos.append(dados_linha)
-            processed_dates.add(data_str)
+                
+                day_match = re.search(r'^\s*(\d{1,2})\s+[A-Z]', linha)
+                if day_match:
+                    day_num = int(day_match.group(1))
+                    if day_num == current_date_tracker.day:
+                        # Processa os horários
+                        parte_para_horarios = linha[day_match.end():]
+                        horarios = re.findall(r'\b([0-2]?\d:[0-5]\d)\b', parte_para_horarios)
+                        horarios_processados = self.validar_horarios(horarios)
+    
+                        # Danei
+                        dados_linha = {
+                            'Dia': data_str,
+                            'Dia_Semana': self.dias_semana_map.get(current_date_tracker.strftime('%a'), ''),
+                            'Entrada1': horarios_processados[0],
+                            'Saida1': horarios_processados[1],
+                            'Entrada2': horarios_processados[2],
+                            'Saida2': horarios_processados[3]
+                        }
+    
+                        dados_extraidos.append(dados_linha)
+                        found_entry = True
+                        break
+                    
+            if not found_entry:
+                # Se a data não foi encontrada, adiciona uma entrada padrão
+                dados_linha = {
+                    'Dia': data_str,
+                    'Dia_Semana': self.dias_semana_map.get(current_date_tracker.strftime('%a'), ''),
+                    'Entrada1': '0',
+                    'Saida1': '0',
+                    'Entrada2': '0',
+                    'Saida2': '0'
+                }
+                dados_extraidos.append(dados_linha)
+    
+            # Avança para o próximo dia
+            current_date_tracker += timedelta(days=1)
+    
         return dados_extraidos
     def processar_pagina(self, imagem, num_pagina):
         """Processa uma página completa usando OCR direto"""

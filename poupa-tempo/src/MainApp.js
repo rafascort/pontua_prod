@@ -204,7 +204,7 @@ function MainApp() {
                   setSelectedModelImage(MODEL_IMAGE_PATHS['2']);
                 }}
               />
-              Ponto Eletrônico (Modelo 2) {/* Alterado aqui */}
+              BRF Ponto (Modelo 2) {/* Alterado aqui */}
             </label>
             <label>
               <input
