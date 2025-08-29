@@ -1,24 +1,35 @@
 // src/Login.js
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom'; // Importe useNavigate
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import './style.css';
+
 const Login = ({ onLogin }) => {
   const [usuario, setUsuario] = useState('');
   const [senha, setSenha] = useState('');
   const [erro, setErro] = useState('');
-  const navigate = useNavigate(); // Inicialize useNavigate
+  const navigate = useNavigate();
+
+  // Remove todos os &nbsp; de forma segura
+  useEffect(() => {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      walker.currentNode.nodeValue = walker.currentNode.nodeValue.replace(/\u00A0/g, ' ');
+    }
+  }, []);
+
   const handleLogin = (e) => {
     e.preventDefault();
     if (usuario === 'admin' && senha === '1990') {
-      onLogin(); // Atualiza o estado de logado no App.js
-      navigate('/app', { replace: true }); // Redireciona para /app
-    } else if (usuario === 'Luiz' && senha === 'Perito@2025') { // Nova condição adicionada
-      onLogin(); // Atualiza o estado de logado no App.js
-      navigate('/app', { replace: true }); // Redireciona para /app
+      onLogin();
+      navigate('/app', { replace: true });
+    } else if (usuario === 'Luiz' && senha === 'Perito@2025') {
+      onLogin();
+      navigate('/app', { replace: true });
     } else {
       setErro('Usuário ou senha inválidos');
     }
   };
+
   return (
     <div className="login-container">
       <div className="login-card">
@@ -60,4 +71,5 @@ const Login = ({ onLogin }) => {
     </div>
   );
 };
+
 export default Login;

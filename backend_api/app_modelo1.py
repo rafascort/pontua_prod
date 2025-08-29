@@ -113,13 +113,17 @@ class ExtractorPontoEletronico:
         while len(horarios_validos) < 4:
             horarios_validos.append("0")
         horarios_validos = horarios_validos[:4]
+
         # Contar horários válidos (diferentes de "0")
         horarios_nao_zero = [h for h in horarios_validos if h != "0"]
+
         # Regra 1: Se apenas 1 horário, zerar todos
         if len(horarios_nao_zero) == 1:
             return ["0", "0", "0", "0"]
+
         # Aplicar as regras de validação
         entrada1, saida1, entrada2, saida2 = horarios_validos
+
         # Se tem entrada1 mas não tem saida1, zerar ambos
         if entrada1 != "0" and saida1 == "0":
             entrada1 = "0"
@@ -127,6 +131,7 @@ class ExtractorPontoEletronico:
         # Se tem saida1 mas não tem entrada1, zerar saida1
         if entrada1 == "0" and saida1 != "0":
             saida1 = "0"
+
         # Se tem entrada2 mas não tem saida2, zerar ambos
         if entrada2 != "0" and saida2 == "0":
             entrada2 = "0"
@@ -134,6 +139,7 @@ class ExtractorPontoEletronico:
         # Se tem saida2 mas não tem entrada2, zerar saida2
         if entrada2 == "0" and saida2 != "0":
             saida2 = "0"
+
         return [entrada1, saida1, entrada2, saida2]
 
     def processar_texto_ponto(self, texto):
@@ -142,6 +148,7 @@ class ExtractorPontoEletronico:
         indice_inicio = self.detectar_inicio_tabela(linhas)
         indice_fim = self.detectar_fim_tabela(linhas, indice_inicio)
         linhas_tabela = linhas[indice_inicio:indice_fim]
+
         colunas_proibidas = [
             'Marcação ou', 'MARCAÇÃO OU', 'marcação ou',
             'FALTAS', 'FALTA', 'Faltas', 'Falta', 'faltas', 'falta',
@@ -162,15 +169,19 @@ class ExtractorPontoEletronico:
             'ATESTADO', 'MEDICO', 'MÉDICO', 'LICENÇA', 'LICENCA',
             'FALTA JUSTIFICADA', 'FALTA ABONADA', 'FÉRIAS', 'FERIAS'
         ]
+
         dados_extraidos = []
         dias_semana = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab', 'Dom']
+
         for linha in linhas_tabela:
             linha = linha.strip()
             if not linha:
                 continue
+
             data_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', linha)
             if data_match:
                 data = data_match.group(1)
+
                 # Buscar dia da semana
                 dia_semana = ""
                 for dia in dias_semana:
@@ -180,6 +191,7 @@ class ExtractorPontoEletronico:
                 if not dia_semana:
                     if any(variacao in linha for variacao in ['Sáb', 'SAB', 'sab', 'Sabado', 'sábado']):
                         dia_semana = 'Sab'
+
                 # Definir área de busca dos horários
                 pos_data = linha.find(data)
                 inicio_busca = pos_data + len(data)
@@ -187,9 +199,11 @@ class ExtractorPontoEletronico:
                     pos_dia = linha.find(dia_semana)
                     if pos_dia > pos_data:
                         inicio_busca = pos_dia + len(dia_semana)
+
                 substring_horarios = linha[inicio_busca:]
                 linha_upper = substring_horarios.upper()
                 pos_fim = len(substring_horarios)
+
                 # Procurar colunas proibidas para delimitar fim
                 for coluna in colunas_proibidas:
                     coluna_upper = coluna.upper()
@@ -198,9 +212,12 @@ class ExtractorPontoEletronico:
                         if pos_temp >= 0 and pos_temp < pos_fim:
                             pos_fim = pos_temp
                             break
+                
                 parte_horarios = substring_horarios[:pos_fim]
+
                 # Buscar horários
                 horarios = re.findall(r'\b([0-2]?\d:[0-5]\d)\b', parte_horarios)
+
                 # Processar horários
                 horarios_validos = []
                 for h in horarios[:4]: # Máximo 4 horários
@@ -216,14 +233,16 @@ class ExtractorPontoEletronico:
                                     horarios_validos.append(f"{horas_int:02d}:{minutos_int:02d}")
                         except Exception:
                             continue
+
                 # Verificar dias especiais primeiro
                 palavras_especiais = ['FOLG', 'COMP', 'FER', 'INTEGRAÇÃO', 'INTERAÇÃO',
-                                    'ATESTADO', 'MÉDICO', 'FALTA', 'LICENÇA', 'FÉRIAS']
+                                      'ATESTADO', 'MÉDICO', 'FALTA', 'LICENÇA', 'FÉRIAS']
                 if any(palavra in linha.upper() for palavra in palavras_especiais):
                     horarios_validos = ["0", "0", "0", "0"]
                 else:
                     # Aplicar validação de horários
                     horarios_validos = self.validar_horarios(horarios_validos)
+
                 dados_linha = {
                     'Dia': data,
                     'Dia_Semana': dia_semana,
@@ -240,6 +259,7 @@ class ExtractorPontoEletronico:
         texto_completo = self.extrair_texto_completo(imagem)
         if not texto_completo:
             return pd.DataFrame()
+
         dados_extraidos = self.processar_texto_ponto(texto_completo)
         if dados_extraidos:
             df = pd.DataFrame(dados_extraidos)
@@ -255,20 +275,24 @@ class ExtractorPontoEletronico:
         if not imagens:
             self.update_progress(10, 10, "Erro: Não foi possível converter o PDF.")
             return []
+
         todas_tabelas = []
         total_imagens = len(imagens)
         for i, imagem in enumerate(imagens, 1):
             # Calcular progresso (3-8 dos 10 steps para processamento das páginas)
             current_progress = 3 + int((i / total_imagens) * 5)
             self.update_progress(current_progress, 10, f"Processando página {i} de {total_imagens}...")
+
             if pages_range and '-' in pages_range:
                 start_page = int(pages_range.split('-')[0])
                 num_pagina_real = start_page + i - 1
             else:
                 num_pagina_real = i
+
             df_pagina = self.processar_pagina(imagem, num_pagina_real)
             if not df_pagina.empty:
                 todas_tabelas.append(df_pagina)
+
         self.update_progress(9, 10, "Consolidando dados extraídos...")
         if todas_tabelas:
             df_consolidado = pd.concat(todas_tabelas, ignore_index=True)
@@ -284,30 +308,34 @@ def process_pdf_background(task_id, pdf_path, pages, model_type):
     try:
         extrator = ExtractorPontoEletronico(model_type, task_id)
         tabelas = extrator.processar_pdf_completo(pdf_path, pages)
+
         if not tabelas:
             task_progress[task_id]['status'] = 'error'
             task_progress[task_id]['error'] = 'Nenhuma tabela foi encontrada no PDF'
             return
 
-        # Gerar arquivo Excel
-        extrator.update_progress(10, 10, "Gerando arquivo Excel...")
+        # Gerar arquivo CSV (MODIFICAÇÃO AQUI)
+        extrator.update_progress(10, 10, "Gerando arquivo CSV...")
         output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df_final = tabelas[0]
-            colunas_finais = ['Dia', 'Dia_Semana', 'Entrada1', 'Saida1', 'Entrada2', 'Saida2']
-            for col in colunas_finais:
-                if col not in df_final.columns:
-                    df_final[col] = "0"
-            df_final = df_final[colunas_finais]
-            df_final = df_final.fillna("0")
-            df_final = df_final.replace("", "0")
-            df_final.to_excel(writer, sheet_name='Ponto_Extraido', index=False)
+        
+        df_final = tabelas[0]
+        colunas_finais = ['Dia', 'Dia_Semana', 'Entrada1', 'Saida1', 'Entrada2', 'Saida2']
+        for col in colunas_finais:
+            if col not in df_final.columns:
+                df_final[col] = "0"
+        df_final = df_final[colunas_finais]
+        df_final = df_final.fillna("0")
+        df_final = df_final.replace("", "0")
+        
+        # Salvar como CSV
+        df_final.to_csv(output, index=False, encoding='utf-8', sep=';') # Use sep=';' para compatibilidade com Excel em português
         output.seek(0)
+        
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f'JBS_ponto_extraido_{timestamp}.xlsx'
-
+        filename = f'JBS_ponto_extraido_{timestamp}.csv' # Alterado para .csv
+        
         # Salvar arquivo temporário
-        temp_file_path = os.path.join(tempfile.gettempdir(), f"{task_id}.xlsx")
+        temp_file_path = os.path.join(tempfile.gettempdir(), f"{task_id}.csv") # Alterado para .csv
         with open(temp_file_path, 'wb') as f:
             f.write(output.getvalue())
 
@@ -337,6 +365,7 @@ def process_pdf():
     try:
         if 'pdf_file' not in request.files:
             return jsonify({'error': 'Nenhum arquivo PDF foi enviado'}), 400
+
         file = request.files['pdf_file']
         pages = request.form.get('pages', '')
         model_type = request.form.get('model_type', '1')
@@ -375,6 +404,7 @@ def process_pdf():
             'message': 'Processamento iniciado',
             'status': 'processing'
         })
+
     except Exception as e:
         return jsonify({'error': f'Erro interno: {str(e)}'}), 500
 
@@ -390,9 +420,12 @@ def download_result(task_id):
     """Endpoint para baixar o resultado processado"""
     if task_id not in task_progress:
         return jsonify({'error': 'Tarefa não encontrada'}), 404
+
     task_info = task_progress[task_id]
+
     if task_info.get('status') != 'completed':
         return jsonify({'error': 'Tarefa ainda não foi concluída'}), 400
+
     file_path = task_info.get('file_path')
     filename = task_info.get('filename')
 
@@ -415,7 +448,7 @@ def download_result(task_id):
 
     return send_file(
         file_path,
-        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        mimetype='text/csv', # MODIFICAÇÃO AQUI: Alterado para mimetype de CSV
         as_attachment=True,
         download_name=filename
     )
