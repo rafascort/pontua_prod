@@ -1,5 +1,5 @@
-// src/Login.js
-import React, { useState, useEffect } from 'react';
+// src/Login.js (Após a remoção do useEffect)
+import React, { useState } from 'react'; // Remova 'useEffect'
 import { useNavigate } from 'react-router-dom';
 import './style.css';
 
@@ -9,13 +9,7 @@ const Login = ({ onLogin }) => {
   const [erro, setErro] = useState('');
   const navigate = useNavigate();
 
-  // Remove todos os &nbsp; de forma segura
-  useEffect(() => {
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    while (walker.nextNode()) {
-      walker.currentNode.nodeValue = walker.currentNode.nodeValue.replace(/\u00A0/g, ' ');
-    }
-  }, []);
+  // O bloco useEffect para remover &nbsp; foi removido daqui.
 
   const handleLogin = (e) => {
     e.preventDefault();
