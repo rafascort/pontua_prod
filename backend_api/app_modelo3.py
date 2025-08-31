@@ -6,7 +6,6 @@ import time
 import uuid
 from datetime import datetime, timedelta
 from io import BytesIO
-
 import cv2
 import numpy as np
 import pandas as pd
@@ -18,6 +17,7 @@ from PIL import Image
 
 app = Flask(__name__)
 CORS(app)
+
 import platform
 if platform.system() == 'Windows':
     pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
@@ -50,10 +50,8 @@ class ExtractorPontoEletronico:
         """Converte PDF para imagens"""
         try:
             self.update_progress(1, 10, "Convertendo PDF para imagens...")
-            
             first_page = None
             last_page = None
-
             if pages_range:
                 if '-' in pages_range:
                     start, end = map(int, pages_range.split('-'))
@@ -61,7 +59,6 @@ class ExtractorPontoEletronico:
                     last_page = end
                 else:
                     first_page = last_page = int(pages_range)
-                
                 imagens = convert_from_path(
                     pdf_path,
                     dpi=dpi,
@@ -70,7 +67,6 @@ class ExtractorPontoEletronico:
                 )
             else:
                 imagens = convert_from_path(pdf_path, dpi=dpi)
-            
             self.update_progress(2, 10, f"PDF convertido com sucesso. {len(imagens)} páginas encontradas.")
             return imagens
         except Exception as e:
@@ -96,7 +92,6 @@ class ExtractorPontoEletronico:
         retorna um intervalo muito amplo (1900-2100) para desativar a filtragem por data.
         """
         date_range_pattern = r'(?:De|From|Período:|Period:)\s*(\d{1,2}/\d{1,2}/\d{4})\s*(?:a|to|até)\s*(\d{1,2}/\d{1,2}/\d{4})'
-        
         match = re.search(date_range_pattern, text, re.IGNORECASE)
         if match:
             start_date_str = match.group(1)
@@ -107,19 +102,17 @@ class ExtractorPontoEletronico:
                 return start_date, end_date
             except ValueError:
                 pass # Fallback to inferring month/year or wide range
-                
+
         # Padrão para "Jornada - Mês Ano"
         month_year_pattern = r'Jornada\s*-\s*(Janeiro|Fevereiro|Março|Abril|Maio|Junho|Julho|Agosto|Setembro|Outubro|Novembro|Dezembro)\s*(\d{4})'
         month_names = {
             'JANEIRO': 1, 'FEVEREIRO': 2, 'MARÇO': 3, 'ABRIL': 4, 'MAIO': 5, 'JUNHO': 6,
             'JULHO': 7, 'AGOSTO': 8, 'SETEMBRO': 9, 'OUTUBRO': 10, 'NOVEMBRO': 11, 'DEZEMBRO': 12
         }
-        
         match_my = re.search(month_year_pattern, text, re.IGNORECASE)
         if match_my:
-            month_name_ocr = match_my.group(1).upper() 
-            year_str = match_my.group(2) 
-            
+            month_name_ocr = match_my.group(1).upper()
+            year_str = match_my.group(2)
             month_num = month_names.get(month_name_ocr)
             if month_num and year_str.isdigit():
                 year_num = int(year_str)
@@ -129,7 +122,7 @@ class ExtractorPontoEletronico:
                 else:
                     end_date = datetime(year_num, month_num + 1, 1) - timedelta(days=1)
                 return start_date, end_date
-            
+
         # Fallback final para um intervalo muito amplo para não filtrar nada por data
         return datetime(1900, 1, 1), datetime(2100, 12, 31)
 
@@ -140,26 +133,20 @@ class ExtractorPontoEletronico:
         """
         header_pattern = r'^\s*Data\s+(?:Dia_Semana\s*)?1[aºª]?\s*Entrada'
         self.column_end_pos = -1 # Reset para cada nova tabela
-
         for i, linha in enumerate(linhas):
             if re.search(header_pattern, linha, re.IGNORECASE):
-                
                 forbidden_columns_patterns = [
                     r'\bCrédito\b', r'\bDébito\b', r'\bH\.\s*intervalo\b',
                     r'\bHoras\s*normais\b', r'\bH\.E\.\s*1\b', r'\bH\.E\.\s*2\b',
                     r'\bAdicional\s*noturno\b', r'\bSaldo\b', r'\bMotivo/Observação\b'
                 ]
-                
                 min_pos = len(linha) # Inicializa com o final da linha
-
                 for pattern in forbidden_columns_patterns:
                     match = re.search(pattern, linha, re.IGNORECASE)
                     if match:
                         min_pos = min(min_pos, match.start())
-                
                 if min_pos < len(linha): # Se alguma coluna proibida foi encontrada
                     self.column_end_pos = min_pos
-                
                 return i
         return 0
 
@@ -206,7 +193,7 @@ class ExtractorPontoEletronico:
             saida2 = "0"
         if entrada2 == "0" and saida2 != "0":
             saida2 = "0"
-            
+
         final_horarios = [entrada1, saida1, entrada2, saida2]
         return final_horarios
 
@@ -229,75 +216,66 @@ class ExtractorPontoEletronico:
                 m = int(time_str[2:])
             except ValueError:
                 pass
-        
+
         # Validação final e formatação
         if 0 <= h <= 23 and 0 <= m <= 59:
             # Explicitamente converter 00:00 para "0"
             if h == 0 and m == 0:
-                return "0" 
+                return "0"
             return f"{h:02d}:{m:02d}"
-        
         return "0"
 
     def processar_texto_ponto(self, texto, page_start_date, page_end_date):
         """Processa o texto extraído para encontrar dados de ponto para o novo formato 'pontomais'"""
         linhas = texto.split('\n')
-        
         indice_inicio = self.detectar_inicio_tabela(linhas)
         indice_fim = self.detectar_fim_tabela(linhas, indice_inicio)
         linhas_tabela = linhas[indice_inicio:indice_fim]
-        
-        dados_extraidos = []
 
+        dados_extraidos = []
         for idx, linha in enumerate(linhas_tabela):
             linha_original = linha.strip()
             current_line_num = indice_inicio + idx
-            
             if not linha_original:
                 continue
 
-            data_match = re.search(r'^\s*(?:\w{2,}[.,]?\s*)?(\d{1,2}/\d{1,2}/\d{4})', linha_original) 
-            
+            data_match = re.search(r'^\s*(?:\w{2,}[.,]?\s*)?(\d{1,2}/\d{1,2}/\d{4})', linha_original)
             if data_match:
-                data_full_match_str = data_match.group(0) 
-                data_str = data_match.group(1) 
-                
+                data_full_match_str = data_match.group(0)
+                data_str = data_match.group(1)
+
                 try:
                     current_line_date = datetime.strptime(data_str, '%d/%m/%Y')
                     if not (page_start_date <= current_line_date <= page_end_date):
-                        continue 
+                        continue
                 except ValueError:
-                    continue 
-                
-                data = data_str 
-                
+                    continue
+
+                data = data_str
                 current_search_pos = linha_original.find(data_full_match_str) + len(data_full_match_str)
-                
                 search_end_limit = len(linha_original)
                 if self.column_end_pos != -1 and self.column_end_pos > current_search_pos:
                     search_end_limit = self.column_end_pos
 
                 horarios_extraidos_seq = []
-                time_pattern_regex = r'(\d{1,2}:[0-5]\d|\d{4})' 
-                
-                for i in range(4): 
+                time_pattern_regex = r'(\d{1,2}:[0-5]\d|\d{4})'
+                for i in range(4):
                     if current_search_pos >= search_end_limit:
                         horarios_extraidos_seq.append("0")
                         continue
-
                     match_time = re.search(time_pattern_regex, linha_original[current_search_pos:search_end_limit])
                     if match_time:
                         time_str = match_time.group(1)
                         parsed_time = self._parse_time(time_str)
                         horarios_extraidos_seq.append(parsed_time)
-                        current_search_pos += match_time.end() 
+                        current_search_pos += match_time.end()
                     else:
                         horarios_extraidos_seq.append("0")
-                
+
                 while len(horarios_extraidos_seq) < 4:
                     horarios_extraidos_seq.append("0")
-                horarios_validos_parsed = horarios_extraidos_seq[:4] 
 
+                horarios_validos_parsed = horarios_extraidos_seq[:4]
                 non_zero_parsed_times_count = sum(1 for h in horarios_validos_parsed if h != "0")
 
                 palavras_que_zeram_tudo = [
@@ -305,7 +283,6 @@ class ExtractorPontoEletronico:
                     'ATESTADO', 'MÉDICO', 'FALTA', 'LICENÇA', 'FÉRIAS', 'DISPENSA',
                     'AUSÊNCIA JUSTIFICADA', 'AUSENCIA JUSTIFICADA', 'ABONO'
                 ]
-                
                 horarios_finais = []
                 matched_zero_word = None
                 for palavra in palavras_que_zeram_tudo:
@@ -317,12 +294,11 @@ class ExtractorPontoEletronico:
                     horarios_finais = ["0", "0", "0", "0"]
                 else:
                     horarios_finais = self.validar_horarios(horarios_validos_parsed)
-                
+
                 if horarios_finais[0] != "0" and horarios_finais[1] != "0":
                     try:
                         entrada1_dt = datetime.strptime(horarios_finais[0], '%H:%M')
                         saida1_dt = datetime.strptime(horarios_finais[1], '%H:%M')
-                        
                         if saida1_dt.hour == 1 and 5 <= entrada1_dt.hour <= 10 and saida1_dt < entrada1_dt:
                             horarios_finais[1] = f"11:{saida1_dt.minute:02d}"
                     except ValueError:
@@ -330,7 +306,7 @@ class ExtractorPontoEletronico:
 
                 while len(horarios_finais) < 4:
                     horarios_finais.append("0")
-                horarios_finais = horarios_finais[:4] 
+                horarios_finais = horarios_finais[:4]
 
                 dados_linha = {
                     'Data': data,
@@ -342,19 +318,17 @@ class ExtractorPontoEletronico:
                 dados_extraidos.append(dados_linha)
             else:
                 pass # Linha sem data válida no início é ignorada.
-        
         return dados_extraidos
 
-    def processar_pagina(self, imagem, num_pagina): 
+    def processar_pagina(self, imagem, num_pagina):
         """Processa uma página completa usando OCR direto"""
         texto_completo = self.extrair_texto_completo(imagem)
         if not texto_completo:
             return pd.DataFrame()
-        
-        page_start_date, page_end_date = self._extrair_intervalo_datas_cabecalho(texto_completo)
 
+        page_start_date, page_end_date = self._extrair_intervalo_datas_cabecalho(texto_completo)
         dados_extraidos = self.processar_texto_ponto(texto_completo, page_start_date, page_end_date)
-        
+
         if dados_extraidos:
             df = pd.DataFrame(dados_extraidos)
             df['Pagina'] = num_pagina
@@ -365,38 +339,32 @@ class ExtractorPontoEletronico:
     def processar_pdf_completo(self, pdf_path, pages_range=None):
         """Processa PDF completo"""
         self.update_progress(0, 10, "Iniciando processamento...")
-        
         imagens = self.converter_pdf_imagens(pdf_path, pages_range)
         if not imagens:
             self.update_progress(10, 10, "Erro: Não foi possível converter o PDF.")
             return []
-        
+
         todas_tabelas = []
         total_imagens = len(imagens)
         for i, imagem in enumerate(imagens, 1):
             current_progress = 3 + int((i / total_imagens) * 5)
             self.update_progress(current_progress, 10, f"Processando página {i} de {total_imagens}...")
-            
             if pages_range and '-' in pages_range:
                 start_page = int(pages_range.split('-')[0])
                 num_pagina_real = start_page + i - 1
             else:
-                num_pagina_real = i 
-            
-            df_pagina = self.processar_pagina(imagem, num_pagina_real) 
+                num_pagina_real = i
+            df_pagina = self.processar_pagina(imagem, num_pagina_real)
             if not df_pagina.empty:
                 todas_tabelas.append(df_pagina)
-        
+
         self.update_progress(9, 10, "Consolidando dados extraídos...")
-        
         if todas_tabelas:
             df_consolidado = pd.concat(todas_tabelas, ignore_index=True)
-            
             df_consolidado['Data_dt'] = pd.to_datetime(df_consolidado['Data'], format='%d/%m/%Y', errors='coerce')
             df_consolidado.drop_duplicates(subset=['Data_dt', '1ª Entrada', '1ª Saída', '2ª Entrada', '2ª Saída'], keep='first', inplace=True)
             df_consolidado.sort_values(by='Data_dt', inplace=True)
             df_consolidado.drop(columns=['Data_dt'], inplace=True)
-
             self.update_progress(10, 10, "Processamento concluído com sucesso!")
             return [df_consolidado]
         else:
@@ -405,51 +373,48 @@ class ExtractorPontoEletronico:
 
 # Função para processar em background
 def process_pdf_background(task_id, pdf_path, pages, model_type):
-    """Processa o PDF em background"""
+    """Processa o PDF em background e gera um arquivo CSV"""
     try:
         extrator = ExtractorPontoEletronico(model_type, task_id)
         tabelas = extrator.processar_pdf_completo(pdf_path, pages)
-        
+
         if not tabelas:
             task_progress[task_id]['status'] = 'error'
             task_progress[task_id]['error'] = 'Nenhuma tabela foi encontrada no PDF'
             return
 
-        extrator.update_progress(10, 10, "Gerando arquivo Excel...")
+        extrator.update_progress(10, 10, "Gerando arquivo CSV...")
         output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df_final = tabelas[0]
-            
-            df_final['Data'] = pd.to_datetime(df_final['Data'], format='%d/%m/%Y', errors='coerce')
-            
-            weekday_map = {
-                'Mon': 'Seg', 'Tue': 'Ter', 'Wed': 'Qua', 'Thu': 'Qui',
-                'Fri': 'Sex', 'Sat': 'Sab', 'Sun': 'Dom'
-            }
-            df_final['Dia_Semana'] = df_final['Data'].dt.strftime('%a').map(weekday_map)
-            
-            df_final['Data'] = df_final['Data'].dt.strftime('%d/%m/%Y')
+        
+        df_final = tabelas[0]
+        df_final['Data'] = pd.to_datetime(df_final['Data'], format='%d/%m/%Y', errors='coerce')
+        weekday_map = {
+            'Mon': 'Seg', 'Tue': 'Ter', 'Wed': 'Qua', 'Thu': 'Qui',
+            'Fri': 'Sex', 'Sat': 'Sab', 'Sun': 'Dom'
+        }
+        df_final['Dia_Semana'] = df_final['Data'].dt.strftime('%a').map(weekday_map)
+        df_final['Data'] = df_final['Data'].dt.strftime('%d/%m/%Y')
+        colunas_finais = ['Data', 'Dia_Semana', '1ª Entrada', '1ª Saída', '2ª Entrada', '2ª Saída']
+        for col in colunas_finais:
+            if col not in df_final.columns:
+                df_final[col] = "0"
+        df_final = df_final[colunas_finais]
+        df_final = df_final.fillna("0")
+        df_final = df_final.replace("", "0")
+        
+        # --- Alteração aqui para CSV ---
+        df_final.to_csv(output, index=False, sep=';', encoding='utf-8-sig') # Usando ponto e vírgula como separador e encoding para compatibilidade
+        # --- Fim da alteração ---
 
-            colunas_finais = ['Data', 'Dia_Semana', '1ª Entrada', '1ª Saída', '2ª Entrada', '2ª Saída']
-            
-            for col in colunas_finais:
-                if col not in df_final.columns:
-                    df_final[col] = "0"
-            
-            df_final = df_final[colunas_finais]
-            df_final = df_final.fillna("0")
-            df_final = df_final.replace("", "0")
-            
-            df_final.to_excel(writer, sheet_name='Ponto_Extraido', index=False)
         output.seek(0)
-
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f'Ponto_pontomais_extraido_{timestamp}.xlsx'
+        filename = f'Ponto_pontomais_extraido_{timestamp}.csv' # Alterado para .csv
+        temp_file_path = os.path.join(tempfile.gettempdir(), f"{task_id}.csv") # Alterado para .csv
 
-        temp_file_path = os.path.join(tempfile.gettempdir(), f"{task_id}.xlsx")
         with open(temp_file_path, 'wb') as f:
             f.write(output.getvalue())
 
+        time.sleep(0.5)
         task_progress[task_id].update({
             'status': 'completed',
             'file_path': temp_file_path,
@@ -471,18 +436,17 @@ def process_pdf_background(task_id, pdf_path, pages, model_type):
 
 @app.route('/process', methods=['POST'])
 def process_pdf():
-    """Endpoint principal para processar PDF - Versão com monitoramento"""
     try:
         if 'pdf_file' not in request.files:
             return jsonify({'error': 'Nenhum arquivo PDF foi enviado'}), 400
         file = request.files['pdf_file']
         pages = request.form.get('pages', '')
-        model_type = request.form.get('model_type', '1') 
+        model_type = request.form.get('model_type', '1')
+
         if file.filename == '':
             return jsonify({'error': 'Nenhum arquivo selecionado'}), 400
 
         task_id = str(uuid.uuid4())
-
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
             file.save(tmp_file.name)
             pdf_path = tmp_file.name
@@ -513,21 +477,22 @@ def process_pdf():
 
 @app.route('/progress/<task_id>', methods=['GET'])
 def get_progress(task_id):
-    """Endpoint para consultar o progresso de uma tarefa"""
     if task_id not in task_progress:
         return jsonify({'error': 'Tarefa não encontrada'}), 404
     return jsonify(task_progress[task_id])
 
 @app.route('/download/<task_id>', methods=['GET'])
 def download_result(task_id):
-    """Endpoint para baixar o resultado processado"""
     if task_id not in task_progress:
         return jsonify({'error': 'Tarefa não encontrada'}), 404
+
     task_info = task_progress[task_id]
     if task_info.get('status') != 'completed':
         return jsonify({'error': 'Tarefa ainda não foi concluída'}), 400
+
     file_path = task_info.get('file_path')
     filename = task_info.get('filename')
+
     if not file_path or not os.path.exists(file_path):
         return jsonify({'error': 'Arquivo não encontrado'}), 404
 
@@ -546,7 +511,7 @@ def download_result(task_id):
 
     return send_file(
         file_path,
-        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        mimetype='text/csv',  # Alterado para mimetype de CSV
         as_attachment=True,
         download_name=filename
     )
