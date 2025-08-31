@@ -7,14 +7,14 @@ import ProgressModal from './ProgressModal';
 const API_URLS = {
   '1': '/api1',
   '2': '/api2',
-  'teste': '/api3',
+  '3': '/api3', // Alterado: 'teste' para '3', e este será o endpoint para a porta 5002 via NGINX
 };
 
 // --- NOVO: Mapeamento de caminhos das imagens dos modelos ---
 const MODEL_IMAGE_PATHS = {
   '1': process.env.PUBLIC_URL + '/Modelo1.png',
   '2': process.env.PUBLIC_URL + '/Modelo2.png',
-  'teste': null, // Não tem imagem para o modelo de teste
+  '3': null, // Alterado: 'teste' para '3', e não tem imagem para este modelo
 };
 // ------------------------------------------------------------------
 
@@ -34,7 +34,6 @@ function MainApp() {
     progress: 0,
     message: 'Iniciando...'
   });
-
   const fileInputRef = useRef(null);
   const progressIntervalRef = useRef(null);
 
@@ -204,20 +203,20 @@ function MainApp() {
                   setSelectedModelImage(MODEL_IMAGE_PATHS['2']);
                 }}
               />
-              BRF Ponto (Modelo 2) {/* Alterado aqui */}
+              BRF Ponto (Modelo 2)
             </label>
             <label>
               <input
                 type="radio"
                 name="modelType"
-                value="teste"
-                checked={modelType === 'teste'}
+                value="3" // Alterado: 'teste' para '3'
+                checked={modelType === '3'}
                 onChange={(e) => {
                   setModelType(e.target.value);
-                  setSelectedModelImage(null);
+                  setSelectedModelImage(MODEL_IMAGE_PATHS['3']); // Usará null, conforme definido
                 }}
               />
-              Teste (Debug)
+              Ponto Mais (Modelo 3) {/* Alterado o texto */}
             </label>
             {/* Renderiza a imagem com base no modelType, usando o mapa de caminhos */}
             {MODEL_IMAGE_PATHS[modelType] && (
@@ -272,3 +271,4 @@ function MainApp() {
 }
 
 export default MainApp;
+
