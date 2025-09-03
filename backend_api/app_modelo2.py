@@ -5,7 +5,7 @@ from io import BytesIO
 import cv2
 import numpy as np
 import pytesseract
-from pdf2image import convert_from_path
+from pdf2image import convert_from_path # Importação já existente
 from PIL import Image
 import re
 from datetime import datetime, timedelta
@@ -42,19 +42,22 @@ class ExtractorPontoEletronico:
     def update_progress(self, current_step, total_steps, message):
         """Atualiza o progresso da tarefa"""
         if self.task_id:
-            progress_percent = int((current_step / total_steps) * 100)
+            # Garante que total_steps não seja zero para evitar divisão por zero
+            effective_total_steps = total_steps if total_steps > 0 else 1
+            progress_percent = int((current_step / effective_total_steps) * 100)
             task_progress[self.task_id].update({
                 'progress': progress_percent,
                 'message': message,
                 'current_step': current_step,
-                'total_steps': total_steps,
+                'total_steps': total_steps, # Agora total_steps será o número de páginas
                 'timestamp': datetime.now().isoformat()
             })
 
     def converter_pdf_imagens(self, pdf_path, pages_range=None, dpi=300):
         """Converte PDF para imagens"""
         try:
-            self.update_progress(1, 10, "Convertendo PDF para imagens...")
+            # Removido update_progress específico daqui. O progresso geral será 
+            # gerenciado por processar_pdf_completo, que terá o número total de páginas.
             if pages_range:
                 if '-' in pages_range:
                     start, end = map(int, pages_range.split('-'))
@@ -70,10 +73,12 @@ class ExtractorPontoEletronico:
                 )
             else:
                 imagens = convert_from_path(pdf_path, dpi=dpi)
-            self.update_progress(2, 10, f"PDF convertido com sucesso. {len(imagens)} páginas encontradas.")
+            
+            # Removido update_progress específico daqui.
             return imagens
         except Exception as e:
-            self.update_progress(2, 10, f"Erro ao converter PDF para imagens: {str(e)}")
+            # A mensagem de erro será capturada e reportada pelo processar_pdf_completo
+            print(f"Erro ao converter PDF para imagens: {str(e)}")
             return []
 
     def extrair_texto_completo(self, imagem):
@@ -118,7 +123,7 @@ class ExtractorPontoEletronico:
         for i, linha in enumerate(linhas):
             is_date_pattern = re.search(r'^\s*(\d{1,2})\s+[A-Z]', linha)
             has_time_or_special_word = re.search(r'\b([0-2]?\d:[0-5]\d)\b', linha) or \
-                                       re.search(palavras_especiais_regex, linha, re.IGNORECASE)
+                                         re.search(palavras_especiais_regex, linha, re.IGNORECASE)
             if is_date_pattern and has_time_or_special_word:
                 return i
         return 0
@@ -165,33 +170,26 @@ class ExtractorPontoEletronico:
         """Processa o texto extraído para encontrar dados de ponto."""
         if not self.extrair_periodo_documento(texto):
             return []
-
         linhas = texto.split('\n')
         indice_inicio = self.detectar_inicio_tabela(linhas)
         indice_fim = self.detectar_fim_tabela(linhas, indice_inicio)
-
         if indice_inicio >= indice_fim:
             return []
-
         linhas_tabela = linhas[indice_inicio:indice_fim]
         palavras_especiais = [
             'FOLG', 'COMP', 'FER', 'ATESTADO', 'REPOSO', 'FOLGA', 'DESCANSO', 'FERIADO', 'ABONO', 'FÉRIAS', '0100'
         ]
-
         dados_extraidos = []
         current_date_tracker = self.periodo_inicio
         processed_dates = set()
-
         while current_date_tracker <= self.periodo_fim:
             # ALTERAÇÃO AQUI: Mudar o separador de '.' para '/'
             data_str = current_date_tracker.strftime('%d/%m/%Y')
             found_entry = False
-
             for linha in linhas_tabela:
                 linha = linha.strip()
                 if not linha:
                     continue
-
                 day_match = re.search(r'^\s*(\d{1,2})\s+[A-Z]', linha)
                 if day_match:
                     day_num = int(day_match.group(1))
@@ -200,7 +198,6 @@ class ExtractorPontoEletronico:
                         parte_para_horarios = linha[day_match.end():]
                         horarios = re.findall(r'\b([0-2]?\d:[0-5]\d)\b', parte_para_horarios)
                         horarios_processados = self.validar_horarios(horarios)
-
                         dados_linha = {
                             'Dia': data_str,
                             'Dia_Semana': self.dias_semana_map.get(current_date_tracker.strftime('%a'), ''),
@@ -212,7 +209,6 @@ class ExtractorPontoEletronico:
                         dados_extraidos.append(dados_linha)
                         found_entry = True
                         break
-
             if not found_entry:
                 # Se a data não foi encontrada, adiciona uma entrada padrão
                 dados_linha = {
@@ -224,10 +220,8 @@ class ExtractorPontoEletronico:
                     'Saida2': '0'
                 }
                 dados_extraidos.append(dados_linha)
-
             # Avança para o próximo dia
             current_date_tracker += timedelta(days=1)
-
         return dados_extraidos
 
     def processar_pagina(self, imagem, num_pagina):
@@ -235,9 +229,7 @@ class ExtractorPontoEletronico:
         texto_completo = self.extrair_texto_completo(imagem)
         if not texto_completo:
             return pd.DataFrame()
-
         dados_extraidos = self.processar_texto_ponto(texto_completo)
-
         if dados_extraidos:
             df = pd.DataFrame(dados_extraidos)
             df['Pagina'] = num_pagina
@@ -247,17 +239,30 @@ class ExtractorPontoEletronico:
 
     def processar_pdf_completo(self, pdf_path, pages_range=None):
         """Processa PDF completo"""
-        self.update_progress(0, 10, "Iniciando processamento...")
+        # Inicializa o progresso com um total_steps temporário (1), será atualizado logo abaixo
+        self.update_progress(0, 1, "Iniciando processamento e convertendo PDF para imagens...") 
+        
         imagens = self.converter_pdf_imagens(pdf_path, pages_range)
+        
         if not imagens:
-            self.update_progress(10, 10, "Erro: Não foi possível converter o PDF.")
+            # Se não houver imagens, define total_steps como 1 para evitar divisão por zero no frontend
+            self.update_progress(1, 1, "Erro: Não foi possível converter o PDF ou nenhuma página encontrada.")
             return []
+        
+        total_paginas_reais = len(imagens)
+        
+        # ATUALIZAÇÃO CRÍTICA: Define o total_steps real com base no número de páginas
+        # Isso garante que o frontend receba o número correto de "etapas" (páginas)
+        if self.task_id:
+            task_progress[self.task_id]['total_steps'] = total_paginas_reais
+        
+        # Atualiza o progresso com o número real de páginas a serem processadas
+        self.update_progress(0, total_paginas_reais, f"PDF convertido. {total_paginas_reais} páginas para processar.")
 
         todas_tabelas = []
-        total_imagens = len(imagens)
-        for i, imagem in enumerate(imagens, 1):
-            current_progress = 3 + int((i / total_imagens) * 5)
-            self.update_progress(current_progress, 10, f"Processando página {i} de {total_imagens}...")
+        for i, imagem in enumerate(imagens, 1): # i representa a página atual (começa em 1)
+            # A cada página processada, atualiza o progresso usando o número real de páginas
+            self.update_progress(i, total_paginas_reais, f"Processando página {i} de {total_paginas_reais}...")
 
             if pages_range and '-' in pages_range:
                 start_page = int(pages_range.split('-')[0])
@@ -269,13 +274,15 @@ class ExtractorPontoEletronico:
             if not df_pagina.empty:
                 todas_tabelas.append(df_pagina)
 
-        self.update_progress(9, 10, "Consolidando dados extraídos...")
+        # Após processar todas as páginas
+        self.update_progress(total_paginas_reais, total_paginas_reais, "Consolidando dados extraídos...")
+
         if todas_tabelas:
             df_consolidado = pd.concat(todas_tabelas, ignore_index=True)
-            self.update_progress(10, 10, "Processamento concluído com sucesso!")
+            self.update_progress(total_paginas_reais, total_paginas_reais, "Processamento concluído com sucesso!")
             return [df_consolidado]
         else:
-            self.update_progress(10, 10, "Nenhum dado foi extraído.")
+            self.update_progress(total_paginas_reais, total_paginas_reais, "Nenhum dado foi extraído.")
             return []
 
 def process_pdf_background(task_id, pdf_path, pages, model_type):
@@ -287,12 +294,18 @@ def process_pdf_background(task_id, pdf_path, pages, model_type):
         if not tabelas:
             task_progress[task_id]['status'] = 'error'
             task_progress[task_id]['error'] = 'Nenhuma tabela foi encontrada no PDF'
+            # Garante que total_steps seja pelo menos 1 se ainda for 0 de um erro inicial
+            if task_progress[task_id].get('total_steps', 0) == 0:
+                task_progress[task_id]['total_steps'] = 1
             return
 
-        extrator.update_progress(10, 10, "Gerando arquivo CSV...") # Alterado para CSV
+        # Gerar arquivo CSV
+        # Usa o total_steps já definido no task_progress pelo processar_pdf_completo
+        final_total_steps = task_progress[task_id].get('total_steps', 1) 
+        extrator.update_progress(final_total_steps, final_total_steps, "Gerando arquivo CSV...")
+        
         output = BytesIO()
         df_final = tabelas[0]
-
         colunas_finais = ['Dia', 'Dia_Semana', 'Entrada1', 'Saida1', 'Entrada2', 'Saida2']
         for col in colunas_finais:
             if col not in df_final.columns:
@@ -304,9 +317,10 @@ def process_pdf_background(task_id, pdf_path, pages, model_type):
         # Salva o DataFrame como CSV no BytesIO
         df_final.to_csv(output, index=False, sep=';', encoding='utf-8') # Usando ';' como separador para compatibilidade BR
         output.seek(0)
-
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f'BRF_ponto_extraido_{timestamp}.csv' # Alterado para .csv
+
+        # Salvar arquivo temporário
         temp_file_path = os.path.join(tempfile.gettempdir(), f"{task_id}.csv") # Alterado para .csv
         with open(temp_file_path, 'wb') as f:
             f.write(output.getvalue())
@@ -320,6 +334,9 @@ def process_pdf_background(task_id, pdf_path, pages, model_type):
         })
 
     except Exception as e:
+        # Garante que total_steps seja pelo menos 1 em caso de erro, especialmente se foi 0 inicialmente
+        if task_id in task_progress and task_progress[task_id].get('total_steps', 0) == 0:
+            task_progress[task_id]['total_steps'] = 1
         task_progress[task_id].update({
             'status': 'error',
             'error': str(e),
@@ -336,7 +353,6 @@ def process_pdf():
     try:
         if 'pdf_file' not in request.files:
             return jsonify({'error': 'Nenhum arquivo PDF foi enviado'}), 400
-
         file = request.files['pdf_file']
         pages = request.form.get('pages', '')
         model_type = request.form.get('model_type', '2')
@@ -349,13 +365,14 @@ def process_pdf():
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
             file.save(tmp_file.name)
             pdf_path = tmp_file.name
-
+        
+        # Inicializar progresso com um total_steps temporário (será atualizado pelo extrator)
         task_progress[task_id] = {
             'progress': 0,
             'message': 'Tarefa iniciada...',
             'status': 'processing',
             'current_step': 0,
-            'total_steps': 10,
+            'total_steps': 1, # Placeholder, será atualizado pelo ExtractorPontoEletronico com o número de páginas
             'timestamp': datetime.now().isoformat()
         }
 
@@ -371,7 +388,6 @@ def process_pdf():
             'message': 'Processamento iniciado',
             'status': 'processing'
         })
-
     except Exception as e:
         return jsonify({'error': f'Erro interno: {str(e)}'}), 500
 
@@ -387,8 +403,8 @@ def download_result(task_id):
     """Endpoint para baixar o resultado processado"""
     if task_id not in task_progress:
         return jsonify({'error': 'Tarefa não encontrada'}), 404
-
     task_info = task_progress[task_id]
+
     if task_info.get('status') != 'completed':
         return jsonify({'error': 'Tarefa ainda não foi concluída'}), 400
 

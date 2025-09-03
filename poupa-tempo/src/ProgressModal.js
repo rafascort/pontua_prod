@@ -1,9 +1,9 @@
+// src/ProgressModal.js
 import React from 'react';
 import './ProgressModal.css';
 
 const ProgressModal = ({ current, total, onClose }) => {
   const percentage = total > 0 ? Math.round((current / total) * 100) : 0;
-
   return (
     <div className="progress-modal-overlay">
       <div className="progress-modal">
@@ -13,7 +13,6 @@ const ProgressModal = ({ current, total, onClose }) => {
             ×
           </button>
         </div>
-
         <div className="progress-content">
           <div className="progress-circle">
             <svg width="120" height="120" viewBox="0 0 120 120">
@@ -43,26 +42,23 @@ const ProgressModal = ({ current, total, onClose }) => {
               <span className="percentage">{percentage}%</span>
             </div>
           </div>
-
           <div className="progress-info">
             <div className="page-counter">
               <span className="current-page">{current}</span>
               <span className="separator">/</span>
               <span className="total-pages">{total}</span>
-              <span className="pages-label">etapas</span>
+              <span className="pages-label">páginas</span> {/* ALTERADO AQUI: "etapas" para "páginas" */}
             </div>
-
             <div className="progress-bar">
-              <div 
+              <div
                 className="progress-fill"
                 style={{ width: `${percentage}%` }}
               ></div>
             </div>
-
             <div className="status-text">
               {current === 0 && total === 0 ? 'Iniciando...' :
                current === total && total > 0 ? 'Finalizando...' :
-               `Executando etapa ${current} de ${total}`}
+               `Processando página ${current} de ${total}`} {/* ALTERADO AQUI: "Executando etapa" para "Processando página" */}
             </div>
           </div>
         </div>

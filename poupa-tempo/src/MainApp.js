@@ -30,7 +30,7 @@ function MainApp() {
   const [currentTaskId, setCurrentTaskId] = useState(null);
   const [progressData, setProgressData] = useState({
     current_step: 0,
-    total_steps: 10,
+    total_steps: 1, // Alterado para 1 como placeholder inicial, será atualizado pelo backend
     progress: 0,
     message: 'Iniciando...'
   });
@@ -69,11 +69,12 @@ function MainApp() {
         const data = await response.json();
         setProgressData({
           current_step: data.current_step || 0,
-          total_steps: data.total_steps || 10,
+          total_steps: data.total_steps || 1, // Usar total_steps do backend, com 1 como fallback
           progress: data.progress || 0,
           message: data.message || 'Processando...'
         });
         setStatusMessage(data.message || 'Processando...');
+
         if (data.status === 'completed') {
           const downloadUrl = `${API_URLS[modelType]}/download/${taskId}`;
           const a = document.createElement('a');
@@ -103,6 +104,12 @@ function MainApp() {
       }
     } catch (error) {
       console.error('Erro ao verificar progresso:', error);
+      // Opcional: Atualizar status para erro no modal também
+      setProgressData(prev => ({
+        ...prev,
+        message: `Erro ao verificar progresso: ${error.message}`,
+        status: 'error'
+      }));
     }
   };
 
@@ -115,45 +122,61 @@ function MainApp() {
       alert('Por favor, informe o intervalo de páginas.');
       return;
     }
+
     setIsProcessing(true);
     setShowProgressModal(true);
     setProgressData({
       current_step: 0,
-      total_steps: 10,
+      total_steps: 1, // Placeholder inicial, será atualizado pelo backend
       progress: 0,
       message: 'Iniciando processamento...'
     });
     setStatusMessage('Iniciando processamento...');
+
     const apiUrl = `${API_URLS[modelType]}/process`;
     const formData = new FormData();
     formData.append('pdf_file', selectedFile);
     formData.append('pages', pageRange);
     formData.append('model_type', modelType);
+
     try {
       const response = await fetch(apiUrl, {
         method: 'POST',
         body: formData,
       });
+
       if (!response.ok) {
         const errorResult = await response.json();
         throw new Error(errorResult.error || 'Ocorreu um erro no servidor.');
       }
+
       const result = await response.json();
       const taskId = result.task_id;
       setCurrentTaskId(taskId);
+
+      // Inicia o polling de progresso
       progressIntervalRef.current = setInterval(() => {
         checkProgress(taskId);
       }, 1000);
+
     } catch (error) {
       console.error('Ocorreu um erro:', error);
       setStatusMessage(`Erro: ${error.message}`);
       setIsProcessing(false);
       setShowProgressModal(false);
+      // Limpa o intervalo se houver um erro antes mesmo de iniciar o polling
+      if (progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current);
+        progressIntervalRef.current = null;
+      }
     }
   };
 
   const handleCloseModal = () => {
     setShowProgressModal(false);
+    // Opcional: Se a tarefa ainda estiver em andamento, você pode querer cancelá-la
+    // ou apenas parar de mostrar o modal sem interromper o processo no backend.
+    // Por enquanto, apenas fechará o modal.
   };
 
   useEffect(() => {
@@ -262,7 +285,7 @@ function MainApp() {
       {showProgressModal && (
         <ProgressModal
           current={progressData.current_step}
-          total={progressData.total_steps}
+          total={progressData.total_steps} // Receberá o total de páginas do backend
           onClose={handleCloseModal}
         />
       )}
