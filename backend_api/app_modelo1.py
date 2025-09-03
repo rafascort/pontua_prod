@@ -455,7 +455,7 @@ def download_result(task_id):
 
     def remove_file():
         """Remove o arquivo após o download"""
-        time.sleep(10) # Aguardar um pouco antes de remover
+        time.sleep(5) # Aguardar um pouco antes de remover
         try:
             os.unlink(file_path)
             del task_progress[task_id] # Remover da memória também
@@ -484,4 +484,3 @@ def health_check():
 
 if __name__ == '__main__':
     app.run(host='127.0.0.1', port=5000, debug=False)
-

@@ -7,14 +7,16 @@ import ProgressModal from './ProgressModal';
 const API_URLS = {
   '1': '/api1',
   '2': '/api2',
-  '3': '/api3', // Alterado: 'teste' para '3', e este será o endpoint para a porta 5002 via NGINX
+  '3': '/api3',
+  '4': '/api4'
 };
 
 // --- NOVO: Mapeamento de caminhos das imagens dos modelos ---
 const MODEL_IMAGE_PATHS = {
   '1': process.env.PUBLIC_URL + '/Modelo1.png',
   '2': process.env.PUBLIC_URL + '/Modelo2.png',
-  '3': null, // Alterado: 'teste' para '3', e não tem imagem para este modelo
+  '3': process.env.PUBLIC_URL + '/Modelo3.png',
+  '4': process.env.PUBLIC_URL + '/Modelo4.png'
 };
 // ------------------------------------------------------------------
 
@@ -236,7 +238,20 @@ function MainApp() {
                 checked={modelType === '3'}
                 onChange={(e) => {
                   setModelType(e.target.value);
-                  setSelectedModelImage(MODEL_IMAGE_PATHS['3']); // Usará null, conforme definido
+                  setSelectedModelImage(MODEL_IMAGE_PATHS['3']); 
+                }}
+              />
+              Ponto Mais (Modelo 3) {/* Alterado o texto */}
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="modelType"
+                value="4" 
+                checked={modelType === '4'}
+                onChange={(e) => {
+                  setModelType(e.target.value);
+                  setSelectedModelImage(MODEL_IMAGE_PATHS['4']);
                 }}
               />
               Ponto Mais (Modelo 3) {/* Alterado o texto */}
@@ -294,4 +309,3 @@ function MainApp() {
 }
 
 export default MainApp;
-

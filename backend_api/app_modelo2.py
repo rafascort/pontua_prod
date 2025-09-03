@@ -416,7 +416,7 @@ def download_result(task_id):
 
     def remove_file():
         """Remove o arquivo após o download"""
-        time.sleep(2) # Pequeno atraso para garantir que o download foi iniciado
+        time.sleep(5) # Pequeno atraso para garantir que o download foi iniciado
         try:
             os.unlink(file_path)
             del task_progress[task_id]
@@ -444,4 +444,3 @@ def health_check():
 
 if __name__ == '__main__':
     app.run(host='127.0.0.1', port=5001, debug=False) # IMPORTANTE: Rodar na porta 5001
-
