@@ -254,7 +254,7 @@ function MainApp() {
                   setSelectedModelImage(MODEL_IMAGE_PATHS['4']);
                 }}
               />
-              Ponto Mais (Modelo 3) {/* Alterado o texto */}
+              Minuano (Modelo 4) {/* Alterado o texto */}
             </label>
             {/* Renderiza a imagem com base no modelType, usando o mapa de caminhos */}
             {MODEL_IMAGE_PATHS[modelType] && (
