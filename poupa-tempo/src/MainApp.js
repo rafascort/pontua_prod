@@ -1,24 +1,18 @@
 // src/MainApp.js
 import React, { useState, useRef, useEffect } from 'react';
-import './App.css'; // Mantenha o CSS, pois é para o layout geral
+import './App.css';
 import ProgressModal from './ProgressModal';
 
-// RECOMENDADO: Usar caminhos relativos para a API, já que o NGINX fará o proxy
-const API_URLS = {
-  '1': '/api1',
-  '2': '/api2',
-  '3': '/api3',
-  '4': '/api4'
-};
+// O API_BASE_URL agora aponta para o novo serviço de gerenciamento de fila
+const API_BASE_URL = '/api'; 
 
-// --- NOVO: Mapeamento de caminhos das imagens dos modelos ---
+// Mapeamento de caminhos das imagens dos modelos (já estava correto)
 const MODEL_IMAGE_PATHS = {
   '1': process.env.PUBLIC_URL + '/Modelo1.png',
   '2': process.env.PUBLIC_URL + '/Modelo2.png',
   '3': process.env.PUBLIC_URL + '/Modelo3.png',
   '4': process.env.PUBLIC_URL + '/Modelo4.png'
 };
-// ------------------------------------------------------------------
 
 function MainApp() {
   const [selectedFile, setSelectedFile] = useState(null);
@@ -32,22 +26,21 @@ function MainApp() {
   const [currentTaskId, setCurrentTaskId] = useState(null);
   const [progressData, setProgressData] = useState({
     current_step: 0,
-    total_steps: 1, // Alterado para 1 como placeholder inicial, será atualizado pelo backend
+    total_steps: 1,
     progress: 0,
-    message: 'Iniciando...'
+    message: 'Iniciando...' // Mensagem inicial
   });
   const fileInputRef = useRef(null);
   const progressIntervalRef = useRef(null);
 
-  // --- NOVO useEffect para pré-carregar imagens ---
   useEffect(() => {
     Object.values(MODEL_IMAGE_PATHS).forEach(path => {
-      if (path) { // Garante que só tenta carregar se o path não for null
+      if (path) {
         const img = new Image();
         img.src = path;
       }
     });
-  }, []); // Array de dependências vazio para rodar apenas uma vez na montagem
+  }, []);
 
   const handleFileSelect = (event) => {
     const file = event.target.files[0];
@@ -66,25 +59,28 @@ function MainApp() {
 
   const checkProgress = async (taskId) => {
     try {
-      const response = await fetch(`${API_URLS[modelType]}/progress/${taskId}`);
+      // O endpoint de progresso agora é genérico para o queue_manager
+      const response = await fetch(`${API_BASE_URL}/progress/${taskId}`);
       if (response.ok) {
         const data = await response.json();
         setProgressData({
           current_step: data.current_step || 0,
-          total_steps: data.total_steps || 1, // Usar total_steps do backend, com 1 como fallback
+          total_steps: data.total_steps || 1,
           progress: data.progress || 0,
-          message: data.message || 'Processando...'
+          message: data.message || 'Processando...' // Usa a mensagem do backend
         });
         setStatusMessage(data.message || 'Processando...');
 
         if (data.status === 'completed') {
-          const downloadUrl = `${API_URLS[modelType]}/download/${taskId}`;
+          // O download também é genérico para o queue_manager
+          const downloadUrl = `${API_BASE_URL}/download/${taskId}`;
           const a = document.createElement('a');
           a.href = downloadUrl;
-          a.download = data.filename || 'resultado.xlsx';
+          a.download = data.filename || 'resultado.csv'; 
           document.body.appendChild(a);
           a.click();
           a.remove();
+
           setStatusMessage(`Processo finalizado! Download iniciado: ${data.filename}`);
           setIsProcessing(false);
           setShowProgressModal(false);
@@ -103,15 +99,38 @@ function MainApp() {
             progressIntervalRef.current = null;
           }
         }
+      } else {
+        const errorData = await response.json();
+        console.error('Erro ao verificar progresso:', errorData.error);
+        setProgressData(prev => ({
+          ...prev,
+          message: `Erro ao verificar progresso: ${errorData.error}`,
+          status: 'error'
+        }));
+        setStatusMessage(`Erro ao verificar progresso: ${errorData.error}`);
+        setIsProcessing(false);
+        setShowProgressModal(false);
+        setCurrentTaskId(null);
+        if (progressIntervalRef.current) {
+          clearInterval(progressIntervalRef.current);
+          progressIntervalRef.current = null;
+        }
       }
     } catch (error) {
-      console.error('Erro ao verificar progresso:', error);
-      // Opcional: Atualizar status para erro no modal também
+      console.error('Erro de rede ao verificar progresso:', error);
       setProgressData(prev => ({
         ...prev,
-        message: `Erro ao verificar progresso: ${error.message}`,
+        message: `Erro de rede ao verificar progresso: ${error.message}`,
         status: 'error'
       }));
+      setStatusMessage(`Erro de rede: ${error.message}`);
+      setIsProcessing(false);
+      setShowProgressModal(false);
+      setCurrentTaskId(null);
+      if (progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current);
+        progressIntervalRef.current = null;
+      }
     }
   };
 
@@ -129,17 +148,18 @@ function MainApp() {
     setShowProgressModal(true);
     setProgressData({
       current_step: 0,
-      total_steps: 1, // Placeholder inicial, será atualizado pelo backend
+      total_steps: 1,
       progress: 0,
       message: 'Iniciando processamento...'
     });
     setStatusMessage('Iniciando processamento...');
 
-    const apiUrl = `${API_URLS[modelType]}/process`;
+    // Todas as requisições de processo vão para o mesmo endpoint do queue_manager
+    const apiUrl = `${API_BASE_URL}/process`;
     const formData = new FormData();
     formData.append('pdf_file', selectedFile);
     formData.append('pages', pageRange);
-    formData.append('model_type', modelType);
+    formData.append('model_type', modelType); // Envia o tipo de modelo
 
     try {
       const response = await fetch(apiUrl, {
@@ -159,14 +179,13 @@ function MainApp() {
       // Inicia o polling de progresso
       progressIntervalRef.current = setInterval(() => {
         checkProgress(taskId);
-      }, 1000);
+      }, 1000); // Poll a cada 1 segundo
 
     } catch (error) {
       console.error('Ocorreu um erro:', error);
       setStatusMessage(`Erro: ${error.message}`);
       setIsProcessing(false);
       setShowProgressModal(false);
-      // Limpa o intervalo se houver um erro antes mesmo de iniciar o polling
       if (progressIntervalRef.current) {
         clearInterval(progressIntervalRef.current);
         progressIntervalRef.current = null;
@@ -176,9 +195,6 @@ function MainApp() {
 
   const handleCloseModal = () => {
     setShowProgressModal(false);
-    // Opcional: Se a tarefa ainda estiver em andamento, você pode querer cancelá-la
-    // ou apenas parar de mostrar o modal sem interromper o processo no backend.
-    // Por enquanto, apenas fechará o modal.
   };
 
   useEffect(() => {
@@ -234,29 +250,28 @@ function MainApp() {
               <input
                 type="radio"
                 name="modelType"
-                value="3" // Alterado: 'teste' para '3'
+                value="3"
                 checked={modelType === '3'}
                 onChange={(e) => {
                   setModelType(e.target.value);
-                  setSelectedModelImage(MODEL_IMAGE_PATHS['3']); 
+                  setSelectedModelImage(MODEL_IMAGE_PATHS['3']);
                 }}
               />
-              Ponto Mais (Modelo 3) {/* Alterado o texto */}
+              Ponto Mais (Modelo 3)
             </label>
             <label>
               <input
                 type="radio"
                 name="modelType"
-                value="4" 
+                value="4"
                 checked={modelType === '4'}
                 onChange={(e) => {
                   setModelType(e.target.value);
                   setSelectedModelImage(MODEL_IMAGE_PATHS['4']);
                 }}
               />
-              Minuano (Modelo 4) {/* Alterado o texto */}
+              Minuano (Modelo 4)
             </label>
-            {/* Renderiza a imagem com base no modelType, usando o mapa de caminhos */}
             {MODEL_IMAGE_PATHS[modelType] && (
               <div style={{ marginTop: '15px' }}>
                 <img
@@ -300,12 +315,13 @@ function MainApp() {
       {showProgressModal && (
         <ProgressModal
           current={progressData.current_step}
-          total={progressData.total_steps} // Receberá o total de páginas do backend
+          total={progressData.total_steps}
           onClose={handleCloseModal}
+          message={progressData.message}
         />
       )}
     </div>
   );
 }
-
 export default MainApp;
+

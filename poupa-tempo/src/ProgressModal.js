@@ -1,8 +1,7 @@
-// src/ProgressModal.js
 import React from 'react';
 import './ProgressModal.css';
 
-const ProgressModal = ({ current, total, onClose }) => {
+const ProgressModal = ({ current, total, onClose, message }) => {
   const percentage = total > 0 ? Math.round((current / total) * 100) : 0;
   return (
     <div className="progress-modal-overlay">
@@ -47,7 +46,7 @@ const ProgressModal = ({ current, total, onClose }) => {
               <span className="current-page">{current}</span>
               <span className="separator">/</span>
               <span className="total-pages">{total}</span>
-              <span className="pages-label">páginas</span> {/* ALTERADO AQUI: "etapas" para "páginas" */}
+              <span className="pages-label">páginas</span>
             </div>
             <div className="progress-bar">
               <div
@@ -56,9 +55,7 @@ const ProgressModal = ({ current, total, onClose }) => {
               ></div>
             </div>
             <div className="status-text">
-              {current === 0 && total === 0 ? 'Iniciando...' :
-               current === total && total > 0 ? 'Finalizando...' :
-               `Processando página ${current} de ${total}`} {/* ALTERADO AQUI: "Executando etapa" para "Processando página" */}
+              {message} {/* AGORA EXIBE A MENSAGEM DO BACKEND */}
             </div>
           </div>
         </div>
@@ -68,3 +65,4 @@ const ProgressModal = ({ current, total, onClose }) => {
 };
 
 export default ProgressModal;
+
