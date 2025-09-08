@@ -1,4 +1,4 @@
-#!/root/pontua/AutoPonto/backend_api/venv/bin/python3
+#!/opt/pontua/AutoPonto/backend_api/venv/bin/python3
 # -*- coding: utf-8 -*-
 import re
 import sys
