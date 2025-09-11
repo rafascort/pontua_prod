@@ -3,10 +3,9 @@ import React, { useState, useRef, useEffect } from 'react';
 import './App.css';
 import ProgressModal from './ProgressModal';
 
-// O API_BASE_URL agora aponta para o novo serviço de gerenciamento de fila
-const API_BASE_URL = '/api'; 
+const API_BASE_URL = '/api'; // Usa o proxy configurado no package.json
 
-// Mapeamento de caminhos das imagens dos modelos (já estava correto)
+// Mapeamento de caminhos das imagens dos modelos
 const MODEL_IMAGE_PATHS = {
   '1': process.env.PUBLIC_URL + '/Modelo1.png',
   '2': process.env.PUBLIC_URL + '/Modelo2.png',
@@ -14,7 +13,7 @@ const MODEL_IMAGE_PATHS = {
   '4': process.env.PUBLIC_URL + '/Modelo4.png'
 };
 
-function MainApp() {
+function MainApp({ onLogout }) { // Recebe onLogout como prop
   const [selectedFile, setSelectedFile] = useState(null);
   const [pageRange, setPageRange] = useState('');
   const [modelType, setModelType] = useState('1');
@@ -28,12 +27,13 @@ function MainApp() {
     current_step: 0,
     total_steps: 1,
     progress: 0,
-    message: 'Iniciando...' // Mensagem inicial
+    message: 'Iniciando...'
   });
   const fileInputRef = useRef(null);
   const progressIntervalRef = useRef(null);
 
   useEffect(() => {
+    // Pré-carrega as imagens dos modelos
     Object.values(MODEL_IMAGE_PATHS).forEach(path => {
       if (path) {
         const img = new Image();
@@ -58,30 +58,62 @@ function MainApp() {
   };
 
   const checkProgress = async (taskId) => {
+    const token = localStorage.getItem('jwt_token'); // Obtém o token JWT
+    if (!token) {
+        // Se não houver token, força o logout
+        onLogout();
+        return;
+    }
+
     try {
-      // O endpoint de progresso agora é genérico para o queue_manager
-      const response = await fetch(`${API_BASE_URL}/progress/${taskId}`);
+      const response = await fetch(`${API_BASE_URL}/progress/${taskId}`, {
+        headers: {
+          'Authorization': `Bearer ${token}` // Adiciona o token JWT
+        }
+      });
+
+      if (response.status === 401 || response.status === 403) {
+        // Token inválido ou expirado, ou acesso negado
+        const errorData = await response.json();
+        alert(errorData.error || errorData.msg || 'Sua sessão expirou ou você não tem permissão.');
+        onLogout(); // Força o logout
+        return;
+      }
+
       if (response.ok) {
         const data = await response.json();
         setProgressData({
           current_step: data.current_step || 0,
           total_steps: data.total_steps || 1,
           progress: data.progress || 0,
-          message: data.message || 'Processando...' // Usa a mensagem do backend
+          message: data.message || 'Processando...'
         });
         setStatusMessage(data.message || 'Processando...');
 
         if (data.status === 'completed') {
-          // O download também é genérico para o queue_manager
-          const downloadUrl = `${API_BASE_URL}/download/${taskId}`;
-          const a = document.createElement('a');
-          a.href = downloadUrl;
-          a.download = data.filename || 'resultado.csv'; 
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
+          // Para download com JWT, é melhor fazer um fetch e criar um Blob
+          const downloadResponse = await fetch(`${API_BASE_URL}/download/${taskId}`, {
+            headers: {
+              'Authorization': `Bearer ${token}` // Adiciona o token JWT
+            }
+          });
 
-          setStatusMessage(`Processo finalizado! Download iniciado: ${data.filename}`);
+          if (downloadResponse.ok) {
+            const blob = await downloadResponse.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = data.filename || 'resultado.csv';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            window.URL.revokeObjectURL(url); // Libera o objeto URL
+            setStatusMessage(`Processo finalizado! Download iniciado: ${data.filename}`);
+          } else {
+            const errorDownloadData = await downloadResponse.json();
+            setStatusMessage(`Erro ao baixar o arquivo: ${errorDownloadData.error || 'Erro desconhecido'}`);
+          }
+
           setIsProcessing(false);
           setShowProgressModal(false);
           setCurrentTaskId(null);
@@ -90,7 +122,7 @@ function MainApp() {
             progressIntervalRef.current = null;
           }
         } else if (data.status === 'error') {
-          setStatusMessage(`Erro: ${data.error || 'Erro desconhecido'}`);
+          setStatusMessage(`Erro: ${data.error || data.message || 'Erro desconhecido'}`);
           setIsProcessing(false);
           setShowProgressModal(false);
           setCurrentTaskId(null);
@@ -101,13 +133,18 @@ function MainApp() {
         }
       } else {
         const errorData = await response.json();
-        console.error('Erro ao verificar progresso:', errorData.error);
+        console.error('Erro ao verificar progresso:', errorData.error || errorData.msg);
+        if (response.status === 401 || response.status === 403) {
+            alert(errorData.error || errorData.msg || 'Sua sessão expirou ou você não tem permissão.');
+            onLogout(); // Força o logout
+            return;
+        }
         setProgressData(prev => ({
           ...prev,
-          message: `Erro ao verificar progresso: ${errorData.error}`,
+          message: `Erro ao verificar progresso: ${errorData.error || errorData.msg}`,
           status: 'error'
         }));
-        setStatusMessage(`Erro ao verificar progresso: ${errorData.error}`);
+        setStatusMessage(`Erro ao verificar progresso: ${errorData.error || errorData.msg}`);
         setIsProcessing(false);
         setShowProgressModal(false);
         setCurrentTaskId(null);
@@ -143,7 +180,6 @@ function MainApp() {
       alert('Por favor, informe o intervalo de páginas.');
       return;
     }
-
     setIsProcessing(true);
     setShowProgressModal(true);
     setProgressData({
@@ -154,33 +190,47 @@ function MainApp() {
     });
     setStatusMessage('Iniciando processamento...');
 
-    // Todas as requisições de processo vão para o mesmo endpoint do queue_manager
     const apiUrl = `${API_BASE_URL}/process`;
     const formData = new FormData();
     formData.append('pdf_file', selectedFile);
     formData.append('pages', pageRange);
-    formData.append('model_type', modelType); // Envia o tipo de modelo
+    formData.append('model_type', modelType);
+
+    const token = localStorage.getItem('jwt_token'); // Obtém o token JWT
+    if (!token) {
+        onLogout(); // Se não houver token, força o logout
+        return;
+    }
 
     try {
       const response = await fetch(apiUrl, {
         method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}` // Adiciona o token JWT aqui!
+        },
         body: formData,
       });
 
+      if (response.status === 401 || response.status === 403) {
+        // Token inválido ou expirado, ou acesso negado (ex: conta inativa)
+        const errorResult = await response.json();
+        alert(errorResult.error || errorResult.msg || 'Sua sessão expirou ou você não tem permissão.');
+        onLogout(); // Força o logout
+        return;
+      }
+
       if (!response.ok) {
         const errorResult = await response.json();
-        throw new Error(errorResult.error || 'Ocorreu um erro no servidor.');
+        throw new Error(errorResult.error || errorResult.msg || 'Ocorreu um erro no servidor.');
       }
 
       const result = await response.json();
       const taskId = result.task_id;
       setCurrentTaskId(taskId);
-
       // Inicia o polling de progresso
       progressIntervalRef.current = setInterval(() => {
         checkProgress(taskId);
       }, 1000); // Poll a cada 1 segundo
-
     } catch (error) {
       console.error('Ocorreu um erro:', error);
       setStatusMessage(`Erro: ${error.message}`);
@@ -209,6 +259,7 @@ function MainApp() {
     <div className="App">
       <header className="title">
         <h1>Extrator de Pontos</h1>
+        <button onClick={onLogout} className="logout-button">Sair</button> {/* Botão de sair */}
       </header>
       <main className="menu">
         <h2>1. Escolha o modelo do PDF</h2>

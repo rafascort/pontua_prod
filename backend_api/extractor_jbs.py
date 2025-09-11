@@ -1,5 +1,4 @@
 # /opt/pontua/AutoPonto/backend_api/extractor_jbs.py
-
 import os
 import tempfile
 import pandas as pd
@@ -33,7 +32,6 @@ class ExtractorPontoEletronico:
         if self.job:
             effective_total_steps = total_steps if total_steps > 0 else 1
             progress_percent = int((current_step / effective_total_steps) * 100)
-            
             self.job.meta['progress'] = progress_percent
             self.job.meta['message'] = message
             self.job.meta['current_step'] = current_step
@@ -108,14 +106,10 @@ class ExtractorPontoEletronico:
         while len(horarios_validos) < 4:
             horarios_validos.append("0")
         horarios_validos = horarios_validos[:4]
-
         horarios_nao_zero = [h for h in horarios_validos if h != "0"]
-
         if len(horarios_nao_zero) == 1:
             return ["0", "0", "0", "0"]
-
         entrada1, saida1, entrada2, saida2 = horarios_validos
-
         if entrada1 != "0" and saida1 == "0":
             entrada1 = "0"
             saida1 = "0"
@@ -134,7 +128,6 @@ class ExtractorPontoEletronico:
         indice_inicio = self.detectar_inicio_tabela(linhas)
         indice_fim = self.detectar_fim_tabela(linhas, indice_inicio)
         linhas_tabela = linhas[indice_inicio:indice_fim]
-
         colunas_proibidas = [
             'Marcação ou', 'MARCAÇÃO OU', 'marcação ou',
             'FALTAS', 'FALTA', 'Faltas', 'Falta', 'faltas', 'falta',
@@ -190,7 +183,6 @@ class ExtractorPontoEletronico:
                             break
                 parte_horarios = substring_horarios[:pos_fim]
                 horarios = re.findall(r'\b([0-2]?\d:[0-5]\d)\b', parte_horarios)
-
                 horarios_validos = []
                 for h in horarios[:4]:
                     if ':' in h:
@@ -242,26 +234,20 @@ class ExtractorPontoEletronico:
         if not imagens:
             self.update_progress(1, 1, "Erro: Não foi possível converter o PDF ou nenhuma página encontrada.", status='error')
             return []
-        
         total_paginas_reais = len(imagens)
         self.update_progress(0, total_paginas_reais, f"PDF convertido. {total_paginas_reais} páginas para processar.")
-        
         todas_tabelas = []
         for i, imagem in enumerate(imagens, 1):
             self.update_progress(i, total_paginas_reais, f"Processando página {i} de {total_paginas_reais}...")
-            
             if pages_range and '-' in pages_range:
                 start_page = int(pages_range.split('-')[0])
                 num_pagina_real = start_page + i - 1
             else:
                 num_pagina_real = i
-            
             df_pagina = self.processar_pagina(imagem, num_pagina_real)
             if not df_pagina.empty:
                 todas_tabelas.append(df_pagina)
-        
         self.update_progress(total_paginas_reais, total_paginas_reais, "Consolidando dados extraídos...")
-        
         if todas_tabelas:
             df_consolidado = pd.concat(todas_tabelas, ignore_index=True)
             self.update_progress(total_paginas_reais, total_paginas_reais, "Processamento concluído com sucesso!", status='completed')
@@ -271,15 +257,17 @@ class ExtractorPontoEletronico:
             return []
 
 # Esta é a função que será enfileirada pelo RQ Worker
-# A assinatura da função NÃO inclui 'job' como argumento explícito
-def process_pdf_task(pdf_path, pages, model_type):
+# A assinatura da função AGORA inclui 'user_id' como argumento explícito
+def process_pdf_task(pdf_path, pages, model_type, user_id): # <--- user_id adicionado aqui
     """Função principal para ser executada pelo RQ Worker."""
     job = get_current_job() # <--- OBTÉM O OBJETO JOB AQUI DENTRO DA FUNÇÃO
     if not job:
-        # Isso não deve acontecer em um contexto de worker RQ real, mas é bom para segurança
         print("Erro: Não foi possível obter o objeto job do RQ.")
-        # Em um cenário real, você pode querer registrar isso de forma mais robusta
         return None
+
+    # Armazena o user_id na meta do job para referência futura (ex: para logs ou auditoria)
+    job.meta['user_id'] = user_id
+    job.save_meta() # Salva imediatamente para que o user_id esteja disponível
 
     try:
         # Agora o objeto 'job' é passado para o ExtractorPontoEletronico
@@ -308,28 +296,30 @@ def process_pdf_task(pdf_path, pages, model_type):
         df_final = df_final[colunas_finais]
         df_final = df_final.fillna("0")
         df_final = df_final.replace("", "0")
-
         df_final.to_csv(output, index=False, encoding='utf-8', sep=';')
         output.seek(0)
-        
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f'JBS_ponto_extraido_{timestamp}.csv'
-        
-        # Salvar o arquivo CSV em um local temporário acessível
-        # O resultado do job do RQ será o caminho para este arquivo
-        temp_file_path = os.path.join(tempfile.gettempdir(), f"{job.id}.csv")
+
+        # Salvar o arquivo CSV em um local temporário acessível pelo Flask
+        temp_dir_for_results = os.path.join(tempfile.gettempdir(), 'pontua_results')
+        os.makedirs(temp_dir_for_results, exist_ok=True)
+        temp_file_path = os.path.join(temp_dir_for_results, f"{job.id}.csv")
+
         with open(temp_file_path, 'wb') as f:
             f.write(output.getvalue())
 
         job.meta.update({
             'status': 'completed',
-            'file_path': temp_file_path,
+            'file_path': temp_file_path, # Caminho completo para o arquivo de resultado
             'filename': filename,
             'progress': 100,
             'message': 'Arquivo processado com sucesso!'
         })
         job.save()
         return temp_file_path # O resultado do job é o caminho do arquivo
+
     except Exception as e:
         error_message = f'Erro durante o processamento da tarefa {job.id}: {str(e)}'
         print(error_message)
@@ -345,5 +335,5 @@ def process_pdf_task(pdf_path, pages, model_type):
         # Limpar o arquivo PDF temporário que foi enviado para o worker
         if os.path.exists(pdf_path):
             os.unlink(pdf_path)
-
+            print(f"PDF temporário {pdf_path} removido pelo worker.")
 

@@ -1,5 +1,4 @@
 # /opt/pontua/AutoPonto/backend_api/extractor_brf.py
-
 import os
 import tempfile
 import pandas as pd
@@ -12,7 +11,6 @@ from PIL import Image
 import re
 from datetime import datetime, timedelta
 from rq import get_current_job
-
 # Caminho do Tesseract para Linux
 import platform
 if platform.system() == 'Windows':
@@ -39,7 +37,6 @@ class ExtractorPontoEletronico:
         if self.job:
             effective_total_steps = total_steps if total_steps > 0 else 1
             progress_percent = int((current_step / effective_total_steps) * 100)
-            
             self.job.meta.update({
                 'progress': progress_percent,
                 'message': message,
@@ -237,32 +234,25 @@ class ExtractorPontoEletronico:
         imagens = self.converter_pdf_imagens(pdf_path, pages_range)
         if not imagens:
             if self.job and self.job.meta.get('status') != 'error':
-                 self.update_progress(1, 1, "Erro: Não foi possível converter o PDF ou nenhuma página encontrada.", status='error')
+                   self.update_progress(1, 1, "Erro: Não foi possível converter o PDF ou nenhuma página encontrada.", status='error')
             return []
-        
         total_paginas_reais = len(imagens)
         if self.job:
             self.job.meta['total_steps'] = total_paginas_reais
             self.job.save()
-        
         self.update_progress(0, total_paginas_reais, f"PDF convertido. {total_paginas_reais} páginas para processar.")
-        
         todas_tabelas = []
         for i, imagem in enumerate(imagens, 1):
             self.update_progress(i, total_paginas_reais, f"Processando página {i} de {total_paginas_reais}...")
-            
             if pages_range and '-' in pages_range:
                 start_page = int(pages_range.split('-')[0])
                 num_pagina_real = start_page + i - 1
             else:
                 num_pagina_real = i
-            
             df_pagina = self.processar_pagina(imagem, num_pagina_real)
             if not df_pagina.empty:
                 todas_tabelas.append(df_pagina)
-        
         self.update_progress(total_paginas_reais, total_paginas_reais, "Consolidando dados extraídos...")
-        
         if todas_tabelas:
             df_consolidado = pd.concat(todas_tabelas, ignore_index=True)
             self.update_progress(total_paginas_reais, total_paginas_reais, "Processamento concluído com sucesso!", status='completed')
@@ -272,17 +262,21 @@ class ExtractorPontoEletronico:
             return []
 
 # Esta é a função que será enfileirada pelo RQ Worker
-def process_pdf_task(pdf_path, pages, model_type):
+# CORREÇÃO: Adicionado 'user_id' na assinatura da função
+def process_pdf_task(pdf_path, pages, model_type, user_id):
     """Função principal para ser executada pelo RQ Worker."""
     job = get_current_job()
     if not job:
         print("Erro: Não foi possível obter o objeto job do RQ.")
         return None
 
+    # CORREÇÃO: Armazena o user_id no meta do job
+    job.meta['user_id'] = user_id
+    job.save_meta() # Salva as alterações no meta
+
     try:
         extrator = ExtractorPontoEletronico(model_type, job=job, debug_mode=False)
         tabelas = extrator.processar_pdf_completo(pdf_path, pages)
-
         if not tabelas:
             if job.meta.get('status') != 'error':
                 job.meta.update({
@@ -293,10 +287,8 @@ def process_pdf_task(pdf_path, pages, model_type):
                 })
                 job.save()
             return None
-
         final_total_steps = job.meta.get('total_steps', 1)
         extrator.update_progress(final_total_steps, final_total_steps, "Gerando arquivo CSV...", status='processing')
-
         output = BytesIO()
         df_final = tabelas[0]
         colunas_finais = ['Dia', 'Dia_Semana', 'Entrada1', 'Saida1', 'Entrada2', 'Saida2']
@@ -306,17 +298,13 @@ def process_pdf_task(pdf_path, pages, model_type):
         df_final = df_final[colunas_finais]
         df_final = df_final.fillna("0")
         df_final = df_final.replace("", "0")
-
         df_final.to_csv(output, index=False, sep=';', encoding='utf-8')
         output.seek(0)
-        
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f'BRF_ponto_extraido_{timestamp}.csv'
-        
         temp_file_path = os.path.join(tempfile.gettempdir(), f"{job.id}.csv")
         with open(temp_file_path, 'wb') as f:
             f.write(output.getvalue())
-
         job.meta.update({
             'status': 'completed',
             'file_path': temp_file_path,
@@ -340,4 +328,5 @@ def process_pdf_task(pdf_path, pages, model_type):
     finally:
         if os.path.exists(pdf_path):
             os.unlink(pdf_path)
+            print(f"PDF temporário {pdf_path} removido pelo worker.")
 

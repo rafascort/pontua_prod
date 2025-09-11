@@ -1,5 +1,4 @@
 # /opt/pontua/AutoPonto/backend_api/extractor_pontomais.py
-
 import os
 import re
 import tempfile
@@ -12,7 +11,6 @@ import pytesseract
 from pdf2image import convert_from_path
 from PIL import Image
 from rq import get_current_job
-
 # Caminho do Tesseract para Linux
 import platform
 if platform.system() == 'Windows':
@@ -32,7 +30,6 @@ class ExtractorPontoEletronico:
         if self.job:
             effective_total_steps = total_steps if total_steps > 0 else 1
             progress_percent = int((current_step / effective_total_steps) * 100)
-            
             self.job.meta.update({
                 'progress': progress_percent,
                 'message': message,
@@ -104,7 +101,6 @@ class ExtractorPontoEletronico:
                 return start_date, end_date
             except ValueError:
                 pass
-        
         month_year_pattern = r'Jornada\s*-\s*(Janeiro|Fevereiro|Março|Abril|Maio|Junho|Julho|Agosto|Setembro|Outubro|Novembro|Dezembro)\s*(\d{4})'
         month_names = {
             'JANEIRO': 1, 'FEVEREIRO': 2, 'MARÇO': 3, 'ABRIL': 4, 'MAIO': 5, 'JUNHO': 6,
@@ -123,7 +119,6 @@ class ExtractorPontoEletronico:
                 else:
                     end_date = datetime(year_num, month_num + 1, 1) - timedelta(days=1)
                 return start_date, end_date
-        
         return datetime(1900, 1, 1), datetime(2100, 12, 31)
 
     def detectar_inicio_tabela(self, linhas):
@@ -205,7 +200,6 @@ class ExtractorPontoEletronico:
                 m = int(time_str[2:])
             except ValueError:
                 pass
-        
         if 0 <= h <= 23 and 0 <= m <= 59:
             if h == 0 and m == 0:
                 return "0"
@@ -233,17 +227,14 @@ class ExtractorPontoEletronico:
                         continue
                 except ValueError:
                     continue
-                
                 dia_semana_map = {
                     0: 'Seg', 1: 'Ter', 2: 'Qua', 3: 'Qui', 4: 'Sex', 5: 'Sab', 6: 'Dom'
                 }
                 dia_semana = dia_semana_map.get(current_line_date.weekday(), '')
-
                 current_search_pos = linha_original.find(data_full_match_str) + len(data_full_match_str)
                 search_end_limit = len(linha_original)
                 if self.column_end_pos != -1 and self.column_end_pos > current_search_pos:
                     search_end_limit = self.column_end_pos
-                
                 horarios_extraidos_seq = []
                 time_pattern_regex = r'(\d{1,2}:[0-5]\d|\d{4})'
                 for i in range(4):
@@ -258,12 +249,10 @@ class ExtractorPontoEletronico:
                         current_search_pos += match_time.end()
                     else:
                         horarios_extraidos_seq.append("0")
-                
                 while len(horarios_extraidos_seq) < 4:
                     horarios_extraidos_seq.append("0")
                 horarios_validos_parsed = horarios_extraidos_seq[:4]
                 non_zero_parsed_times_count = sum(1 for h in horarios_validos_parsed if h != "0")
-                
                 palavras_que_zeram_tudo = [
                     'FOLGA', 'FER', 'INTEGRAÇÃO', 'INTERAÇÃO',
                     'ATESTADO', 'MÉDICO', 'FALTA', 'LICENÇA', 'FÉRIAS', 'DISPENSA',
@@ -275,12 +264,10 @@ class ExtractorPontoEletronico:
                     if palavra in linha_original.upper():
                         matched_zero_word = palavra
                         break
-                
                 if matched_zero_word and non_zero_parsed_times_count <= 1:
                     horarios_finais = ["0", "0", "0", "0"]
                 else:
                     horarios_finais = self.validar_horarios(horarios_validos_parsed)
-                
                 if horarios_finais[0] != "0" and horarios_finais[1] != "0":
                     try:
                         entrada1_dt = datetime.strptime(horarios_finais[0], '%H:%M')
@@ -290,11 +277,9 @@ class ExtractorPontoEletronico:
                             horarios_finais[1] = f"11:{saida1_dt.minute:02d}"
                     except ValueError:
                         pass
-                
                 while len(horarios_finais) < 4:
                     horarios_finais.append("0")
                 horarios_finais = horarios_finais[:4]
-                
                 dados_linha = {
                     'Dia': data_str, # Padronizado para 'Dia'
                     'Dia_Semana': dia_semana, # Adicionado Dia_Semana
@@ -328,32 +313,25 @@ class ExtractorPontoEletronico:
         imagens = self.converter_pdf_imagens(pdf_path, pages_range)
         if not imagens:
             if self.job and self.job.meta.get('status') != 'error':
-                 self.update_progress(1, 1, "Erro: Não foi possível converter o PDF ou nenhuma página encontrada.", status='error')
+                   self.update_progress(1, 1, "Erro: Não foi possível converter o PDF ou nenhuma página encontrada.", status='error')
             return []
-        
         total_paginas_reais = len(imagens)
         if self.job:
             self.job.meta['total_steps'] = total_paginas_reais
             self.job.save()
-        
         self.update_progress(0, total_paginas_reais, f"PDF convertido. {total_paginas_reais} páginas para processar.")
-        
         todas_tabelas = []
         for i, imagem in enumerate(imagens, 1):
             self.update_progress(i, total_paginas_reais, f"Processando página {i} de {total_paginas_reais}...")
-            
             if pages_range and '-' in pages_range:
                 start_page = int(pages_range.split('-')[0])
                 num_pagina_real = start_page + i - 1
             else:
                 num_pagina_real = i
-            
             df_pagina = self.processar_pagina(imagem, num_pagina_real)
             if not df_pagina.empty:
                 todas_tabelas.append(df_pagina)
-        
         self.update_progress(total_paginas_reais, total_paginas_reais, "Consolidando dados extraídos...")
-        
         if todas_tabelas:
             df_consolidado = pd.concat(todas_tabelas, ignore_index=True)
             df_consolidado['Dia_dt'] = pd.to_datetime(df_consolidado['Dia'], format='%d/%m/%Y', errors='coerce')
@@ -367,17 +345,21 @@ class ExtractorPontoEletronico:
             return []
 
 # Esta é a função que será enfileirada pelo RQ Worker
-def process_pdf_task(pdf_path, pages, model_type):
+# CORREÇÃO: Adicionado 'user_id' na assinatura da função
+def process_pdf_task(pdf_path, pages, model_type, user_id):
     """Função principal para ser executada pelo RQ Worker."""
     job = get_current_job()
     if not job:
         print("Erro: Não foi possível obter o objeto job do RQ.")
         return None
 
+    # CORREÇÃO: Armazena o user_id no meta do job
+    job.meta['user_id'] = user_id
+    job.save_meta() # Salva as alterações no meta
+
     try:
         extrator = ExtractorPontoEletronico(model_type, job=job)
         tabelas = extrator.processar_pdf_completo(pdf_path, pages)
-
         if not tabelas:
             if job.meta.get('status') != 'error':
                 job.meta.update({
@@ -388,33 +370,25 @@ def process_pdf_task(pdf_path, pages, model_type):
                 })
                 job.save()
             return None
-
         final_total_steps = job.meta.get('total_steps', 1)
         extrator.update_progress(final_total_steps, final_total_steps, "Gerando arquivo CSV...", status='processing')
-
         output = BytesIO()
         df_final = tabelas[0]
-        
         # Garante que as colunas finais existam e estejam na ordem correta
         colunas_finais = ['Dia', 'Dia_Semana', 'Entrada1', 'Saida1', 'Entrada2', 'Saida2']
         for col in colunas_finais:
             if col not in df_final.columns:
                 df_final[col] = "0"
         df_final = df_final[colunas_finais]
-        
         df_final = df_final.fillna("0")
         df_final = df_final.replace("", "0")
-
         df_final.to_csv(output, index=False, sep=';', encoding='utf-8-sig')
         output.seek(0)
-        
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f'PontoMais_ponto_extraido_{timestamp}.csv'
-        
         temp_file_path = os.path.join(tempfile.gettempdir(), f"{job.id}.csv")
         with open(temp_file_path, 'wb') as f:
             f.write(output.getvalue())
-
         job.meta.update({
             'status': 'completed',
             'file_path': temp_file_path,
@@ -438,4 +412,5 @@ def process_pdf_task(pdf_path, pages, model_type):
     finally:
         if os.path.exists(pdf_path):
             os.unlink(pdf_path)
+            print(f"PDF temporário {pdf_path} removido pelo worker.") # Adicionado print para depuração
 
