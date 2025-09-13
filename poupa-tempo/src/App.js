@@ -1,7 +1,4 @@
-// src/App.js
 import React, { useState, useEffect } from 'react';
-// REMOVIDO: BrowserRouter (porque ele vai para index.js)
-// APENAS O QUE É USADO DENTRO DO APP:
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'; 
 import Login from './Login';
 import MainApp from './MainApp';
@@ -13,7 +10,7 @@ function App() {
     useRemoveNBSP();
     const [logado, setLogado] = useState(false);
     const [isAdmin, setIsAdmin] = useState(false);
-    const navigate = useNavigate(); // AGORA ESTÁ DENTRO DO CONTEXTO DO ROUTER (vindo de index.js)
+    const navigate = useNavigate();
 
     // Função para decodificar o token e definir estados
     const decodeAndSetUserStatus = (token) => {
@@ -56,8 +53,7 @@ function App() {
     };
 
     return (
-        // REMOVIDO: <BrowserRouter>
-        <Routes> {/* <--- App RETORNA DIRETAMENTE AS ROTAS */}
+        <Routes>
             <Route path="/login" element={<Login onLogin={handleLoginSuccess} />} />
 
             <Route
@@ -72,9 +68,7 @@ function App() {
 
             <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
-        // REMOVIDO: </BrowserRouter>
     );
 }
 
 export default App;
-
