@@ -32,6 +32,7 @@ QUEUES = {
     '2': Queue('brf_queue', connection=redis_conn),
     '3': Queue('pontomais_queue', connection=redis_conn),
     '4': Queue('minuano_queue', connection=redis_conn),
+    '5': Queue('rudder_queue', connection=redis_conn), # ADICIONADO
 }
 
 EXTRACTOR_MODULES = {
@@ -39,6 +40,7 @@ EXTRACTOR_MODULES = {
     '2': 'extractor_brf',
     '3': 'extractor_pontomais',
     '4': 'extractor_minuano',
+    '5': 'extractor_rudder', # ADICIONADO
 }
 
 @app.route('/api/process', methods=['POST'])
@@ -47,15 +49,15 @@ def process_pdf():
     current_user_id = get_jwt_identity()
     claims = get_jwt()
     if not claims.get('is_active'):
-        return jsonify({"error": "Sua conta está inativa e não pode iniciar processos."}), 403
+        return jsonify({"error": "A sua conta está inativa e não pode iniciar processos."}), 403
     try:
         if 'pdf_file' not in request.files:
-            return jsonify({'error': 'Nenhum arquivo PDF foi enviado'}), 400
+            return jsonify({'error': 'Nenhum ficheiro PDF foi enviado'}), 400
         file = request.files['pdf_file']
         pages = request.form.get('pages', '')
         model_type = request.form.get('model_type', '1')
         if file.filename == '':
-            return jsonify({'error': 'Nenhum arquivo selecionado'}), 400
+            return jsonify({'error': 'Nenhum ficheiro selecionado'}), 400
         if model_type not in QUEUES:
             return jsonify({'error': f'Tipo de modelo {model_type} inválido ou não configurado.'}), 400
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
@@ -67,14 +69,14 @@ def process_pdf():
                         pdf_path, pages, model_type, user_id=current_user_id,
                         job_timeout='1h',
                         meta={
-                            'progress': 0, 'message': 'Tarefa enfileirada, aguardando processamento...',
+                            'progress': 0, 'message': 'Tarefa na fila, a aguardar processamento...',
                             'status': 'queued', 'current_step': 0, 'total_steps': 1,
                             'timestamp': datetime.now().isoformat(), 'user_id': current_user_id
                         })
-        return jsonify({'task_id': job.id, 'message': 'Processamento enfileirado', 'status': 'queued'})
+        return jsonify({'task_id': job.id, 'message': 'Processamento na fila', 'status': 'queued'})
     except Exception as e:
-        print(f"Erro ao enfileirar tarefa: {e}")
-        return jsonify({'error': f'Erro interno ao enfileirar: {str(e)}'}), 500
+        print(f"Erro ao colocar tarefa na fila: {e}")
+        return jsonify({'error': f'Erro interno ao colocar na fila: {str(e)}'}), 500
 
 @app.route('/api/progress/<task_id>', methods=['GET'])
 @jwt_required()
@@ -88,12 +90,12 @@ def get_progress(task_id):
         return jsonify({'error': 'Tarefa não encontrada'}), 404
     claims = get_jwt()
     if job.meta.get('user_id') != current_user_id and claims.get('role') != 'admin':
-        return jsonify({"error": "Você não tem permissão para ver o progresso desta tarefa."}), 403
+        return jsonify({"error": "Não tem permissão para ver o progresso desta tarefa."}), 403
     status_rq = job.get_status()
     progress_data = job.meta.copy()
     if status_rq == 'queued':
         progress_data['status'] = 'queued'
-        progress_data['message'] = progress_data.get('message', 'Tarefa na fila, aguardando processamento.')
+        progress_data['message'] = progress_data.get('message', 'Tarefa na fila, a aguardar processamento.')
     elif status_rq == 'started':
         progress_data['status'] = 'processing'
         progress_data['message'] = progress_data.get('message', 'Processamento iniciado...')
@@ -121,20 +123,20 @@ def download_result(task_id):
         return jsonify({'error': 'Tarefa não encontrada'}), 404
     claims = get_jwt()
     if job.meta.get('user_id') != current_user_id and claims.get('role') != 'admin':
-        return jsonify({"error": "Você não tem permissão para baixar o resultado desta tarefa."}), 403
+        return jsonify({"error": "Não tem permissão para descarregar o resultado desta tarefa."}), 403
     if job.get_status() != 'finished' or job.meta.get('status') != 'completed':
-        return jsonify({'error': 'Tarefa ainda não foi concluída ou falhou'}), 400
+        return jsonify({'error': 'A tarefa ainda não foi concluída ou falhou'}), 400
     file_path = job.meta.get('file_path')
     filename = job.meta.get('filename')
     if not file_path or not os.path.exists(file_path):
-        return jsonify({'error': 'Arquivo de resultado não encontrado ou já removido'}), 404
+        return jsonify({'error': 'Ficheiro de resultado não encontrado ou já removido'}), 404
     def remove_file_after_download():
         time.sleep(5)
         try:
             os.unlink(file_path)
-            print(f"Arquivo de resultado {file_path} removido após download.")
+            print(f"Ficheiro de resultado {file_path} removido após download.")
         except Exception as e:
-            print(f"Erro ao remover arquivo de resultado {file_path}: {e}")
+            print(f"Erro ao remover ficheiro de resultado {file_path}: {e}")
     cleanup_thread = threading.Thread(target=remove_file_after_download)
     cleanup_thread.daemon = True
     cleanup_thread.start()
@@ -149,7 +151,7 @@ def health_check():
         redis_status = f"ERROR: {str(e)}"
     return jsonify({
         'status': 'OK',
-        'message': 'Serviço de Gerenciamento de Fila funcionando',
+        'message': 'Serviço de Gestão de Filas a funcionar',
         'redis_status': redis_status
     })
 
@@ -157,4 +159,5 @@ if __name__ == '__main__':
     with app.app_context():
         create_tables()
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 

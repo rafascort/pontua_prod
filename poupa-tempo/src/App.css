@@ -3,10 +3,10 @@
     font-family: 'Roboto', sans-serif;
     color: #cacaca;
     background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-    min-height: 100vh;
+    height: 100vh; /* ALTERADO: De min-height para height, trava a altura na tela */
     display: flex;
     flex-direction: column;
-    overflow-y: auto;
+    overflow: hidden; /* ALTERADO: Impede a barra de rolagem na página inteira */
 }
 
 /* --- Barra Superior (Cabeçalho) --- */
@@ -19,6 +19,7 @@
     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
     position: relative;
     height: 60px;
+    flex-shrink: 0; /* Garante que o header não encolha */
 }
 
 .title {
@@ -48,6 +49,7 @@
     justify-content: center;
     padding: 20px;
     width: 100%;
+    overflow: hidden; /* Impede overflow no padding */
 }
 
 /* --- Estilos da Tela HOME --- */
@@ -72,12 +74,14 @@
     border: 1px solid rgba(255, 255, 255, 0.1);
     display: flex;
     flex-direction: column;
-    min-height: 85vh;
+    height: 100%; /* ALTERADO: Ocupa a altura máxima do main-content */
+    max-height: 88vh; /* Garante que não ultrapasse a tela */
 }
 
 .extractor-header {
     text-align: center;
     margin-bottom: 20px;
+    flex-shrink: 0; /* Impede que o header encolha */
 }
 
 .extractor-container h2 {
@@ -100,12 +104,14 @@
     justify-content: center;
     align-items: center;
     width: 100%;
+    overflow-y: auto; /* ALTERADO: Apenas esta área terá scroll vertical */
+    padding-right: 10px; /* Espaço para a barra de scroll */
 }
 
 .model-carousel {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-    gap: 40px;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); /* AJUSTADO */
+    gap: 30px; /* AJUSTADO */
     width: 100%;
     padding: 20px 0;
 }
@@ -134,13 +140,13 @@
 
 .model-card img {
     width: 100%;
-    height: 180px;
+    height: 160px; /* AJUSTADO: Imagem um pouco menor */
     object-fit: cover;
     object-position: top;
 }
 
 .model-card p {
-    font-size: 1.2rem;
+    font-size: 1.1rem; /* AJUSTADO: Fonte um pouco menor */
     font-weight: 500;
     color: #e0e6ed;
     padding: 15px 10px;
@@ -153,7 +159,10 @@
 .extractor-actions {
     display: flex; flex-direction: column; align-items: center; gap: 15px;
     padding-top: 20px; border-top: 1px solid rgba(255, 255, 255, 0.1);
+    flex-shrink: 0; /* Impede que a área de botões encolha */
 }
+
+/* ... (resto do CSS permanece o mesmo) ... */
 
 .extractor-button, .start-button, .advance-button {
     background: rgba(74, 158, 255, 0.2); border: 1px solid #4a9eff;
@@ -172,7 +181,6 @@
 .page-input:focus { outline: none; border-color: #4a9eff; }
 .status-message { text-align: center; color: #a8b3c7; min-height: 20px; margin-top: 15px; }
 
-/* Visualização Ampliada (Modal) */
 .zoom-overlay {
     position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.8);
     backdrop-filter: blur(8px); display: flex; justify-content: center; align-items: center;
@@ -193,7 +201,6 @@
     font-size: 1.5rem; padding: 20px; text-align: center; background-color: rgba(0, 0, 0, 0.3);
 }
 
-/* Estilos para a tela de Configurações */
 .settings-container {
     flex-grow: 1;
     width: 100%;
@@ -208,3 +215,5 @@
     font-size: 1.2rem;
     text-align: center;
 }
+
+

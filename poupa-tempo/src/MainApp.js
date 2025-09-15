@@ -9,7 +9,8 @@ const MODEL_IMAGE_PATHS = {
     '1': process.env.PUBLIC_URL + '/Modelo1.png',
     '2': process.env.PUBLIC_URL + '/Modelo2.png',
     '3': process.env.PUBLIC_URL + '/Modelo3.png',
-    '4': process.env.PUBLIC_URL + '/Modelo4.png'
+    '4': process.env.PUBLIC_URL + '/Modelo4.png',
+    '5': process.env.PUBLIC_URL + '/Modelo5.png', // CORRIGIDO: Este é o novo modelo
 };
 
 function MainApp({ onLogout }) {
@@ -51,8 +52,6 @@ function MainApp({ onLogout }) {
     }, []);
 
     // --- FUNÇÕES DE MANIPULAÇÃO (Handlers) ---
-
-    // NOVO: Função para resetar o estado do extrator e voltar para a home
     const resetExtractorState = () => {
         setView('home');
         setExtractorStep(1);
@@ -80,11 +79,11 @@ function MainApp({ onLogout }) {
         if (!token) { onLogout(); return; }
         try {
             const response = await fetch(`${API_BASE_URL}/progress/${taskId}`, { headers: { 'Authorization': `Bearer ${token}` } });
-            if (response.status === 401 || response.status === 403) { alert('Sua sessão expirou.'); onLogout(); return; }
+            if (response.status === 401 || response.status === 403) { alert('A sua sessão expirou.'); onLogout(); return; }
             if (!response.ok) { throw new Error('Erro ao verificar progresso.'); }
             const data = await response.json();
-            setProgressData({ current_step: data.current_step || 0, total_steps: data.total_steps || 1, progress: data.progress || 0, message: data.message || 'Processando...' });
-            setStatusMessage(data.message || 'Processando...');
+            setProgressData({ current_step: data.current_step || 0, total_steps: data.total_steps || 1, progress: data.progress || 0, message: data.message || 'A processar...' });
+            setStatusMessage(data.message || 'A processar...');
             if (data.status === 'completed' || data.status === 'error') {
                 if (progressIntervalRef.current) { clearInterval(progressIntervalRef.current); progressIntervalRef.current = null; }
                 setIsProcessing(false); setShowProgressModal(false); setCurrentTaskId(null);
@@ -96,12 +95,11 @@ function MainApp({ onLogout }) {
                         const a = document.createElement('a'); a.href = url; a.download = data.filename || 'resultado.csv'; document.body.appendChild(a); a.click(); a.remove(); window.URL.revokeObjectURL(url);
                         setStatusMessage(`Processo finalizado! Download iniciado.`);
                         
-                        // ALTERADO: Chama a função de reset após 3 segundos
                         setTimeout(() => {
                             resetExtractorState();
-                        }, 3000); // 3 segundos de delay
+                        }, 3000); 
 
-                    } else { setStatusMessage(`Erro ao baixar o arquivo.`); }
+                    } else { setStatusMessage(`Erro ao descarregar o ficheiro.`); }
                 } else { setStatusMessage(`Erro: ${data.error || data.message}`); }
             }
         } catch (error) {
@@ -110,7 +108,7 @@ function MainApp({ onLogout }) {
     };
     const handleProcess = async () => {
         if (!selectedFile || !pageRange || !modelType) { alert('Complete todos os passos.'); return; }
-        setIsProcessing(true); setShowProgressModal(true); setProgressData({ current_step: 0, total_steps: 1, progress: 0, message: 'Iniciando...' }); setStatusMessage('Iniciando...');
+        setIsProcessing(true); setShowProgressModal(true); setProgressData({ current_step: 0, total_steps: 1, progress: 0, message: 'A iniciar...' }); setStatusMessage('A iniciar...');
         const formData = new FormData();
         formData.append('pdf_file', selectedFile); formData.append('pages', pageRange); formData.append('model_type', modelType);
         const token = localStorage.getItem('jwt_token'); if (!token) { onLogout(); return; }
@@ -126,7 +124,13 @@ function MainApp({ onLogout }) {
     };
     const handleCloseModal = () => { setShowProgressModal(false); };
 
-    const modelNames = { '1': 'JBS Ponto', '2': 'BRF Ponto', '3': 'Ponto Mais', '4': 'Minuano' };
+    const modelNames = { 
+        '1': 'JBS Ponto', 
+        '2': 'BRF Ponto', 
+        '3': 'Ponto Mais', 
+        '4': 'Minuano',
+        '5': 'Rudder Digital' // CORRIGIDO: Nome do novo modelo
+    };
 
     // --- LÓGICA DE RENDERIZAÇÃO ---
     const renderHeader = () => (
@@ -162,7 +166,7 @@ function MainApp({ onLogout }) {
                         {extractorStep === 1 && (
                             <>
                                 <div className="extractor-header">
-                                    <h2>Selecione o modelo, o arquivo e as páginas</h2>
+                                    <h2>Selecione o modelo, o ficheiro e as páginas</h2>
                                     <input
                                         type="text"
                                         className="search-bar"
@@ -190,7 +194,7 @@ function MainApp({ onLogout }) {
                                 <div className="extractor-actions">
                                     <input type="file" accept=".pdf" ref={fileInputRef} onChange={handleFileSelect} style={{ display: 'none' }} />
                                     <button className="extractor-button" onClick={handleUploadClick}>
-                                        {selectedFile ? `Arquivo: ${selectedFile.name}` : 'Importar Arquivo PDF'}
+                                        {selectedFile ? `Ficheiro: ${selectedFile.name}` : 'Importar Ficheiro PDF'}
                                     </button>
                                     
                                     <input
@@ -219,7 +223,7 @@ function MainApp({ onLogout }) {
                                 </div>
                                 <div className="extractor-actions">
                                     <button className="start-button" onClick={handleProcess} disabled={isProcessing}>
-                                        {isProcessing ? 'Processando...' : 'iniciar e baixar'}
+                                        {isProcessing ? 'A processar...' : 'iniciar e descarregar'}
                                     </button>
                                 </div>
                             </>
@@ -248,3 +252,5 @@ function MainApp({ onLogout }) {
 }
 
 export default MainApp;
+
+
