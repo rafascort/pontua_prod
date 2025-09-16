@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "sistemapontoweb",
+  "private_key_id": "43e33f445dec741d323a24579f628a3e2f0001f5",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCTsZC7Wtry/VwW\n0Wa4fl1hYLOcj0zQMQxZ6iE8GSK0wrTzftr02dCR9TkyRU4SJ3nt+gDJtOSA4Kka\nSBcORNbSSQt6WfUfxhrxlqQeg5R1tTvZPigfk/eGAMEu16VDxL8oKBhkrALeGTia\nvPRFTxyydHKSrWPIoUUeuw9/aBKbEFi5Se3jKvyXuAlup3yTBdXf9zzGEOkiaGJS\nDXkHBSvu4Fv/8RYI0tJoO0riQdoaEC5KTNjoFb/VeAbEq365ZRXCMZkRHwo6r7/l\nejcYtgwsGZ2hZkT0ZefKdLpC2nQsxkgfzpTRqwb1SKyKqa6pNdziDQ8Tikqbrt+h\nyijGFhNhAgMBAAECggEAQGik8hfWuTZFhUvvzJCLH67g1Wtm97oUJVgmA0QA7yyk\nZjYRvcsJmsWDGom/2MnvchlfY5eoOQ4AoQ4EQ/xAZPdm8oYtkJw/3tCvpQED6utM\n/NoO/Gp2fTFyDgAMOgggxx3pOWoMXBhKp6y0qE8ueCKxXocQJ4wxDQxN32WfC5EF\nTkRQPeyIoDT7EFeDZJSf0HhdGwFvuZdxNciY45vkE8r+TcCLE2lWbNj9gLasedUw\nEFLJQNjVrTkrgd3XErOtgBQqRJMBQTJtUv2d9miNkBi3KosZo5hwMxKk+KhfBY93\n6hXww0nPABXBcxpYnuJdUJoKJOtor60d7n8MyN108wKBgQDDwUyoyNc65+arSokA\na0e+CberxyiRKilVBLwPGTe1JFnZxt2ntsJJhmepCeArPS2gmIWvURmmm2HLj0t2\nxZnIFFVzYWQEZ9YZJxGcHbcUkS+jY7F//fyK9iImb150MNQSsVuKZjYgjcX9x5Oa\nX1ScvDzH39AnYFDd0MwJAqBxnwKBgQDBJbXHP4mGpL7vm11xVrD7FECsAv3evkma\n8s7Eg+iZGrWRl1sW+IVK7aV7V1D7EfxrD76O9OwRyrzBlVtda88QSforIn3eikus\n/fyuWHkDYML5xwV8M6oVmhtfxNYbeWsF539oTDMzf+FvhXVXUUGYsIMQs94hicn0\nCzJJvM1a/wKBgQCBUEcw1IQBwMHLc9Bu+2+IJWk0y7qLsrtdE2Sb4L/BJMNKLqms\nKfnMkkIWE5UHW0Gx7i+ZscxtGAYRb5adXkmJN41/S93DX0i6kul6JNMVfhdnKutN\nrt3Oemvy0e0mej8OHiVnlr+4347kZ5ulBcaiR2MrcjlSWbjx3wV6Ckcs5wKBgBon\nKwgBuHN810XGec6g+HHm+iLQfOOuTHUor4q4ecRRc4h1QCZKHHJa329mEVcNxmoQ\nxbLBwz1dgFWODcMGmBESk0dH8lcxzrFr6s0IucoVThFYO4vnyv4F0fMTyhIKTM2N\n3RiYSM6OYE4jehIKtKEiNX0LfeZ4q9nZskN9xyitAoGBAKJG3n82HbCWLevf20I2\nyx5zEnz7h3/x7d2hTHW9bZbSVJNl47smA0aMPow6i08KC6ZpmJjIOM1RWcsMVIHl\neIy71YP0c1Xa8Ic2YPRFRoG9zJ41gQAtvtetH13IXb6VoV4xKwuGxkL3I9fpvvey\nfB11YMcimEa/ObpneARBl91X\n-----END PRIVATE KEY-----\n",
+  "client_email": "ponto-manual@sistemapontoweb.iam.gserviceaccount.com",
+  "client_id": "100210292386987447449",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/ponto-manual%40sistemapontoweb.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
