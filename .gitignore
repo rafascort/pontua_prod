@@ -1,0 +1,46 @@
+# Arquivo .gitignore universal para seu projeto
+
+# --- Front-end (React / Node.js) ---
+
+# Pasta de dependências - PRINCIPAL CAUSA DO TRAVAMENTO
+# NUNCA envie esta pasta para o Git!
+node_modules/
+
+# Arquivos de build de produção
+build/
+dist/
+
+# Arquivos de log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Arquivos de ambiente - NUNCA envie senhas ou chaves de API!
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+
+# --- Back-end (Python) ---
+
+# Pasta do ambiente virtual
+venv/
+env/
+.venv/
+.env/
+
+# Arquivos de cache do Python
+__pycache__/
+*.pyc
+
+# Arquivo de ambiente do backend - IMPORTANTE PARA SEGURANÇA
+backend_api/.env
+
+
+# --- Arquivos de Sistema Operacional e IDEs ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

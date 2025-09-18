@@ -9,7 +9,7 @@ import pytesseract
 from pdf2image import convert_from_path
 from PIL import Image
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from rq import get_current_job
 
 import platform
@@ -19,10 +19,13 @@ else:
     pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
 
 class ExtractorPontoEletronico:
-    def __init__(self, model_type='5', job=None): # Model type '5' para Rudder
+    def __init__(self, model_type='5', job=None, jornada_contratual_config=None, hora_extra_config=None):
         self.model_type = model_type
         self.config_ocr = r'--oem 3 --psm 6 -l por'
         self.job = job
+        self.jornada_contratual_config = jornada_contratual_config if jornada_contratual_config else {}
+        self.hora_extra_config = hora_extra_config if hora_extra_config else {}
+        self.horarios_mapeados = {} # Armazena o mapa de horários contratuais
 
     def update_progress(self, current_step, total_steps, message, status='processing'):
         if self.job:
@@ -33,7 +36,6 @@ class ExtractorPontoEletronico:
                 'total_steps': total_steps, 'status': status, 'timestamp': datetime.now().isoformat()
             })
             self.job.save()
-            # O print no worker pode ser útil para monitorização
             print(f"[RQ Job {self.job.id}] Progress: {progress_percent}% - {message}")
 
     def converter_pdf_imagens(self, pdf_path, pages_range=None, dpi=300):
@@ -65,30 +67,50 @@ class ExtractorPontoEletronico:
             print(f"Erro ao extrair texto com OCR: {e}")
             return ""
 
-    def detectar_inicio_tabela(self, linhas):
-        for i, linha in enumerate(linhas):
-            if re.match(r'^\s*(\d{2}/\d{2}/\d{2}).*?\s+([A-ZÁ]{3})\.?', linha):
-                return i
-        return 0
+    def _extrair_horarios_contratuais(self, texto):
+        self.horarios_mapeados = {}
+        linhas = texto.split('\n')
+        tabela_encontrada = False
+        for linha in linhas:
+            if 'Horários contratuais do empregado' in linha:
+                tabela_encontrada = True
+                continue
+            if not tabela_encontrada:
+                continue
+            if 'Motivos de tratamento' in linha:
+                break
+            
+            match = re.match(r'^\s*(\d{4})\s+(\d{1,2}:\d{2})\s+(\d{1,2}:\d{2})(?:\s+(\d{1,2}:\d{2}))?(?:\s+(\d{1,2}:\d{2}))?', linha)
+            if match:
+                codigo = match.group(1)
+                horarios = [h for h in match.groups()[1:] if h]
+                while len(horarios) < 4:
+                    horarios.append("0")
+                self.horarios_mapeados[codigo] = horarios
 
-    def detectar_fim_tabela(self, linhas, indice_inicio):
-        for i in range(indice_inicio, len(linhas)):
-            if linhas[i].strip().startswith('Total:'):
-                return i
-        return len(linhas)
+    def validar_horarios(self, horarios):
+        """
+        Valida os horários. Se houver apenas um horário, zera todos.
+        Garante que a lista tenha sempre 4 elementos.
+        """
+        horarios_validos = list(horarios)[:4]
+        
+        horarios_nao_zero = [h for h in horarios_validos if h and h != "0"]
+
+        if len(horarios_nao_zero) == 1:
+            return ["0", "0", "0", "0"]
+
+        while len(horarios_validos) < 4:
+            horarios_validos.append("0")
+            
+        return [h if h else "0" for h in horarios_validos]
 
     def processar_texto_ponto(self, texto):
+        self._extrair_horarios_contratuais(texto)
         linhas = texto.split('\n')
-        indice_inicio = self.detectar_inicio_tabela(linhas)
-        indice_fim = self.detectar_fim_tabela(linhas, indice_inicio)
-        
-        if indice_inicio == 0 and not any(re.match(r'^\s*(\d{2}/\d{2}/\d{2})', l) for l in linhas):
-             return []
-
-        linhas_tabela = linhas[indice_inicio:indice_fim]
         dados_extraidos = []
         
-        for linha in linhas_tabela:
+        for linha in linhas:
             linha = linha.strip()
             if not linha:
                 continue
@@ -96,7 +118,7 @@ class ExtractorPontoEletronico:
             match = re.match(r'^\s*(\d{2}/\d{2}/\d{2})\s*[\]|/]*\s*([A-ZÁ]{3})\.?[|]?\s*(.*)', linha)
             if match:
                 data_str, dia_semana, resto_linha = match.groups()
-                dia_semana = dia_semana.upper().replace('Á', 'A')
+                dia_semana = dia_semana.upper().replace('Á', 'A').replace('.', '')
                 
                 try:
                     data_obj = datetime.strptime(data_str, '%d/%m/%y')
@@ -104,22 +126,44 @@ class ExtractorPontoEletronico:
                 except ValueError:
                     continue
 
-                horarios_finais = ["0", "0", "0", "0"]
-                
-                horarios = re.findall(r'(\d{2}:\d{2})\(\d\)', resto_linha)
+                horarios_provisorios = ["0", "0", "0", "0"]
+                is_jornada_contratual = "Trabalho conforme jornada contratual" in resto_linha
 
-                if len(horarios) > 0:
-                    if len(horarios) >= 2:
-                        horarios_finais[0] = horarios[0]
-                        horarios_finais[1] = horarios[1]
-                    elif len(horarios) == 1:
-                        horarios_finais[0] = horarios[0]
-                else:
-                    palavras_especiais = ['FOLGA', 'TRABALHO CONFORME JORNADA CONTRATUAL']
-                    if not any(palavra in resto_linha.upper() for palavra in palavras_especiais):
-                        # Se não encontrou horários nem palavras especiais, pode ser um erro de OCR,
-                        # mas por segurança, assume-se como dia não trabalhado.
-                        pass
+                if is_jornada_contratual and self.jornada_contratual_config.get('tipo') == 'codigo_horario':
+                    codigo_horario_match = re.search(r'\s(\d{4})\s', linha)
+                    if codigo_horario_match:
+                        codigo = codigo_horario_match.group(1)
+                        if codigo in self.horarios_mapeados:
+                            horarios_provisorios = self.horarios_mapeados[codigo][:]
+
+                jornada_realizada_texto = resto_linha
+                fim_busca_match = re.search(r'Horas extras|Ad\. Not\.|Faltas/|Trat\. Aus\.|BH saldo|%', resto_linha, re.IGNORECASE)
+                if fim_busca_match:
+                    jornada_realizada_texto = resto_linha[:fim_busca_match.start()]
+                
+                horarios_batidos = re.findall(r'(\d{1,2}:\d{2})\(\d\)', jornada_realizada_texto)
+                if horarios_batidos:
+                    for i in range(min(len(horarios_batidos), 4)):
+                        horarios_provisorios[i] = horarios_batidos[i]
+
+                if self.jornada_contratual_config.get('tipo') == 'codigo_horario' and self.hora_extra_config.get('adicionar_1h'):
+                    if is_jornada_contratual and any(he in resto_linha for he in ['150%', '100%', '50%']):
+                        indice_ultima_saida = -1
+                        if horarios_provisorios[3] not in ["0", None]:
+                            indice_ultima_saida = 3
+                        elif horarios_provisorios[1] not in ["0", None]:
+                            indice_ultima_saida = 1
+
+                        if indice_ultima_saida != -1:
+                            try:
+                                saida_dt = datetime.strptime(horarios_provisorios[indice_ultima_saida], '%H:%M')
+                                saida_dt += timedelta(hours=1)
+                                horarios_provisorios[indice_ultima_saida] = saida_dt.strftime('%H:%M')
+                            except ValueError:
+                                pass
+                
+                # Validação universal aplicada aqui
+                horarios_finais = self.validar_horarios(horarios_provisorios)
 
                 dados_linha = {
                     'Dia': data,
@@ -135,14 +179,37 @@ class ExtractorPontoEletronico:
 
     def processar_pagina(self, imagem, num_pagina):
         texto_completo = self.extrair_texto_completo(imagem)
-        if not texto_completo:
-            return pd.DataFrame()
+        if not texto_completo: return pd.DataFrame()
         dados_extraidos = self.processar_texto_ponto(texto_completo)
         if dados_extraidos:
             df = pd.DataFrame(dados_extraidos)
             df['Pagina'] = num_pagina
             return df
         return pd.DataFrame()
+
+    def fill_missing_dates(self, df):
+        if df.empty:
+            return df
+        try:
+            df['Dia_dt'] = pd.to_datetime(df['Dia'], format='%d/%m/%Y')
+            df = df.drop_duplicates(subset=['Dia_dt']).set_index('Dia_dt')
+
+            data_inicio = df.index.min()
+            data_fim = df.index.max()
+            intervalo_completo = pd.date_range(start=data_inicio, end=data_fim)
+            
+            df_completo = df.reindex(intervalo_completo)
+            df_completo['Dia'] = df_completo.index.strftime('%d/%m/%Y')
+
+            dia_semana_map = {0: 'SEG', 1: 'TER', 2: 'QUA', 3: 'QUI', 4: 'SEX', 5: 'SAB', 6: 'DOM'}
+            df_completo['Dia_Semana'] = df_completo.index.dayofweek.map(dia_semana_map)
+            
+            return df_completo.reset_index(drop=True)
+        except Exception as e:
+            print(f"Aviso: Falha ao preencher dias faltantes. Erro: {e}")
+            if 'Dia_dt' in df.columns:
+                return df.drop(columns=['Dia_dt'])
+            return df
 
     def processar_pdf_completo(self, pdf_path, pages_range=None):
         self.update_progress(0, 1, "A iniciar processamento...")
@@ -168,13 +235,14 @@ class ExtractorPontoEletronico:
         
         if todas_tabelas:
             df_consolidado = pd.concat(todas_tabelas, ignore_index=True)
+            df_final = self.fill_missing_dates(df_consolidado)
             self.update_progress(total_paginas, total_paginas, "Processamento concluído!", status='completed')
-            return [df_consolidado]
+            return [df_final]
         
         self.update_progress(total_paginas, total_paginas, "Nenhum dado extraído.", status='completed')
         return []
 
-def process_pdf_task(pdf_path, pages, model_type, user_id):
+def process_pdf_task(pdf_path, pages, model_type, user_id, jornada_contratual_config=None, hora_extra_config=None):
     job = get_current_job()
     if not job:
         print("Erro: Não foi possível obter o objeto job do RQ.")
@@ -184,7 +252,7 @@ def process_pdf_task(pdf_path, pages, model_type, user_id):
     job.save_meta()
 
     try:
-        extrator = ExtractorPontoEletronico(model_type, job)
+        extrator = ExtractorPontoEletronico(model_type, job, jornada_contratual_config, hora_extra_config)
         tabelas = extrator.processar_pdf_completo(pdf_path, pages)
 
         if not tabelas:
@@ -193,11 +261,12 @@ def process_pdf_task(pdf_path, pages, model_type, user_id):
             return None
 
         df_final = tabelas[0]
+
         colunas_finais = ['Dia', 'Dia_Semana', 'Entrada1', 'Saida1', 'Entrada2', 'Saida2']
         for col in colunas_finais:
             if col not in df_final.columns:
                 df_final[col] = "0"
-        df_final = df_final[colunas_finais].fillna("0")
+        df_final = df_final[colunas_finais].fillna("0").replace("", "0")
 
         output = BytesIO()
         df_final.to_csv(output, index=False, encoding='utf-8', sep=';')
