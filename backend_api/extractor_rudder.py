@@ -40,7 +40,11 @@ class ExtractorPontoEletronico:
 
     def converter_pdf_imagens(self, pdf_path, pages_range=None, dpi=300):
         try:
-            pages_args = {}
+            # ---> INÍCIO DA ALTERAÇÃO DE DESEMPENHO <---
+            num_cores = os.cpu_count()
+            print(f"Utilizando {num_cores} núcleos para a conversão de PDF para imagem.")
+
+            pages_args = {'thread_count': num_cores} # Adiciona o parâmetro para usar todos os núcleos
             if pages_range:
                 if '-' in pages_range:
                     start, end = map(int, pages_range.split('-'))
@@ -48,7 +52,9 @@ class ExtractorPontoEletronico:
                     pages_args['last_page'] = end
                 else:
                     pages_args['first_page'] = pages_args['last_page'] = int(pages_range)
+            
             return convert_from_path(pdf_path, dpi=dpi, **pages_args)
+            # ---> FIM DA ALTERAÇÃO DE DESEMPENHO <---
         except Exception as e:
             print(f"Erro ao converter PDF para imagens: {e}")
             if self.job:

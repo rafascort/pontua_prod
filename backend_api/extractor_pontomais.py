@@ -44,6 +44,10 @@ class ExtractorPontoEletronico:
     def converter_pdf_imagens(self, pdf_path, pages_range=None, dpi=300):
         """Converte PDF para imagens"""
         try:
+            # ---> INÍCIO DA ALTERAÇÃO DE DESEMPENHO <---
+            num_cores = os.cpu_count()
+            print(f"Utilizando {num_cores} núcleos para a conversão de PDF para imagem.")
+            
             first_page = None
             last_page = None
             if pages_range:
@@ -57,10 +61,16 @@ class ExtractorPontoEletronico:
                     pdf_path,
                     dpi=dpi,
                     first_page=first_page,
-                    last_page=last_page
+                    last_page=last_page,
+                    thread_count=num_cores
                 )
             else:
-                imagens = convert_from_path(pdf_path, dpi=dpi)
+                imagens = convert_from_path(
+                    pdf_path,
+                    dpi=dpi,
+                    thread_count=num_cores
+                )
+            # ---> FIM DA ALTERAÇÃO DE DESEMPENHO <---
             return imagens
         except Exception as e:
             print(f"Erro ao converter PDF para imagens: {str(e)}")
@@ -413,4 +423,3 @@ def process_pdf_task(pdf_path, pages, model_type, user_id):
         if os.path.exists(pdf_path):
             os.unlink(pdf_path)
             print(f"PDF temporário {pdf_path} removido pelo worker.") # Adicionado print para depuração
-

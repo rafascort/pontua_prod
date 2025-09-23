@@ -1,3 +1,5 @@
+# /opt/pontua/AutoPonto/backend_api/extractor_jbs.py
+
 import os
 import tempfile
 import pandas as pd
@@ -39,6 +41,9 @@ class ExtractorPontoEletronico:
 
     def converter_pdf_imagens(self, pdf_path, pages_range=None, dpi=300):
         try:
+            num_cores = os.cpu_count()
+            print(f"Utilizando {num_cores} núcleos para a conversão de PDF para imagem.")
+
             if pages_range:
                 if '-' in pages_range:
                     start, end = map(int, pages_range.split('-'))
@@ -46,9 +51,19 @@ class ExtractorPontoEletronico:
                     last_page = end
                 else:
                     first_page = last_page = int(pages_range)
-                imagens = convert_from_path(pdf_path, dpi=dpi, first_page=first_page, last_page=last_page)
+                imagens = convert_from_path(
+                    pdf_path,
+                    dpi=dpi,
+                    first_page=first_page,
+                    last_page=last_page,
+                    thread_count=num_cores
+                )
             else:
-                imagens = convert_from_path(pdf_path, dpi=dpi)
+                imagens = convert_from_path(
+                    pdf_path,
+                    dpi=dpi,
+                    thread_count=num_cores
+                )
             return imagens
         except Exception as e:
             print(f"Erro ao converter PDF para imagens: {e}")
@@ -119,19 +134,20 @@ class ExtractorPontoEletronico:
                 inicio_busca = pos_data + len(data)
                 substring_horarios = linha[inicio_busca:]
                 
-                # --- LÓGICA CORRIGIDA PARA EXTRAIR O DIA DA SEMANA ---
+                # ---> INÍCIO DA ALTERAÇÃO: LÓGICA DO DIA DA SEMANA <---
+                # Esta nova lógica calcula o dia da semana a partir da data,
+                # ignorando o texto que pode conter erros de OCR.
                 dia_semana_encontrado = ""
-                # O padrão procura por abreviações de 3 letras (seg, ter, qua...) de forma case-insensitive
-                match = re.search(r'\b(seg|ter|qua|qui|sex|s[áa]b|dom)\b', linha, re.IGNORECASE)
-                if match:
-                    day_str = match.group(1).lower()
-                    day_map = {
-                        'seg': 'Seg', 'ter': 'Ter', 'qua': 'Qua',
-                        'qui': 'Qui', 'sex': 'Sex', 'sáb': 'Sab', 
-                        'sab': 'Sab', 'dom': 'Dom'
-                    }
-                    dia_semana_encontrado = day_map.get(day_str, "")
-                # --- FIM DA CORREÇÃO ---
+                try:
+                    # Converte a string da data para um objeto datetime
+                    data_obj = datetime.strptime(data, '%d/%m/%Y')
+                    # Mapeia o dia da semana (0=Seg, 1=Ter, ..., 6=Dom) para a abreviação
+                    dias_map = {0: 'Seg', 1: 'Ter', 2: 'Qua', 3: 'Qui', 4: 'Sex', 5: 'Sab', 6: 'Dom'}
+                    dia_semana_encontrado = dias_map.get(data_obj.weekday(), "")
+                except ValueError:
+                    # Caso a data extraída seja inválida, mantém o dia da semana em branco
+                    dia_semana_encontrado = ""
+                # ---> FIM DA ALTERAÇÃO <---
                 
                 palavras_especiais = ['COMPENSA DIA', 'INTEGRAÇÃO', 'INTERAÇÃO', 'DISPENSA',
                                       'ATESTADO', 'MÉDICO', 'FALTA', 'LICENÇA', 'FÉRIAS']
