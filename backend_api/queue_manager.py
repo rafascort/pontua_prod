@@ -9,7 +9,6 @@ import redis
 from rq import Queue
 import threading
 import time
-import json # Import json
 
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from dotenv import load_dotenv
@@ -33,7 +32,8 @@ QUEUES = {
     '2': Queue('brf_queue', connection=redis_conn),
     '3': Queue('pontomais_queue', connection=redis_conn),
     '4': Queue('minuano_queue', connection=redis_conn),
-    '5': Queue('rudder_queue', connection=redis_conn), # ADICIONADO
+    '5': Queue('rudder_queue', connection=redis_conn),
+    '6': Queue('secullum_queue', connection=redis_conn), # ADICIONADO
 }
 
 EXTRACTOR_MODULES = {
@@ -41,7 +41,8 @@ EXTRACTOR_MODULES = {
     '2': 'extractor_brf',
     '3': 'extractor_pontomais',
     '4': 'extractor_minuano',
-    '5': 'extractor_rudder', # ADICIONADO
+    '5': 'extractor_rudder',
+    '6': 'extractor_secullum', # ADICIONADO
 }
 
 @app.route('/api/process', methods=['POST'])
@@ -57,14 +58,6 @@ def process_pdf():
         file = request.files['pdf_file']
         pages = request.form.get('pages', '')
         model_type = request.form.get('model_type', '1')
-
-        # Novas configurações para Rudder
-        jornada_contratual_config_str = request.form.get('jornada_contratual_config', '{}')
-        hora_extra_config_str = request.form.get('hora_extra_config', '{}')
-        
-        jornada_contratual_config = json.loads(jornada_contratual_config_str)
-        hora_extra_config = json.loads(hora_extra_config_str)
-
         if file.filename == '':
             return jsonify({'error': 'Nenhum ficheiro selecionado'}), 400
         if model_type not in QUEUES:
@@ -74,20 +67,8 @@ def process_pdf():
             pdf_path = tmp_file.name
         q = QUEUES[model_type]
         extractor_module_name = EXTRACTOR_MODULES[model_type]
-        
-        job_kwargs = {
-            'pdf_path': pdf_path,
-            'pages': pages,
-            'model_type': model_type,
-            'user_id': current_user_id
-        }
-
-        if model_type == '5': # Rudder
-            job_kwargs['jornada_contratual_config'] = jornada_contratual_config
-            job_kwargs['hora_extra_config'] = hora_extra_config
-
         job = q.enqueue(f'{extractor_module_name}.process_pdf_task',
-                        **job_kwargs,
+                        pdf_path, pages, model_type, user_id=current_user_id,
                         job_timeout='1h',
                         meta={
                             'progress': 0, 'message': 'Tarefa na fila, a aguardar processamento...',

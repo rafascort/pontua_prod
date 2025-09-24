@@ -11,6 +11,7 @@ const MODEL_IMAGE_PATHS = {
     '3': process.env.PUBLIC_URL + '/Modelo3.png',
     '4': process.env.PUBLIC_URL + '/Modelo4.png',
     '5': process.env.PUBLIC_URL + '/Modelo5.png',
+    '6': process.env.PUBLIC_URL + '/Modelo6.png', // ADICIONADO (crie uma imagem Modelo6.png na pasta public)
 };
 
 function MainApp({ onLogout }) {
@@ -22,17 +23,7 @@ function MainApp({ onLogout }) {
     const [pageRange, setPageRange] = useState('');
     const [modelType, setModelType] = useState(null);
     const [zoomedModel, setZoomedModel] = useState(null);
-    
-    // Estado reestruturado para as configurações do Rudder
-    const [rudderConfig, setRudderConfig] = useState({
-        jornadaContratual: {
-            tipo: 'padrao', // 'padrao' ou 'codigo_horario'
-        },
-        horaExtra: {
-            acao: 'apenas_jornada' // 'apenas_jornada' ou 'adicionar_1h'
-        }
-    });
-
+    const [settings, setSettings] = useState({});
     const [statusMessage, setStatusMessage] = useState('Aguardando arquivo...');
     const [isProcessing, setIsProcessing] = useState(false);
     const [showProgressModal, setShowProgressModal] = useState(false);
@@ -116,24 +107,12 @@ function MainApp({ onLogout }) {
             console.error('Erro de rede:', error); setStatusMessage(`Erro de rede: ${error.message}`); setIsProcessing(false); setShowProgressModal(false); if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
         }
     };
-    
     const handleProcess = async () => {
         if (!selectedFile || !pageRange || !modelType) { alert('Complete todos os passos.'); return; }
         setIsProcessing(true); setShowProgressModal(true); setProgressData({ current_step: 0, total_steps: 1, progress: 0, message: 'A iniciar...' }); setStatusMessage('A iniciar...');
         const formData = new FormData();
-        formData.append('pdf_file', selectedFile);
-        formData.append('pages', pageRange);
-        formData.append('model_type', modelType);
-        const token = localStorage.getItem('jwt_token');
-        if (!token) { onLogout(); return; }
-
-        if (modelType === '5') { // Configurações específicas do Rudder
-            formData.append('jornada_contratual_config', JSON.stringify(rudderConfig.jornadaContratual));
-            formData.append('hora_extra_config', JSON.stringify({
-                adicionar_1h: rudderConfig.jornadaContratual.tipo === 'codigo_horario' && rudderConfig.horaExtra.acao === 'adicionar_1h'
-            }));
-        }
-
+        formData.append('pdf_file', selectedFile); formData.append('pages', pageRange); formData.append('model_type', modelType);
+        const token = localStorage.getItem('jwt_token'); if (!token) { onLogout(); return; }
         try {
             const response = await fetch(`${API_BASE_URL}/process`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` }, body: formData });
             if (!response.ok) { const errorResult = await response.json(); if (response.status === 401 || response.status === 403) { onLogout(); } throw new Error(errorResult.error || errorResult.msg || 'Erro no servidor.'); }
@@ -144,7 +123,6 @@ function MainApp({ onLogout }) {
             console.error('Ocorreu um erro:', error); setStatusMessage(`Erro: ${error.message}`); setIsProcessing(false); setShowProgressModal(false);
         }
     };
-
     const handleCloseModal = () => { setShowProgressModal(false); };
 
     const modelNames = { 
@@ -152,7 +130,8 @@ function MainApp({ onLogout }) {
         '2': 'BRF Ponto', 
         '3': 'Ponto Mais', 
         '4': 'Minuano',
-        '5': 'Rudder Digital'
+        '5': 'Rudder Digital',
+        '6': 'Secullum Ponto' // ADICIONADO
     };
 
     // --- LÓGICA DE RENDERIZAÇÃO ---
@@ -242,33 +221,7 @@ function MainApp({ onLogout }) {
                                     <h2>Configurações</h2>
                                 </div>
                                 <div className="settings-container">
-                                    {modelType === '5' ? (
-                                        <div className="rudder-config">
-                                            <fieldset>
-                                                <legend>1. Trabalho conforme jornada contratual</legend>
-                                                <div className="config-option">
-                                                    <input type="radio" id="jornadaPadrao" name="jornadaContratual" value="padrao" checked={rudderConfig.jornadaContratual.tipo === 'padrao'} onChange={(e) => setRudderConfig(prev => ({...prev, jornadaContratual: {...prev.jornadaContratual, tipo: e.target.value}}))} />
-                                                    <label htmlFor="jornadaPadrao">Padrão (deixa zerado)</label>
-                                                </div>
-                                                <div className="config-option">
-                                                    <input type="radio" id="jornadaCodigo" name="jornadaContratual" value="codigo_horario" checked={rudderConfig.jornadaContratual.tipo === 'codigo_horario'} onChange={(e) => setRudderConfig(prev => ({...prev, jornadaContratual: {...prev.jornadaContratual, tipo: e.target.value}}))} />
-                                                    <label htmlFor="jornadaCodigo">Usar código de horário da folha</label>
-                                                </div>
-                                            </fieldset>
-                                            
-                                            {rudderConfig.jornadaContratual.tipo === 'codigo_horario' && (
-                                                <fieldset>
-                                                    <legend>2. Caso H.E junto a jornada contractual:</legend>
-                                                    <select value={rudderConfig.horaExtra.acao} onChange={(e) => setRudderConfig(prev => ({...prev, horaExtra: {...prev.horaExtra, acao: e.target.value}}))}>
-                                                        <option value="apenas_jornada">Apenas jornada contractual</option>
-                                                        <option value="adicionar_1h">Adicionar H.E na última saída</option>
-                                                    </select>
-                                                </fieldset>
-                                            )}
-                                        </div>
-                                    ) : (
-                                        <p className="settings-placeholder">Nenhuma configuração disponível no momento.</p>
-                                    )}
+                                    <p className="settings-placeholder">Nenhuma configuração disponível no momento.</p>
                                 </div>
                                 <div className="extractor-actions">
                                     <button className="start-button" onClick={handleProcess} disabled={isProcessing}>
