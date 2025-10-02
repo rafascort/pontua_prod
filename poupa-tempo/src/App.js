@@ -12,7 +12,6 @@ function App() {
     const [isAdmin, setIsAdmin] = useState(false);
     const navigate = useNavigate();
 
-    // Função para decodificar o token e definir estados
     const decodeAndSetUserStatus = (token) => {
         if (token) {
             try {
@@ -58,7 +57,7 @@ function App() {
 
             <Route
                 path="/app"
-                element={logado ? <MainApp onLogout={handleLogout} /> : <Navigate to="/login" replace />}
+                element={logado ? <MainApp onLogout={handleLogout} isAdmin={isAdmin} /> : <Navigate to="/login" replace />}
             />
 
             <Route

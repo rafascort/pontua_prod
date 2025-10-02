@@ -38,6 +38,9 @@ __pycache__/
 # Arquivo de ambiente do backend - IMPORTANTE PARA SEGURANÇA
 backend_api/.env
 
+# Arquivo de credenciais do Google Cloud - IMPORTANTE PARA SEGURANÇA
+backend_api/chave-gcloud.json  # <-- LINHA ADICIONADA AQUI
+
 
 # --- Arquivos de Sistema Operacional e IDEs ---
 .DS_Store

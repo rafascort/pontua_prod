@@ -21,18 +21,12 @@ const AdminDashboard = ({ onLogout }) => {
         }
         try {
             const response = await fetch('/api/admin/users', {
-                headers: {
-                    'Authorization': `Bearer ${token}`
-                }
+                headers: { 'Authorization': `Bearer ${token}` }
             });
-
             if (response.status === 401 || response.status === 403) {
-                const errorData = await response.json();
-                setError(errorData.msg || 'Você não tem permissão para acessar esta página ou sua sessão expirou.');
                 onLogout();
                 return;
             }
-
             if (response.ok) {
                 const data = await response.json();
                 setUsers(data);
@@ -41,19 +35,9 @@ const AdminDashboard = ({ onLogout }) => {
                 setError(errorData.msg || 'Erro ao carregar usuários.');
             }
         } catch (err) {
-            console.error('Erro ao buscar usuários:', err);
             setError('Erro de rede ao buscar usuários.');
         }
     };
-
-    useEffect(() => {
-        fetchUsers();
-        const timer = setTimeout(() => {
-            setMessage('');
-            setError('');
-        }, 5000);
-        return () => clearTimeout(timer);
-    }, [message, error]);
 
     const handleCreateUser = async (e) => {
         e.preventDefault();
@@ -65,23 +49,11 @@ const AdminDashboard = ({ onLogout }) => {
         try {
             const response = await fetch('/api/admin/users', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
-                },
-                body: JSON.stringify({
-                    email: newUserEmail,
-                    password: newUserPassword,
-                    role: newUserRole
-                })
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ email: newUserEmail, password: newUserPassword, role: newUserRole })
             });
 
-            if (response.status === 401 || response.status === 403) {
-                const errorData = await response.json();
-                setError(errorData.msg || 'Você não tem permissão para criar usuários ou sua sessão expirou.');
-                onLogout();
-                return;
-            }
+            if (response.status === 401 || response.status === 403) { onLogout(); return; }
 
             if (response.ok) {
                 setMessage('Usuário criado com sucesso!');
@@ -94,7 +66,6 @@ const AdminDashboard = ({ onLogout }) => {
                 setError(errorData.msg || 'Erro ao criar usuário.');
             }
         } catch (err) {
-            console.error('Erro ao criar usuário:', err);
             setError('Erro de rede ao criar usuário.');
         }
     };
@@ -108,19 +79,11 @@ const AdminDashboard = ({ onLogout }) => {
         try {
             const response = await fetch(`/api/admin/users/${userId}/status`, {
                 method: 'PUT',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
-                },
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                 body: JSON.stringify({ is_active: !currentStatus })
             });
 
-            if (response.status === 401 || response.status === 403) {
-                const errorData = await response.json();
-                setError(errorData.msg || 'Você não tem permissão para alterar o status do usuário ou sua sessão expirou.');
-                onLogout();
-                return;
-            }
+            if (response.status === 401 || response.status === 403) { onLogout(); return; }
 
             if (response.ok) {
                 setMessage(`Status do usuário atualizado com sucesso!`);
@@ -130,12 +93,10 @@ const AdminDashboard = ({ onLogout }) => {
                 setError(errorData.msg || 'Erro ao atualizar status.');
             }
         } catch (err) {
-            console.error('Erro ao atualizar status:', err);
             setError('Erro de rede ao atualizar status.');
         }
     };
 
-    // NOVA FUNÇÃO: Excluir Usuário
     const handleDeleteUser = async (userId, userEmail) => {
         setError('');
         setMessage('');
@@ -143,43 +104,48 @@ const AdminDashboard = ({ onLogout }) => {
         if (!token) return;
 
         if (!window.confirm(`Tem certeza que deseja excluir o usuário ${userEmail}? Esta ação é irreversível.`)) {
-            return; // Cancela se o usuário não confirmar
+            return;
         }
 
         try {
             const response = await fetch(`/api/admin/users/${userId}`, {
                 method: 'DELETE',
-                headers: {
-                    'Authorization': `Bearer ${token}`
-                }
+                headers: { 'Authorization': `Bearer ${token}` }
             });
 
-            if (response.status === 401 || response.status === 403) {
-                const errorData = await response.json();
-                setError(errorData.msg || 'Você não tem permissão para excluir usuários ou sua sessão expirou.');
-                onLogout();
-                return;
-            }
+            if (response.status === 401 || response.status === 403) { onLogout(); return; }
 
             if (response.ok) {
                 setMessage(`Usuário ${userEmail} excluído com sucesso!`);
-                fetchUsers(); // Recarrega a lista de usuários
+                fetchUsers();
             } else {
                 const errorData = await response.json();
                 setError(errorData.msg || 'Erro ao excluir usuário.');
             }
         } catch (err) {
-            console.error('Erro ao excluir usuário:', err);
             setError('Erro de rede ao excluir usuário.');
         }
     };
-
+    
+    useEffect(() => {
+        fetchUsers();
+    }, []);
+    
+    useEffect(() => {
+        if (message || error) {
+            const timer = setTimeout(() => { setMessage(''); setError(''); }, 5000);
+            return () => clearTimeout(timer);
+        }
+    }, [message, error]);
 
     return (
         <div className="admin-dashboard-container">
             <header className="admin-header">
                 <h1>Painel de Administração</h1>
-                <button onClick={onLogout} className="logout-button">Sair</button>
+                <div>
+                    <button onClick={() => navigate('/app')} className="access-system-button">Acessar Sistema</button>
+                    <button onClick={onLogout} className="logout-button">Sair</button>
+                </div>
             </header>
             <main className="admin-content">
                 {error && <p className="error-message">{error}</p>}
@@ -188,20 +154,8 @@ const AdminDashboard = ({ onLogout }) => {
                 <section className="create-user-section">
                     <h2>Criar Novo Usuário</h2>
                     <form onSubmit={handleCreateUser} className="create-user-form">
-                        <input
-                            type="email"
-                            placeholder="E-mail"
-                            value={newUserEmail}
-                            onChange={(e) => setNewUserEmail(e.target.value)}
-                            required
-                        />
-                        <input
-                            type="password"
-                            placeholder="Senha"
-                            value={newUserPassword}
-                            onChange={(e) => setNewUserPassword(e.target.value)}
-                            required
-                        />
+                        <input type="email" placeholder="E-mail" value={newUserEmail} onChange={(e) => setNewUserEmail(e.target.value)} required />
+                        <input type="password" placeholder="Senha" value={newUserPassword} onChange={(e) => setNewUserPassword(e.target.value)} required />
                         <select value={newUserRole} onChange={(e) => setNewUserRole(e.target.value)}>
                             <option value="user">Usuário Comum</option>
                             <option value="admin">Administrador</option>
@@ -211,8 +165,8 @@ const AdminDashboard = ({ onLogout }) => {
                 </section>
 
                 <section className="user-list-section">
-                    <h2>Gerenciar Usuários</h2>
-                    <table className="users-table">
+                     <h2>Gerenciar Usuários</h2>
+                     <table className="users-table">
                         <thead>
                             <tr>
                                 <th>ID</th>
@@ -232,20 +186,10 @@ const AdminDashboard = ({ onLogout }) => {
                                     <td>{user.is_active ? 'Ativo' : 'Inativo'}</td>
                                     <td>{user.role}</td>
                                     <td>
-                                        <button
-                                            onClick={() => handleToggleUserStatus(user.id, user.is_active)}
-                                            className={user.is_active ? 'deactivate-button' : 'activate-button'}
-                                            disabled={user.role === 'admin' && user.email === 'admin@sistemaponto.com'}
-                                        >
+                                        <button onClick={() => handleToggleUserStatus(user.id, user.is_active)} className={user.is_active ? 'deactivate-button' : 'activate-button'}>
                                             {user.is_active ? 'Desativar' : 'Ativar'}
                                         </button>
-                                        {/* NOVO BOTÃO: Excluir */}
-                                        <button
-                                            onClick={() => handleDeleteUser(user.id, user.email)}
-                                            className="delete-button"
-                                            style={{ marginLeft: '10px', backgroundColor: '#dc3545', color: 'white' }}
-                                            disabled={user.role === 'admin' && user.email === 'admin@sistemaponto.com'}
-                                        >
+                                        <button onClick={() => handleDeleteUser(user.id, user.email)} className="delete-button" style={{ marginLeft: '10px' }}>
                                             Excluir
                                         </button>
                                     </td>
@@ -260,4 +204,3 @@ const AdminDashboard = ({ onLogout }) => {
 };
 
 export default AdminDashboard;
-
