@@ -47,3 +47,4 @@ backend_api/chave-gcloud.json  # <-- LINHA ADICIONADA AQUI
 Thumbs.db
 .vscode/
 .idea/
+backend_api/chave-gcloud.json
