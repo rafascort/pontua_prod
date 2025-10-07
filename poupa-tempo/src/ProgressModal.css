@@ -133,10 +133,93 @@
 }
 
 .status-text {
-  color: #666;
-  font-size: 0.95rem;
+  margin-top: 16px;
+  color: #333;
+  font-size: 14px;
   font-weight: 500;
+  text-align: center;
+  line-height: 1.4;
 }
+
+/* ✨ NOVOS ESTILOS PARA DETALHES DE PROGRESSO */
+
+.status-detail {
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: rgba(40, 167, 69, 0.08);
+  border-radius: 8px;
+  font-size: 13px;
+  color: #666;
+  border-left: 3px solid #28a745;
+}
+
+.detail-bar-container {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.detail-bar {
+  flex: 1;
+  height: 6px;
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.detail-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #28a745, #20c997);
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.detail-text {
+  font-size: 12px;
+  font-weight: 600;
+  color: #28a745;
+  white-space: nowrap;
+  min-width: 50px;
+  text-align: right;
+}
+
+/* ✨ ESTILOS PARA PROCESSAMENTO IA */
+
+.ai-processing {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(0, 123, 255, 0.08);
+  border-left: 3px solid #007bff;
+  padding: 12px 14px;
+}
+
+.spinner {
+  width: 18px;
+  height: 18px;
+  border: 2.5px solid #e0e6ed;
+  border-top-color: #007bff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to { 
+    transform: rotate(360deg); 
+  }
+}
+
+.ai-processing span {
+  color: #007bff;
+  font-weight: 500;
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+}
+
+/* ✨ ANIMAÇÕES */
 
 @keyframes modalSlideIn {
   from {
@@ -149,7 +232,23 @@
   }
 }
 
-/* Responsividade */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.status-detail {
+  animation: fadeIn 0.3s ease-out;
+}
+
+/* ✨ RESPONSIVIDADE */
+
 @media (max-width: 480px) {
   .progress-modal {
     padding: 20px;
@@ -167,4 +266,52 @@
   .total-pages {
     font-size: 1.3rem;
   }
+  
+  .status-text {
+    font-size: 13px;
+  }
+  
+  .status-detail {
+    font-size: 12px;
+    padding: 8px 12px;
+  }
+  
+  .ai-processing span {
+    font-size: 12px;
+  }
+  
+  .detail-text {
+    font-size: 11px;
+  }
+  
+  .spinner {
+    width: 16px;
+    height: 16px;
+    border-width: 2px;
+  }
 }
+
+@media (max-width: 360px) {
+  .progress-modal {
+    padding: 16px;
+    margin: 15px;
+  }
+  
+  .progress-circle {
+    width: 100px;
+    height: 100px;
+  }
+  
+  .percentage {
+    font-size: 1.5rem;
+  }
+  
+  .current-page {
+    font-size: 1.5rem;
+  }
+  
+  .total-pages {
+    font-size: 1.2rem;
+  }
+}
+
