@@ -1,5 +1,5 @@
 # /opt/pontua/AutoPonto/backend_api/queue_manager.py
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, redirect, url_for, session
 from flask_cors import CORS
 import os
 import tempfile
@@ -29,6 +29,8 @@ QUEUES = {
     '2': Queue('brf_queue', connection=redis_conn),
     '3': Queue('pontomais_queue', connection=redis_conn),
     '5': Queue('planalto_queue', connection=redis_conn),
+    '6': Queue('geral_ai_queue', connection=redis_conn), # <-- Fila para o modelo geral AI
+    'period_extraction': Queue('period_extraction_queue', connection=redis_conn), # <-- Nova fila rápida
 }
 
 EXTRACTOR_MODULES = {
@@ -36,11 +38,13 @@ EXTRACTOR_MODULES = {
     '2': 'extractor_brf',
     '3': 'extractor_pontomais',
     '5': 'extractor_planalto',
+    '6': 'extractor_geral_ai', # <-- Novo módulo geral AI
+    'period_extraction': 'extractor_geral_ai', # <-- Aponta para o mesmo módulo
 }
 
-@app.route('/api/process', methods=['POST'])
+@app.route('/api/extract-periods', methods=['POST'])
 @jwt_required()
-def process_pdf():
+def extract_periods():
     current_user_id = get_jwt_identity()
     claims = get_jwt()
     if not claims.get('is_active'):
@@ -51,22 +55,56 @@ def process_pdf():
         
         file = request.files['pdf_file']
         pages = request.form.get('pages', '')
-        model_type = request.form.get('model_type', '1')
 
         if file.filename == '':
             return jsonify({'error': 'Nenhum ficheiro selecionado.'}), 400
-        if model_type not in QUEUES:
-            return jsonify({'error': f'Tipo de modelo inválido.'}), 400
         
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
             file.save(tmp_file.name)
             pdf_path = tmp_file.name
         
+        q = QUEUES['period_extraction']
+        
+        job = q.enqueue(
+            'extractor_geral_ai.extract_periods_task',
+            pdf_path, pages, user_id=current_user_id,
+            job_timeout='2m',
+            meta={'user_id': current_user_id, 'pdf_path': pdf_path}
+        )
+                        
+        return jsonify({'task_id': job.id, 'status': 'queued', 'step': 'period_extraction'})
+    except Exception as e:
+        print(f"Erro ao colocar tarefa de extração de período na fila: {e}")
+        return jsonify({'error': 'Ocorreu um erro interno ao iniciar a análise do período.'}), 500
+
+@app.route('/api/process', methods=['POST'])
+@jwt_required()
+def process_pdf():
+    current_user_id = get_jwt_identity()
+    claims = get_jwt()
+    if not claims.get('is_active'):
+        return jsonify({"error": "A sua conta está inativa."}), 403
+
+    try:
+        data = request.get_json()
+        pages_with_periods = data.get('pages_with_periods')
+        pdf_path = data.get('pdf_path')
+        model_type = data.get('model_type', '6') # O modelo geral agora é o padrão
+
+        if not pages_with_periods or not pdf_path:
+            return jsonify({'error': 'Informações de período e caminho do PDF são necessárias.'}), 400
+
+        if not os.path.exists(pdf_path):
+             return jsonify({'error': f'Arquivo PDF não encontrado no servidor: {pdf_path}. Por favor, inicie o processo novamente.'}), 404
+
+        if model_type not in QUEUES or model_type not in EXTRACTOR_MODULES:
+            return jsonify({'error': 'Tipo de modelo inválido.'}), 400
+        
         q = QUEUES[model_type]
         extractor_module_name = EXTRACTOR_MODULES[model_type]
         
         job = q.enqueue(f'{extractor_module_name}.process_pdf_task',
-                        pdf_path, pages, model_type, user_id=current_user_id,
+                        pdf_path, pages_with_periods, model_type, user_id=current_user_id,
                         job_timeout='1h',
                         meta={
                             'progress': 0, 'message': 'Tarefa na fila...',
@@ -74,7 +112,7 @@ def process_pdf():
                             'timestamp': datetime.now().isoformat(), 'user_id': current_user_id
                         })
                         
-        return jsonify({'task_id': job.id, 'message': 'Processamento na fila', 'status': 'queued'})
+        return jsonify({'task_id': job.id, 'message': 'Processamento completo na fila', 'status': 'queued', 'step': 'full_processing'})
     except Exception as e:
         print(f"Erro ao colocar tarefa na fila: {e}")
         return jsonify({'error': 'Ocorreu um erro interno ao iniciar o processamento.'}), 500
@@ -92,14 +130,22 @@ def get_progress(task_id):
     claims = get_jwt()
     if job.meta.get('user_id') != current_user_id and claims.get('role') != 'admin':
         return jsonify({"error": "Não tem permissão para ver o progresso desta tarefa."}), 403
+    
     status_rq = job.get_status()
     progress_data = job.meta.copy()
-    if status_rq == 'queued': progress_data['status'] = 'queued'
+
+    if status_rq == 'finished' and 'result' in job.meta:
+        progress_data['status'] = 'completed'
+        progress_data['result'] = job.meta['result']
+        progress_data['pdf_path'] = job.meta.get('pdf_path')
+    elif status_rq == 'queued': progress_data['status'] = 'queued'
     elif status_rq == 'started': progress_data['status'] = 'processing'
     elif status_rq == 'finished': progress_data['status'] = progress_data.get('status', 'completed')
     elif status_rq == 'failed': progress_data['status'] = 'error'
+    
     if progress_data.get('total_steps', 0) == 0: progress_data['total_steps'] = 1
     progress_data.pop('user_id', None)
+
     return jsonify(progress_data)
 
 @app.route('/api/download/<task_id>', methods=['GET'])

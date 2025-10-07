@@ -1,0 +1,116 @@
+/* /opt/pontua/AutoPonto/poupa-tempo/src/PeriodConfirmationModal.css */
+
+.period-modal {
+    background: white;
+    border-radius: 20px;
+    padding: 25px 30px;
+    max-width: 750px; /* Modal um pouco mais largo */
+    width: 95%;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    animation: modalSlideIn 0.3s ease-out;
+    color: #333;
+    display: flex;
+    flex-direction: column;
+}
+
+.period-modal h3 {
+    margin-top: 0;
+    font-size: 1.5rem;
+    font-weight: 600;
+    text-align: center;
+}
+
+.period-modal p {
+    text-align: center;
+    color: #666;
+    margin-top: 8px;
+    margin-bottom: 25px;
+    font-size: 0.95rem;
+}
+
+.period-list {
+    max-height: 60vh;
+    overflow-y: auto;
+    padding-right: 15px;
+    margin: 0 -15px;
+    padding-left: 15px;
+}
+
+/* *** MUDANÇAS PRINCIPAIS NO LAYOUT DA LINHA *** */
+.period-item {
+    display: flex;
+    flex-wrap: nowrap; /* Impede que os itens quebrem a linha */
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 15px;
+    background: #f7f7f7;
+    padding: 10px 15px;
+    border-radius: 8px;
+}
+
+.page-label {
+    flex-basis: 90px; /* Largura base para "Página XXX:" */
+    flex-shrink: 0; /* Impede que o label encolha */
+    text-align: right;
+    font-weight: 500;
+}
+
+.period-input {
+    flex: 1; /* Permite que os inputs cresçam e encolham */
+    min-width: 110px; /* Largura mínima para evitar que fiquem muito pequenos */
+    padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    text-align: center;
+}
+
+.date-separator {
+    color: #888;
+}
+
+.apply-pattern-button {
+    background: #17a2b8;
+    color: white;
+    border: none;
+    padding: 8px 14px;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+    white-space: nowrap;
+}
+
+.apply-pattern-button:hover {
+    background: #138496;
+}
+/* *** FIM DAS MUDANÇAS DE LAYOUT *** */
+
+
+.period-actions {
+    margin-top: 25px;
+    display: flex;
+    gap: 15px;
+    justify-content: flex-end;
+    border-top: 1px solid #eee;
+    padding-top: 20px;
+}
+
+.period-actions .extractor-button {
+    background: #6c757d;
+    color: white;
+    border: none;
+    margin-right: auto;
+}
+
+@keyframes modalSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-30px) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
