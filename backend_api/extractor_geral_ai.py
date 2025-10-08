@@ -35,6 +35,8 @@ class ExtractorGeralAI:
         self.storage_client = storage.Client()
         self.upload_counter = 0
         self.upload_lock = threading.Lock()
+        self.download_counter = 0
+        self.download_lock = threading.Lock()
         print(f"[LOG] Instância do ExtractorGeralAI criada para o Job ID: {self.job.id if self.job else 'N/A'}")
 
     def update_progress(self, current, total, message, status='processing', extra_info=None):
@@ -120,6 +122,10 @@ class ExtractorGeralAI:
 
     def upload_page_to_gcs(self, reader, page_idx, idx, total_pages):
         try:
+            if page_idx >= len(reader.pages):
+                print(f"⚠️ Erro ao processar/upload da página {page_idx + 1}: Índice de página ({page_idx}) está fora do alcance. O PDF pode ter apenas {len(reader.pages)} páginas.")
+                return None, None
+
             writer = PdfWriter(); writer.add_page(reader.pages[page_idx])
             with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
                 writer.write(tmp_file); single_page_path = tmp_file.name
@@ -128,6 +134,7 @@ class ExtractorGeralAI:
                 blob_name = f"{self.job.id}/input/page_{idx:05d}.pdf"
                 gcs_input_uri = f"gs://{self.gcs_bucket_name}/{blob_name}"
                 bucket.blob(blob_name).upload_from_filename(single_page_path)
+                
                 with self.upload_lock:
                     self.upload_counter += 1
                     self.update_progress(0, 3, "Subindo páginas para análise...", extra_info={'upload_progress': self.upload_counter, 'upload_total': total_pages, 'upload_message': f"Upload: {self.upload_counter}/{total_pages} páginas"})
@@ -145,8 +152,8 @@ class ExtractorGeralAI:
             blobs = list(bucket.list_blobs(prefix=prefix))
             if blobs:
                 self.update_progress(3, 3, f"Limpando {len(blobs)} arquivos temporários...", extra_info={'cleanup': True})
-                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                    executor.map(lambda blob: blob.delete(), blobs)
+                for blob in blobs:
+                    blob.delete()
         except Exception as e:
             print(f"⚠️ Erro ao limpar bucket: {e}")
 
@@ -154,28 +161,25 @@ class ExtractorGeralAI:
         if not self.gcs_bucket_name: raise ValueError("Bucket do GCS não configurado.")
         try:
             reader = PdfReader(pdf_path, strict=False)
-        except PdfReadError as e:
-            raise ValueError(f"PDF corrompido: {e}")
-
+        except (PdfReadError, Exception) as e:
+            raise ValueError(f"PDF corrompido ou ilegível: {e}")
+        
         page_indices = [p['page_index'] for p in pages_with_periods]
         total_pages = len(page_indices)
         self.upload_counter = 0
         self.update_progress(0, 3, f"Iniciando upload de {total_pages} páginas...", extra_info={'upload_progress': 0, 'upload_total': total_pages})
-
+        
         gcs_documents = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            futures = {executor.submit(self.upload_page_to_gcs, reader, page_idx, idx, total_pages): idx for idx, page_idx in enumerate(page_indices)}
-            for future in concurrent.futures.as_completed(futures):
-                result = future.result()
-                if result and result[0] is not None:
-                    gcs_documents.append(result)
+        for idx, page_idx in enumerate(page_indices):
+            result_idx, gcs_doc = self.upload_page_to_gcs(reader, page_idx, idx, total_pages)
+            if gcs_doc:
+                gcs_documents.append((result_idx, gcs_doc))
 
-        if not gcs_documents: raise ValueError("Nenhuma página foi carregada com sucesso.")
+        if not gcs_documents: raise ValueError("Nenhuma página pôde ser carregada. Verifique o arquivo PDF.")
         
         gcs_documents.sort(key=lambda x: x[0])
         gcs_documents_final = [doc for _, doc in gcs_documents]
 
-        # --- NOVA LÓGICA DE PROCESSAMENTO SEQUENCIAL ---
         client = documentai.DocumentProcessorServiceClient(client_options={"api_endpoint": f"{self.location}-documentai.googleapis.com"})
         processor_name = client.processor_path(self.project_id, self.location, self.processor_id)
         
@@ -187,9 +191,8 @@ class ExtractorGeralAI:
                 'ai_processing': True,
                 'ai_total_pages': total_ai_pages,
                 'ai_current_page': idx + 1,
-                'ai_message': f"A processar {idx + 1}/{total_ai_pages} páginas pela IA..."
+                'ai_message': f"A processar {idx + 1}/{total_ai_pages} pela IA..."
             })
-
             try:
                 request = documentai.ProcessRequest(name=processor_name, gcs_document=gcs_doc)
                 result = client.process_document(request=request)
@@ -197,11 +200,10 @@ class ExtractorGeralAI:
                 pages_data[idx] = {'entities': document.entities}
             except Exception as e:
                 print(f"⚠️ Erro ao processar página {idx} com Document AI: {e}")
-                pages_data[idx] = {'entities': []} # Continua mesmo se uma página falhar
+                pages_data[idx] = {'entities': []}
 
         self.update_progress(2, 3, "Recolhendo e consolidando resultados...", extra_info={'consolidating': True})
-        # --- FIM DA NOVA LÓGICA ---
-
+        
         return pages_data
 
     def format_ai_rows_by_order(self, entities):
@@ -209,7 +211,9 @@ class ExtractorGeralAI:
         for entity in entities:
             if entity.type_.lower() == 'tabela_marcacoes' and entity.properties:
                 row_data = {prop.type_.lower(): prop.mention_text.strip() for prop in entity.properties}
+                # ✨ ALTERAÇÃO: Capturar o dia de cada linha ✨
                 extracted_rows.append({
+                    'dia': row_data.get('dia'), # Captura o valor do campo 'dia'
                     'Entrada1': row_data.get('entrada1', '0'), 'Saida1': row_data.get('saida1', '0'),
                     'Entrada2': row_data.get('entrada2', '0'), 'Saida2': row_data.get('saida2', '0'),
                     'Entrada3': row_data.get('entrada3', '0'), 'Saida3': row_data.get('saida3', '0'),
@@ -274,6 +278,8 @@ def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
             full_date_range = pd.date_range(start=start_date, end=end_date, freq='D')
             calendar_df = pd.DataFrame(full_date_range, columns=['Dia_dt'])
             calendar_df['original_page'] = page_num + 1
+            # ✨ ALTERAÇÃO: Adiciona uma coluna 'dia' (como string) para a junção
+            calendar_df['dia'] = calendar_df['Dia_dt'].dt.strftime('%d').str.lstrip('0')
 
             if page_order not in pages_data or not pages_data.get(page_order, {}).get('entities'):
                 print(f"[LOG][Job {job.id}] Aviso: Nenhum dado da IA para pág {page_num + 1}. Página ficará zerada.")
@@ -284,10 +290,19 @@ def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
             ai_data_df = pd.DataFrame(ai_rows)
             print(f"[LOG][Job {job.id}] Pág {page_num + 1}: Calendário tem {len(calendar_df)} dias. IA extraiu {len(ai_data_df)} linhas.")
 
-            calendar_df.reset_index(drop=True, inplace=True)
-            ai_data_df.reset_index(drop=True, inplace=True)
-            
-            period_df = pd.concat([calendar_df, ai_data_df], axis=1)
+            # ✨ ALTERAÇÃO: Lógica de junção (merge) em vez de concatenação cega
+            if 'dia' in ai_data_df.columns and not ai_data_df['dia'].isnull().all():
+                # Limpa a coluna 'dia' para garantir a correspondência
+                ai_data_df['dia'] = ai_data_df['dia'].astype(str).str.strip().str.lstrip('0')
+                # Junta o calendário com os dados da IA usando a coluna 'dia'
+                period_df = pd.merge(calendar_df, ai_data_df, on='dia', how='left')
+            else:
+                # Fallback para o método antigo se a IA não retornar a coluna 'dia'
+                print(f"[LOG][Job {job.id}] Aviso: Coluna 'dia' não encontrada nos dados da IA para pág {page_num + 1}. Usando concatenação.")
+                calendar_df.reset_index(drop=True, inplace=True)
+                ai_data_df.reset_index(drop=True, inplace=True)
+                period_df = pd.concat([calendar_df, ai_data_df], axis=1)
+
             all_page_dataframes.append(period_df)
 
         if not all_page_dataframes:
@@ -296,8 +311,10 @@ def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
         print(f"[LOG][Job {job.id}] Consolidando e ordenando dados de todas as páginas.")
         
         full_final_df = pd.concat(all_page_dataframes, ignore_index=True)
-        full_final_df = full_final_df.sort_values('Dia_dt').drop_duplicates(subset=['Dia_dt'], keep='last')
+        # Remove duplicatas de datas, mantendo a última ocorrência (caso haja sobreposição de páginas)
+        full_final_df = full_final_df.drop_duplicates(subset=['Dia_dt'], keep='last')
         
+        # Garante que todas as datas no intervalo geral estejam presentes
         min_date_overall = full_final_df['Dia_dt'].min()
         max_date_overall = full_final_df['Dia_dt'].max()
         overall_date_range = pd.date_range(start=min_date_overall, end=max_date_overall, freq='D')
