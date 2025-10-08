@@ -35,8 +35,6 @@ class ExtractorGeralAI:
         self.storage_client = storage.Client()
         self.upload_counter = 0
         self.upload_lock = threading.Lock()
-        self.download_counter = 0
-        self.download_lock = threading.Lock()
         print(f"[LOG] Instância do ExtractorGeralAI criada para o Job ID: {self.job.id if self.job else 'N/A'}")
 
     def update_progress(self, current, total, message, status='processing', extra_info=None):
@@ -125,7 +123,6 @@ class ExtractorGeralAI:
             if page_idx >= len(reader.pages):
                 print(f"⚠️ Erro ao processar/upload da página {page_idx + 1}: Índice de página ({page_idx}) está fora do alcance. O PDF pode ter apenas {len(reader.pages)} páginas.")
                 return None, None
-
             writer = PdfWriter(); writer.add_page(reader.pages[page_idx])
             with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
                 writer.write(tmp_file); single_page_path = tmp_file.name
@@ -134,7 +131,6 @@ class ExtractorGeralAI:
                 blob_name = f"{self.job.id}/input/page_{idx:05d}.pdf"
                 gcs_input_uri = f"gs://{self.gcs_bucket_name}/{blob_name}"
                 bucket.blob(blob_name).upload_from_filename(single_page_path)
-                
                 with self.upload_lock:
                     self.upload_counter += 1
                     self.update_progress(0, 3, "Subindo páginas para análise...", extra_info={'upload_progress': self.upload_counter, 'upload_total': total_pages, 'upload_message': f"Upload: {self.upload_counter}/{total_pages} páginas"})
@@ -211,9 +207,8 @@ class ExtractorGeralAI:
         for entity in entities:
             if entity.type_.lower() == 'tabela_marcacoes' and entity.properties:
                 row_data = {prop.type_.lower(): prop.mention_text.strip() for prop in entity.properties}
-                # ✨ ALTERAÇÃO: Capturar o dia de cada linha ✨
+                # A IA extrai apenas as marcações, sem se preocupar com o dia
                 extracted_rows.append({
-                    'dia': row_data.get('dia'), # Captura o valor do campo 'dia'
                     'Entrada1': row_data.get('entrada1', '0'), 'Saida1': row_data.get('saida1', '0'),
                     'Entrada2': row_data.get('entrada2', '0'), 'Saida2': row_data.get('saida2', '0'),
                     'Entrada3': row_data.get('entrada3', '0'), 'Saida3': row_data.get('saida3', '0'),
@@ -272,37 +267,37 @@ def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
         all_page_dataframes = []
         for idx, page_info in enumerate(pages_with_periods):
             page_order, page_num = idx, page_info['page_index']
-            if 'start_date_obj' not in page_info: continue
+            if 'start_date_obj' not in page_info:
+                print(f"[LOG][Job {job.id}] Aviso: Período inválido ou ausente para pág {page_num + 1}. Pulando.")
+                continue
+                
             start_date, end_date = page_info['start_date_obj'], page_info['end_date_obj']
             
+            # ✨ LÓGICA CORRIGIDA: Cria o calendário com base nas datas do usuário ✨
             full_date_range = pd.date_range(start=start_date, end=end_date, freq='D')
             calendar_df = pd.DataFrame(full_date_range, columns=['Dia_dt'])
             calendar_df['original_page'] = page_num + 1
-            # ✨ ALTERAÇÃO: Adiciona uma coluna 'dia' (como string) para a junção
-            calendar_df['dia'] = calendar_df['Dia_dt'].dt.strftime('%d').str.lstrip('0')
+            
+            print(f"[LOG][Job {job.id}] Pág {page_num + 1}: Calendário criado com {len(calendar_df)} dias.")
 
+            # Se não houver dados da IA para a página, o calendário já serve como base
             if page_order not in pages_data or not pages_data.get(page_order, {}).get('entities'):
                 print(f"[LOG][Job {job.id}] Aviso: Nenhum dado da IA para pág {page_num + 1}. Página ficará zerada.")
                 all_page_dataframes.append(calendar_df)
                 continue
             
+            # Extrai as marcações em ordem
             ai_rows = extractor.format_ai_rows_by_order(pages_data[page_order]['entities'])
             ai_data_df = pd.DataFrame(ai_rows)
-            print(f"[LOG][Job {job.id}] Pág {page_num + 1}: Calendário tem {len(calendar_df)} dias. IA extraiu {len(ai_data_df)} linhas.")
+            print(f"[LOG][Job {job.id}] Pág {page_num + 1}: IA extraiu {len(ai_data_df)} linhas de marcações.")
 
-            # ✨ ALTERAÇÃO: Lógica de junção (merge) em vez de concatenação cega
-            if 'dia' in ai_data_df.columns and not ai_data_df['dia'].isnull().all():
-                # Limpa a coluna 'dia' para garantir a correspondência
-                ai_data_df['dia'] = ai_data_df['dia'].astype(str).str.strip().str.lstrip('0')
-                # Junta o calendário com os dados da IA usando a coluna 'dia'
-                period_df = pd.merge(calendar_df, ai_data_df, on='dia', how='left')
-            else:
-                # Fallback para o método antigo se a IA não retornar a coluna 'dia'
-                print(f"[LOG][Job {job.id}] Aviso: Coluna 'dia' não encontrada nos dados da IA para pág {page_num + 1}. Usando concatenação.")
-                calendar_df.reset_index(drop=True, inplace=True)
-                ai_data_df.reset_index(drop=True, inplace=True)
-                period_df = pd.concat([calendar_df, ai_data_df], axis=1)
-
+            # ✨ LÓGICA CORRIGIDA: Combina o calendário com os dados da IA sequencialmente ✨
+            # Garante que os índices estejam alinhados para uma concatenação segura
+            calendar_df.reset_index(drop=True, inplace=True)
+            ai_data_df.reset_index(drop=True, inplace=True)
+            
+            # Concatena lado a lado. O número de linhas será o do maior DataFrame.
+            period_df = pd.concat([calendar_df, ai_data_df], axis=1)
             all_page_dataframes.append(period_df)
 
         if not all_page_dataframes:
@@ -311,10 +306,14 @@ def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
         print(f"[LOG][Job {job.id}] Consolidando e ordenando dados de todas as páginas.")
         
         full_final_df = pd.concat(all_page_dataframes, ignore_index=True)
-        # Remove duplicatas de datas, mantendo a última ocorrência (caso haja sobreposição de páginas)
-        full_final_df = full_final_df.drop_duplicates(subset=['Dia_dt'], keep='last')
         
-        # Garante que todas as datas no intervalo geral estejam presentes
+        # Previne erro se o dataframe estiver totalmente vazio
+        if 'Dia_dt' not in full_final_df.columns or full_final_df['Dia_dt'].isnull().all():
+            raise ValueError("Não foi possível determinar um intervalo de datas válido a partir dos dados processados.")
+
+        full_final_df = full_final_df.dropna(subset=['Dia_dt'])
+        full_final_df = full_final_df.sort_values('Dia_dt').drop_duplicates(subset=['Dia_dt'], keep='last')
+        
         min_date_overall = full_final_df['Dia_dt'].min()
         max_date_overall = full_final_df['Dia_dt'].max()
         overall_date_range = pd.date_range(start=min_date_overall, end=max_date_overall, freq='D')
@@ -325,8 +324,6 @@ def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
         final_df['Dia'] = final_df['Dia_dt'].dt.strftime('%d/%m/%Y')
         day_map_pt = {0: "seg", 1: "ter", 2: "qua", 3: "qui", 4: "sex", 5: "sab", 6: "dom"}
         final_df['Dia_Sema'] = final_df['Dia_dt'].dt.dayofweek.map(day_map_pt)
-        
-        final_df.rename(columns={'entrada1': 'Entrada1', 'saida1': 'Saida1', 'entrada2': 'Entrada2', 'saida2': 'Saida2', 'entrada3': 'Entrada3', 'saida3': 'Saida3'}, inplace=True)
         
         colunas_finais = ['Dia', 'Dia_Sema', 'Entrada1', 'Saida1', 'Entrada2', 'Saida2', 'Entrada3', 'Saida3']
         for col in colunas_finais:
