@@ -1,49 +1,63 @@
 import React from 'react';
 import './ProgressModal.css';
 
-const ProgressModal = ({ current, total, onClose, message, meta }) => {
-  const isIndeterminate = total === 0;
-  const percentage = !isIndeterminate ? Math.round((current / total) * 100) : 0;
+// A assinatura foi corrigida para refletir os dados recebidos do backend
+const ProgressModal = ({ current_step, total_steps, onClose, message, status, ...meta }) => {
   
-  // ✨ Extrair informações extras do meta
-  const uploadProgress = meta?.upload_progress || 0;
-  const uploadTotal = meta?.upload_total || 0;
-  const uploadMessage = meta?.upload_message || '';
+  // --- Lógica aprimorada para determinar o que exibir ---
   
-  const downloadProgress = meta?.download_progress || 0;
-  const downloadTotal = meta?.download_total || 0;
-  const downloadMessage = meta?.download_message || '';
-  
-  const aiProcessing = meta?.ai_processing || false;
-  const aiTotalPages = meta?.ai_total_pages || 0;
-  const aiMessage = meta?.ai_message || '';
-  
-  const consolidating = meta?.consolidating || false;
-  const cleanup = meta?.cleanup || false;
-  
-  // ✨ Determinar qual mensagem detalhada mostrar
+  // Informações dos sub-passos vêm do objeto 'meta'
+  const { 
+    ai_processing, 
+    ai_current_page, 
+    ai_total_pages, 
+    ai_message,
+    upload_progress,
+    upload_total,
+    upload_message,
+    download_progress,
+    download_total,
+    download_message
+  } = meta;
+
+  // Variáveis padrão, baseadas nas etapas gerais (ex: 1 de 3)
+  let displayCurrent = current_step;
+  let displayTotal = total_steps;
+  let displayLabel = 'etapas';
   let detailedMessage = message;
-  
-  if (uploadTotal > 0 && uploadProgress < uploadTotal) {
-    detailedMessage = uploadMessage;
-  } else if (aiProcessing) {
-    detailedMessage = aiMessage;
-  } else if (downloadTotal > 0) {
-    detailedMessage = downloadMessage;
-  } else if (consolidating) {
-    detailedMessage = "A consolidar dados na ordem cronológica...";
-  } else if (cleanup) {
-    detailedMessage = "A limpar arquivos temporários...";
+
+  // Se uma sub-etapa (como a da IA) estiver ativa, suas informações de progresso terão prioridade
+  if (ai_processing && ai_total_pages > 0) {
+    displayCurrent = ai_current_page || 0;
+    displayTotal = ai_total_pages;
+    displayLabel = 'páginas';
+    detailedMessage = ai_message || `A processar ${displayCurrent} de ${displayTotal} pela IA...`;
+  } else if (upload_total > 0 && current_step === 0) {
+    displayCurrent = upload_progress || 0;
+    displayTotal = upload_total;
+    displayLabel = 'páginas';
+    detailedMessage = upload_message || `Subindo ${displayCurrent} de ${displayTotal} páginas...`;
+  } else if (download_total > 0 && current_step === 2) {
+    displayCurrent = download_progress || 0;
+    displayTotal = download_total;
+    displayLabel = 'resultados';
+    detailedMessage = download_message || `Baixando ${displayCurrent} de ${displayTotal} resultados...`;
   }
+  
+  // Calcula a porcentagem com base nos valores corretos, evitando divisão por zero
+  const isIndeterminate = !displayTotal || displayTotal === 0;
+  const percentage = !isIndeterminate ? Math.round((displayCurrent / displayTotal) * 100) : 0;
   
   return (
     <div className="progress-modal-overlay">
       <div className="progress-modal">
         <div className="progress-header">
           <h3>Processando PDF</h3>
-          <button className="close-button" onClick={onClose} aria-label="Fechar">
-            ×
-          </button>
+          {status !== 'processing' && (
+            <button className="close-button" onClick={onClose} aria-label="Fechar">
+              ×
+            </button>
+          )}
         </div>
         
         <div className="progress-content">
@@ -60,23 +74,23 @@ const ProgressModal = ({ current, total, onClose, message, meta }) => {
                   strokeWidth="8"
                   strokeLinecap="round"
                   strokeDasharray={`${2 * Math.PI * 50}`}
-                  strokeDashoffset={`${2 * Math.PI * 50 * (1 - percentage / 100)}`}
+                  strokeDashoffset={`${2 * Math.PI * 50 * (1 - (percentage / 100))}`}
                   transform="rotate(-90 60 60)"
                   style={{ transition: 'stroke-dashoffset 0.5s ease' }}
                 />
               )}
             </svg>
             <div className="progress-text">
-              <span className="percentage">{percentage}%</span>
+              <span className="percentage">{isIndeterminate ? '0%' : `${percentage}%`}</span>
             </div>
           </div>
           
           <div className="progress-info">
             <div className="page-counter">
-              <span className="current-page">{isIndeterminate ? 0 : current}</span>
+              <span className="current-page">{isIndeterminate ? '' : displayCurrent}</span>
               <span className="separator">/</span>
-              <span className="total-pages">{isIndeterminate ? '--' : total}</span>
-              <span className="pages-label">etapas</span>
+              <span className="total-pages">{isIndeterminate ? '' : displayTotal}</span>
+              <span className="pages-label">{isIndeterminate ? 'Aguarde...' : displayLabel}</span>
             </div>
             
             <div className="progress-bar">
@@ -86,48 +100,9 @@ const ProgressModal = ({ current, total, onClose, message, meta }) => {
               ></div>
             </div>
             
-            {/* ✨ Mensagem principal */}
             <div className="status-text">
               {detailedMessage}
             </div>
-            
-            {/* ✨ Detalhes adicionais de upload */}
-            {uploadTotal > 0 && uploadProgress < uploadTotal && (
-              <div className="status-detail">
-                <div className="detail-bar-container">
-                  <div className="detail-bar">
-                    <div 
-                      className="detail-bar-fill"
-                      style={{ width: `${(uploadProgress / uploadTotal) * 100}%` }}
-                    ></div>
-                  </div>
-                  <span className="detail-text">{uploadProgress}/{uploadTotal}</span>
-                </div>
-              </div>
-            )}
-            
-            {/* ✨ Detalhes de processamento IA */}
-            {aiProcessing && (
-              <div className="status-detail ai-processing">
-                <div className="spinner"></div>
-                <span>Aguarde, a IA está a processar {aiTotalPages} páginas...</span>
-              </div>
-            )}
-            
-            {/* ✨ Detalhes adicionais de download */}
-            {downloadTotal > 0 && downloadProgress > 0 && (
-              <div className="status-detail">
-                <div className="detail-bar-container">
-                  <div className="detail-bar">
-                    <div 
-                      className="detail-bar-fill"
-                      style={{ width: `${(downloadProgress / downloadTotal) * 100}%` }}
-                    ></div>
-                  </div>
-                  <span className="detail-text">{downloadProgress}/{downloadTotal}</span>
-                </div>
-              </div>
-            )}
           </div>
         </div>
       </div>
@@ -136,4 +111,3 @@ const ProgressModal = ({ current, total, onClose, message, meta }) => {
 };
 
 export default ProgressModal;
-

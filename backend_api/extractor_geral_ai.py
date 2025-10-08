@@ -35,8 +35,6 @@ class ExtractorGeralAI:
         self.storage_client = storage.Client()
         self.upload_counter = 0
         self.upload_lock = threading.Lock()
-        self.download_counter = 0
-        self.download_lock = threading.Lock()
         print(f"[LOG] Instância do ExtractorGeralAI criada para o Job ID: {self.job.id if self.job else 'N/A'}")
 
     def update_progress(self, current, total, message, status='processing', extra_info=None):
@@ -132,7 +130,7 @@ class ExtractorGeralAI:
                 bucket.blob(blob_name).upload_from_filename(single_page_path)
                 with self.upload_lock:
                     self.upload_counter += 1
-                    self.update_progress(0, 3, "A fazer upload das páginas...", extra_info={'upload_progress': self.upload_counter, 'upload_total': total_pages, 'upload_message': f"Upload: {self.upload_counter}/{total_pages} páginas"})
+                    self.update_progress(0, 3, "Subindo páginas para análise...", extra_info={'upload_progress': self.upload_counter, 'upload_total': total_pages, 'upload_message': f"Upload: {self.upload_counter}/{total_pages} páginas"})
                 return idx, documentai.GcsDocument(gcs_uri=gcs_input_uri, mime_type="application/pdf")
             finally:
                 if os.path.exists(single_page_path): os.unlink(single_page_path)
@@ -146,7 +144,7 @@ class ExtractorGeralAI:
             prefix = f"{self.job.id}/"
             blobs = list(bucket.list_blobs(prefix=prefix))
             if blobs:
-                self.update_progress(3, 3, f"A limpar {len(blobs)} arquivos...", extra_info={'cleanup': True})
+                self.update_progress(3, 3, f"Limpando {len(blobs)} arquivos temporários...", extra_info={'cleanup': True})
                 with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
                     executor.map(lambda blob: blob.delete(), blobs)
         except Exception as e:
@@ -158,56 +156,52 @@ class ExtractorGeralAI:
             reader = PdfReader(pdf_path, strict=False)
         except PdfReadError as e:
             raise ValueError(f"PDF corrompido: {e}")
-        
+
         page_indices = [p['page_index'] for p in pages_with_periods]
         total_pages = len(page_indices)
         self.upload_counter = 0
-        self.update_progress(0, 3, f"A iniciar upload de {total_pages} páginas...", extra_info={'upload_progress': 0, 'upload_total': total_pages})
-        
+        self.update_progress(0, 3, f"Iniciando upload de {total_pages} páginas...", extra_info={'upload_progress': 0, 'upload_total': total_pages})
+
         gcs_documents = []
-        for idx, page_idx in enumerate(page_indices):
-            result_idx, gcs_doc = self.upload_page_to_gcs(reader, page_idx, idx, total_pages)
-            if gcs_doc:
-                gcs_documents.append((result_idx, gcs_doc))
-        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(self.upload_page_to_gcs, reader, page_idx, idx, total_pages): idx for idx, page_idx in enumerate(page_indices)}
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                if result and result[0] is not None:
+                    gcs_documents.append(result)
+
         if not gcs_documents: raise ValueError("Nenhuma página foi carregada com sucesso.")
         
         gcs_documents.sort(key=lambda x: x[0])
         gcs_documents_final = [doc for _, doc in gcs_documents]
 
+        # --- NOVA LÓGICA DE PROCESSAMENTO SEQUENCIAL ---
         client = documentai.DocumentProcessorServiceClient(client_options={"api_endpoint": f"{self.location}-documentai.googleapis.com"})
-        output_config = documentai.DocumentOutputConfig(gcs_output_config={"gcs_uri": f"gs://{self.gcs_bucket_name}/{self.job.id}/output"})
-        input_config = documentai.BatchDocumentsInputConfig(gcs_documents=documentai.GcsDocuments(documents=gcs_documents_final))
-        request = documentai.BatchProcessRequest(name=client.processor_path(self.project_id, self.location, self.processor_id), input_documents=input_config, document_output_config=output_config)
-        
-        self.update_progress(1, 3, f"A processar {len(gcs_documents_final)} páginas pela IA...", extra_info={'ai_processing': True, 'ai_total_pages': len(gcs_documents_final), 'ai_message': f"Aguardando IA..."})
-        operation = client.batch_process_documents(request)
-        operation.result(timeout=3600)
-
-        self.download_counter = 0
-        self.update_progress(2, 3, "A recolher resultados...", extra_info={'download_progress': 0, 'download_total': len(gcs_documents_final)})
-        
-        bucket = self.storage_client.bucket(self.gcs_bucket_name)
-        output_blobs = list(bucket.list_blobs(prefix=f"{self.job.id}/output/"))
+        processor_name = client.processor_path(self.project_id, self.location, self.processor_id)
         
         pages_data = {}
-        def download_and_parse(blob):
-            try:
-                doc_proto = documentai.Document.from_json(blob.download_as_bytes())
-                match = re.search(r'page_(\d+)', blob.name)
-                if match:
-                    page_num = int(match.group(1))
-                    with self.download_lock:
-                        self.download_counter += 1
-                        self.update_progress(2, 3, "A recolher resultados...", extra_info={'download_progress': self.download_counter, 'download_total': len(gcs_documents_final), 'download_message': f"Download: {self.download_counter}/{len(gcs_documents_final)}"})
-                    return page_num, {'entities': doc_proto.entities}
-            except Exception as e:
-                print(f"⚠️ Erro ao processar resultado de {blob.name}: {e}")
-            return None, None
+        total_ai_pages = len(gcs_documents_final)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            for page_num, data in executor.map(download_and_parse, output_blobs):
-                if page_num is not None: pages_data[page_num] = data
+        for idx, gcs_doc in enumerate(gcs_documents_final):
+            self.update_progress(1, 3, f"A processar página {idx + 1} de {total_ai_pages} pela IA...", extra_info={
+                'ai_processing': True,
+                'ai_total_pages': total_ai_pages,
+                'ai_current_page': idx + 1,
+                'ai_message': f"A processar {idx + 1}/{total_ai_pages} páginas pela IA..."
+            })
+
+            try:
+                request = documentai.ProcessRequest(name=processor_name, gcs_document=gcs_doc)
+                result = client.process_document(request=request)
+                document = result.document
+                pages_data[idx] = {'entities': document.entities}
+            except Exception as e:
+                print(f"⚠️ Erro ao processar página {idx} com Document AI: {e}")
+                pages_data[idx] = {'entities': []} # Continua mesmo se uma página falhar
+
+        self.update_progress(2, 3, "Recolhendo e consolidando resultados...", extra_info={'consolidating': True})
+        # --- FIM DA NOVA LÓGICA ---
+
         return pages_data
 
     def format_ai_rows_by_order(self, entities):
@@ -281,7 +275,7 @@ def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
             calendar_df = pd.DataFrame(full_date_range, columns=['Dia_dt'])
             calendar_df['original_page'] = page_num + 1
 
-            if page_order not in pages_data or not pages_data[page_order]['entities']:
+            if page_order not in pages_data or not pages_data.get(page_order, {}).get('entities'):
                 print(f"[LOG][Job {job.id}] Aviso: Nenhum dado da IA para pág {page_num + 1}. Página ficará zerada.")
                 all_page_dataframes.append(calendar_df)
                 continue
