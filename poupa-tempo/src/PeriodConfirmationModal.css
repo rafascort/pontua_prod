@@ -36,28 +36,51 @@
     padding-left: 15px;
 }
 
-/* *** MUDANÇAS PRINCIPAIS NO LAYOUT DA LINHA *** */
 .period-item {
     display: flex;
-    flex-wrap: nowrap; /* Impede que os itens quebrem a linha */
-    gap: 10px;
+    flex-wrap: nowrap;
+    gap: 12px; /* Aumentado para dar espaço */
     align-items: center;
     margin-bottom: 15px;
     background: #f7f7f7;
-    padding: 10px 15px;
+    padding: 12px 15px;
     border-radius: 8px;
+    transition: opacity 0.3s ease, background-color 0.3s ease;
 }
 
+/* ✨ ESTILOS ADICIONADOS/MODIFICADOS ABAIXO ✨ */
+
+.period-checkbox {
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.period-item.disabled {
+    opacity: 0.6;
+    background-color: #e9ecef;
+}
+
+.period-item.disabled .period-input,
+.period-item.disabled .apply-pattern-button {
+    pointer-events: none;
+    background-color: #f8f9fa;
+}
+
+/* ✨ FIM DOS ESTILOS ADICIONADOS/MODIFICADOS ✨ */
+
 .page-label {
-    flex-basis: 90px; /* Largura base para "Página XXX:" */
-    flex-shrink: 0; /* Impede que o label encolha */
+    flex-basis: 90px;
+    flex-shrink: 0;
     text-align: right;
     font-weight: 500;
+    white-space: nowrap;
 }
 
 .period-input {
-    flex: 1; /* Permite que os inputs cresçam e encolham */
-    min-width: 110px; /* Largura mínima para evitar que fiquem muito pequenos */
+    flex: 1;
+    min-width: 110px;
     padding: 10px;
     border: 1px solid #ccc;
     border-radius: 6px;
@@ -85,8 +108,11 @@
 .apply-pattern-button:hover {
     background: #138496;
 }
-/* *** FIM DAS MUDANÇAS DE LAYOUT *** */
 
+.apply-pattern-button:disabled {
+    background: #a0a0a0;
+    cursor: not-allowed;
+}
 
 .period-actions {
     margin-top: 25px;

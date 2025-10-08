@@ -15,8 +15,10 @@ const PeriodConfirmationModal = ({ pagesInfo, onConfirm, onCancel, isLoading }) 
   const [periods, setPeriods] = useState([]);
 
   useEffect(() => {
+    // Adiciona o estado 'is_active' para cada página ao inicializar
     const initializedPeriods = pagesInfo.map(page => ({
       ...page,
+      is_active: true, // Todas as páginas começam ativas
       period: page.period || { start_date: '', end_date: '' }
     }));
     setPeriods(initializedPeriods);
@@ -31,15 +33,23 @@ const PeriodConfirmationModal = ({ pagesInfo, onConfirm, onCancel, isLoading }) 
     newPeriods[index].period[field] = formattedValue;
     setPeriods(newPeriods);
   };
+  
+  // Nova função para lidar com a ativação/desativação da página
+  const handleToggleActive = (index) => {
+    const newPeriods = [...periods];
+    newPeriods[index].is_active = !newPeriods[index].is_active;
+    setPeriods(newPeriods);
+  };
 
   const handleConfirm = () => {
+    // Filtra para incluir apenas páginas ativas e com datas válidas
     const validPeriods = periods.filter(p => {
         const dateRegex = /^\d{2}\/\d{2}\/\d{4}$/;
-        return p.period && dateRegex.test(p.period.start_date) && dateRegex.test(p.period.end_date);
+        return p.is_active && p.period && dateRegex.test(p.period.start_date) && dateRegex.test(p.period.end_date);
     });
 
     if(validPeriods.length === 0) {
-        alert("Por favor, preencha o período completo (DD/MM/AAAA) para pelo menos uma página.");
+        alert("Por favor, preencha o período completo (DD/MM/AAAA) para pelo menos uma página ativa.");
         return;
     }
     onConfirm(validPeriods);
@@ -66,7 +76,6 @@ const PeriodConfirmationModal = ({ pagesInfo, onConfirm, onCancel, isLoading }) 
         return `${day}/${month}/${year}`;
     };
 
-    // *** NOVA LÓGICA PARA DETECTAR FIM DE MÊS ***
     const isLastDayOfMonth = (date) => {
         const nextDay = new Date(date);
         nextDay.setDate(nextDay.getDate() + 1);
@@ -77,26 +86,34 @@ const PeriodConfirmationModal = ({ pagesInfo, onConfirm, onCancel, isLoading }) 
     const seedStartDate = parseDate(seedPeriod.start_date);
     const seedEndDate = parseDate(seedPeriod.end_date);
     const seedEndWasLastDay = isLastDayOfMonth(seedEndDate);
-
+    
+    // Mantém o controle da última data válida para calcular a próxima
     let lastStartDate = seedStartDate;
     let lastEndDate = seedEndDate;
 
     for (let i = startIndex + 1; i < newPeriods.length; i++) {
-        lastStartDate.setMonth(lastStartDate.getMonth() + 1);
-        
-        if (seedEndWasLastDay) {
-            // Se a data original era o fim do mês, calcula o novo fim de mês
-            // Vai para o primeiro dia do mês seguinte ao próximo e volta um dia.
-            lastEndDate = new Date(lastStartDate.getFullYear(), lastStartDate.getMonth() + 1, 0);
-        } else {
-            // Senão, apenas adiciona um mês
-            lastEndDate.setMonth(lastEndDate.getMonth() + 1);
-        }
+        // Pula a lógica se a linha atual estiver desmarcada
+        if (newPeriods[i].is_active) {
+            const nextStartDate = new Date(lastStartDate);
+            nextStartDate.setMonth(nextStartDate.getMonth() + 1);
 
-        newPeriods[i].period = {
-            start_date: formatDate(lastStartDate),
-            end_date: formatDate(lastEndDate),
-        };
+            let nextEndDate;
+            if (seedEndWasLastDay) {
+                nextEndDate = new Date(nextStartDate.getFullYear(), nextStartDate.getMonth() + 1, 0);
+            } else {
+                nextEndDate = new Date(lastEndDate);
+                nextEndDate.setMonth(nextEndDate.getMonth() + 1);
+            }
+
+            newPeriods[i].period = {
+                start_date: formatDate(nextStartDate),
+                end_date: formatDate(nextEndDate),
+            };
+
+            // Atualiza a última data usada para o próximo cálculo
+            lastStartDate = nextStartDate;
+            lastEndDate = nextEndDate;
+        }
     }
 
     setPeriods(newPeriods);
@@ -107,11 +124,18 @@ const PeriodConfirmationModal = ({ pagesInfo, onConfirm, onCancel, isLoading }) 
     <div className="progress-modal-overlay">
       <div className="period-modal">
         <h3>Confirme os Períodos</h3>
-        <p>Preencha uma linha e clique em "Aplicar" para preencher as demais em sequência.</p>
+        <p>Desmarque as páginas que não devem ser processadas. Preencha uma linha e clique em "Aplicar" para preencher as demais.</p>
         
         <div className="period-list">
           {periods.map((page, index) => (
-            <div key={page.page_number} className="period-item">
+            <div key={page.page_number} className={`period-item ${!page.is_active ? 'disabled' : ''}`}>
+              <input 
+                type="checkbox"
+                className="period-checkbox"
+                checked={page.is_active}
+                onChange={() => handleToggleActive(index)}
+                title={page.is_active ? "Desativar esta página" : "Ativar esta página"}
+              />
               <strong className="page-label">Página {page.page_number}:</strong>
               <input 
                 type="text" 
@@ -120,6 +144,7 @@ const PeriodConfirmationModal = ({ pagesInfo, onConfirm, onCancel, isLoading }) 
                 onChange={(e) => handleDateChange(index, 'start_date', e.target.value)}
                 placeholder="DD/MM/AAAA"
                 maxLength="10"
+                disabled={!page.is_active}
               />
               <span className="date-separator">a</span>
               <input 
@@ -129,11 +154,13 @@ const PeriodConfirmationModal = ({ pagesInfo, onConfirm, onCancel, isLoading }) 
                 onChange={(e) => handleDateChange(index, 'end_date', e.target.value)}
                 placeholder="DD/MM/AAAA"
                 maxLength="10"
+                disabled={!page.is_active}
               />
               <button 
                 onClick={() => handleApplyPattern(index)} 
                 className="apply-pattern-button"
                 title="Preencher as datas abaixo a partir desta"
+                disabled={!page.is_active}
               >
                 Aplicar
               </button>
