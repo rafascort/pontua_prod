@@ -29,8 +29,8 @@ QUEUES = {
     '2': Queue('brf_queue', connection=redis_conn),
     '3': Queue('pontomais_queue', connection=redis_conn),
     '5': Queue('planalto_queue', connection=redis_conn),
-    '6': Queue('geral_ai_queue', connection=redis_conn), # <-- Fila para o modelo geral AI
-    'period_extraction': Queue('period_extraction_queue', connection=redis_conn), # <-- Nova fila rápida
+    '6': Queue('geral_ai_queue', connection=redis_conn),
+    'period_extraction': Queue('period_extraction_queue', connection=redis_conn),
 }
 
 EXTRACTOR_MODULES = {
@@ -38,8 +38,8 @@ EXTRACTOR_MODULES = {
     '2': 'extractor_brf',
     '3': 'extractor_pontomais',
     '5': 'extractor_planalto',
-    '6': 'extractor_geral_ai', # <-- Novo módulo geral AI
-    'period_extraction': 'extractor_geral_ai', # <-- Aponta para o mesmo módulo
+    '6': 'extractor_geral_ai',
+    'period_extraction': 'extractor_geral_ai',
 }
 
 @app.route('/api/extract-periods', methods=['POST'])
@@ -89,7 +89,7 @@ def process_pdf():
         data = request.get_json()
         pages_with_periods = data.get('pages_with_periods')
         pdf_path = data.get('pdf_path')
-        model_type = data.get('model_type', '6') # O modelo geral agora é o padrão
+        model_type = data.get('model_type', '6')
 
         if not pages_with_periods or not pdf_path:
             return jsonify({'error': 'Informações de período e caminho do PDF são necessárias.'}), 400
@@ -99,6 +99,29 @@ def process_pdf():
 
         if model_type not in QUEUES or model_type not in EXTRACTOR_MODULES:
             return jsonify({'error': 'Tipo de modelo inválido.'}), 400
+        
+        # ✨ LÓGICA DE ATUALIZAÇÃO DO CONTADOR COM LOGS DETALHADOS ✨
+        num_pages_to_process = len(pages_with_periods)
+        print(f"[PAGE COUNT] Iniciando contagem para user ID: {current_user_id}. Páginas para processar: {num_pages_to_process}")
+
+        if num_pages_to_process > 0:
+            try:
+                user = User.query.get(current_user_id)
+                if user:
+                    print(f"[PAGE COUNT] Usuário encontrado: {user.email}, Role: {user.role}")
+                    if user.role != 'admin':
+                        print(f"[PAGE COUNT] Usuário não é admin. Contagem atual: {user.page_count}. Adicionando: {num_pages_to_process}")
+                        user.page_count += num_pages_to_process
+                        db.session.commit()
+                        print(f"[PAGE COUNT] Commit realizado. Nova contagem para {user.email}: {user.page_count}")
+                    else:
+                        print(f"[PAGE COUNT] Usuário é admin. Nenhuma contagem realizada.")
+                else:
+                    print(f"[PAGE COUNT] ERRO: Usuário com ID {current_user_id} não encontrado no banco de dados.")
+            except Exception as e:
+                db.session.rollback()
+                print(f"[PAGE COUNT] ERRO CRÍTICO ao atualizar contagem de páginas para o usuário {current_user_id}: {e}")
+        # ✨ FIM DA LÓGICA DE ATUALIZAÇÃO ✨
         
         q = QUEUES[model_type]
         extractor_module_name = EXTRACTOR_MODULES[model_type]
@@ -116,6 +139,7 @@ def process_pdf():
     except Exception as e:
         print(f"Erro ao colocar tarefa na fila: {e}")
         return jsonify({'error': 'Ocorreu um erro interno ao iniciar o processamento.'}), 500
+
 
 @app.route('/api/progress/<task_id>', methods=['GET'])
 @jwt_required()

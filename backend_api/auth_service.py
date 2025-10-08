@@ -43,6 +43,7 @@ class User(db.Model):
     google_id = db.Column(db.String(255), unique=True, nullable=True)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
     role = db.Column(db.String(50), default='user', nullable=False)
+    page_count = db.Column(db.Integer, default=0, nullable=False)
 
     def __repr__(self):
         return f'<User {self.email}>'
@@ -157,7 +158,8 @@ def list_users():
             'email': user.email,
             'google_id': user.google_id is not None,
             'is_active': user.is_active,
-            'role': user.role
+            'role': user.role,
+            'page_count': user.page_count
         })
     return jsonify(output), 200
 
@@ -168,9 +170,8 @@ def update_user_status(user_id):
     if not user:
         return jsonify({"msg": "Usuário não encontrado"}), 404
 
-    # Prevenção: Não permitir desativar/ativar o próprio usuário logado
-    current_user_id_str = get_jwt_identity() # ID do usuário logado (string)
-    current_user_id = int(current_user_id_str) # Converte para int para comparação
+    current_user_id_str = get_jwt_identity()
+    current_user_id = int(current_user_id_str) 
 
     if user.id == current_user_id:
         return jsonify({"msg": "Você não pode alterar o status da sua própria conta."}), 403
@@ -192,17 +193,13 @@ def delete_user(user_id):
     if not user:
         return jsonify({"msg": "Usuário não encontrado"}), 404
 
-    # Prevenção: Não permitir que o administrador exclua a si mesmo
     current_user_id_str = get_jwt_identity()
     current_user_id = int(current_user_id_str)
 
     if user.id == current_user_id:
         return jsonify({"msg": "Você não pode excluir sua própria conta."}), 403
 
-    # Prevenção: Não permitir excluir o admin padrão se ele ainda for o único admin
-    # Ajuste 'admin@example.com' para o email do seu admin principal se for diferente
     if user.email == 'admin@sistemaponto.com' or user.email == 'admin@example.com':
-        # Verifique se há outros admins antes de permitir a exclusão do admin principal
         other_admins = User.query.filter(User.role == 'admin', User.id != user_id).count()
         if other_admins == 0:
             return jsonify({"msg": "Não é possível excluir o único administrador do sistema."}), 403
@@ -211,6 +208,33 @@ def delete_user(user_id):
     db.session.delete(user)
     db.session.commit()
     return jsonify({"msg": f"Usuário {user.email} excluído com sucesso!"}), 200
+
+@app.route('/api/admin/users/reset-pages', methods=['POST'])
+@admin_required()
+def reset_all_page_counts():
+    try:
+        num_updated = User.query.filter(User.role != 'admin').update({User.page_count: 0})
+        db.session.commit()
+        return jsonify({"msg": f"Contagem de páginas zerada para {num_updated} usuário(s)."}), 200
+    except Exception as e:
+        db.session.rollback()
+        print(f"Erro ao zerar contagem de páginas: {e}")
+        return jsonify({"msg": "Ocorreu um erro ao zerar a contagem de páginas."}), 500
+
+@app.route('/api/admin/users/<int:user_id>/reset-pages', methods=['POST'])
+@admin_required()
+def reset_user_page_count(user_id):
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"msg": "Usuário não encontrado"}), 404
+    
+    try:
+        user.page_count = 0
+        db.session.commit()
+        return jsonify({"msg": f"Contagem de páginas para {user.email} zerada com sucesso."}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": f"Erro ao zerar contagem para o usuário: {str(e)}"}), 500
 
 def create_tables():
     with app.app_context():
@@ -225,4 +249,3 @@ def create_tables():
             db.session.add(admin_user)
             db.session.commit()
             print("Usuário admin padrão criado: admin@example.com / admin123")
-

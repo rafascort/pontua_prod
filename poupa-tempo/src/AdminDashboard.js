@@ -127,6 +127,68 @@ const AdminDashboard = ({ onLogout }) => {
         }
     };
     
+    const handleResetAllCounts = async () => {
+        setError('');
+        setMessage('');
+        const token = localStorage.getItem('jwt_token');
+        if (!token) return;
+
+        if (!window.confirm("Tem certeza que deseja zerar a contagem de páginas para TODOS os usuários? Esta ação não pode ser desfeita.")) {
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/admin/users/reset-pages`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+
+            if (response.status === 401 || response.status === 403) { onLogout(); return; }
+
+            if (response.ok) {
+                const data = await response.json();
+                setMessage(data.msg || "Contagem de páginas zerada com sucesso!");
+                fetchUsers();
+            } else {
+                const errorData = await response.json();
+                setError(errorData.msg || 'Erro ao zerar a contagem de páginas.');
+            }
+        } catch (err) {
+            setError('Erro de rede ao tentar zerar a contagem.');
+        }
+    };
+
+    const handleResetUserCount = async (userId, userEmail) => {
+        setError('');
+        setMessage('');
+        const token = localStorage.getItem('jwt_token');
+        if (!token) return;
+
+        if (!window.confirm(`Tem certeza de que deseja zerar a contagem de páginas para o usuário ${userEmail}?`)) {
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/admin/users/${userId}/reset-pages`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+
+            if (response.status === 401 || response.status === 403) { onLogout(); return; }
+
+            if (response.ok) {
+                const data = await response.json();
+                setMessage(data.msg || "Contagem do usuário zerada com sucesso!");
+                fetchUsers();
+            } else {
+                const errorData = await response.json();
+                setError(errorData.msg || 'Erro ao zerar contagem do usuário.');
+            }
+        } catch (err) {
+            setError('Erro de rede ao tentar zerar a contagem.');
+        }
+    };
+    
     useEffect(() => {
         fetchUsers();
     }, []);
@@ -165,7 +227,12 @@ const AdminDashboard = ({ onLogout }) => {
                 </section>
 
                 <section className="user-list-section">
-                     <h2>Gerenciar Usuários</h2>
+                     <div className="user-list-header">
+                        <h2>Gerenciar Usuários</h2>
+                        <button onClick={handleResetAllCounts} className="reset-button">
+                            Zerar Contagem de Páginas
+                        </button>
+                    </div>
                      <table className="users-table">
                         <thead>
                             <tr>
@@ -174,6 +241,7 @@ const AdminDashboard = ({ onLogout }) => {
                                 <th>Google ID</th>
                                 <th>Status</th>
                                 <th>Nível</th>
+                                <th>Páginas Usadas</th>
                                 <th>Ações</th>
                             </tr>
                         </thead>
@@ -185,11 +253,15 @@ const AdminDashboard = ({ onLogout }) => {
                                     <td>{user.google_id ? 'Sim' : 'Não'}</td>
                                     <td>{user.is_active ? 'Ativo' : 'Inativo'}</td>
                                     <td>{user.role}</td>
-                                    <td>
+                                    <td>{user.page_count}</td>
+                                    <td className="actions-cell">
                                         <button onClick={() => handleToggleUserStatus(user.id, user.is_active)} className={user.is_active ? 'deactivate-button' : 'activate-button'}>
                                             {user.is_active ? 'Desativar' : 'Ativar'}
                                         </button>
-                                        <button onClick={() => handleDeleteUser(user.id, user.email)} className="delete-button" style={{ marginLeft: '10px' }}>
+                                        <button onClick={() => handleResetUserCount(user.id, user.email)} className="reset-user-button">
+                                            Zerar
+                                        </button>
+                                        <button onClick={() => handleDeleteUser(user.id, user.email)} className="delete-button">
                                             Excluir
                                         </button>
                                     </td>

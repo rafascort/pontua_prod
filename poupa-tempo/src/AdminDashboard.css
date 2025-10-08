@@ -144,6 +144,15 @@
     cursor: pointer;
     font-size: 0.9em;
     transition: background-color 0.3s ease;
+    margin-right: 8px; /* Adiciona espaçamento entre os botões */
+}
+
+.users-table td button:last-child {
+    margin-right: 0;
+}
+
+.actions-cell {
+    white-space: nowrap; /* Impede que os botões quebrem a linha */
 }
 
 .users-table td .deactivate-button {
@@ -162,6 +171,24 @@
 
 .users-table td .activate-button:hover {
     background-color: #218838;
+}
+
+.reset-user-button {
+    background-color: #6c757d; /* Cinza */
+    color: white;
+}
+
+.reset-user-button:hover {
+    background-color: #5a6268;
+}
+
+.delete-button {
+    background-color: #dc3545; /* Vermelho */
+    color: white;
+}
+
+.delete-button:hover {
+    background-color: #c82333;
 }
 
 /* Responsividade básica */
@@ -206,13 +233,12 @@
     .users-table td:nth-of-type(3):before { content: "Google ID"; }
     .users-table td:nth-of-type(4):before { content: "Status"; }
     .users-table td:nth-of-type(5):before { content: "Nível"; }
-    .users-table td:nth-of-type(6):before { content: "Ações"; }
+    .users-table td:nth-of-type(6):before { content: "Páginas Usadas"; }
+    .users-table td:nth-of-type(7):before { content: "Ações"; }
     .users-table td:last-child {
         border-bottom: none;
     }
 }
-
-/* Adicione no final do arquivo */
 
 .admin-header div {
     display: flex;
@@ -232,4 +258,30 @@
 
 .access-system-button:hover {
     background-color: #0056b3;
+}
+
+.user-list-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.user-list-header h2 {
+    margin: 0;
+}
+
+.reset-button {
+    background-color: #6c757d;
+    color: white;
+    padding: 10px 15px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 0.9em;
+    transition: background-color 0.3s ease;
+}
+
+.reset-button:hover {
+    background-color: #5a6268;
 }
