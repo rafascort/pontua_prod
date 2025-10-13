@@ -80,7 +80,7 @@ const Login = ({ onLogin }) => {
     <div className="login-container">
       <div className="login-card">
         <div className="login-header">
-          <h2>Pontua</h2>
+          <h2>Sistema Ponto</h2>
           <p>Automação de Cartão Ponto</p>
           <small>Sistema Seguro</small>
         </div>
