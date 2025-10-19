@@ -300,12 +300,8 @@ function MainApp({ onLogout, isAdmin }) {
     
     const modelNames = {
         '1': 'JBS Ponto',
-        '2': 'BRF Ponto',
-        '3': 'Ponto Mais',
-        '5': 'Planalto Transportes (Antigo)',
-        '6': 'Modelo Geral (IA)',
-        '7': 'Modelo direto',
-        'debug-docai': 'Debug Google Document AI (Admin)'
+        '6': 'Modelo sem DD/MM/AAAA',
+        '7': 'Modelo com DD/MM/AAAA',
     };
 
     const availableModels = Object.keys(modelNames).filter(modelId => {
