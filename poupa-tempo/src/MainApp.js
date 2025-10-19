@@ -11,9 +11,6 @@ const API_BASE_URL = '/api';
 
 const MODEL_IMAGE_PATHS = {
     '1': process.env.PUBLIC_URL + '/Modelo1.png',
-    '2': process.env.PUBLIC_URL + '/Modelo2.png',
-    '3': process.env.PUBLIC_URL + '/Modelo3.png',
-    '5': process.env.PUBLIC_URL + '/Modelo5.png',
     '6': process.env.PUBLIC_URL + '/Modelo_IA_Geral.png',
     '7': process.env.PUBLIC_URL + '/Modelo_IA_Geral.png',
 };
@@ -28,7 +25,7 @@ function MainApp({ onLogout, isAdmin }) {
     const [showProgressModal, setShowProgressModal] = useState(false);
     const [progressData, setProgressData] = useState({ current_step: 0, total_steps: 1, message: 'Iniciando...' });
     const [isLoading, setIsLoading] = useState(false);
-    
+
     const [showPeriodModal, setShowPeriodModal] = useState(false);
     const [pagesInfo, setPagesInfo] = useState([]);
     const [initialPdfPath, setInitialPdfPath] = useState('');
@@ -49,18 +46,18 @@ function MainApp({ onLogout, isAdmin }) {
             }
         };
     }, []);
-    
-    const resetExtractorState = () => { 
-        setModelType(null); 
-        setSelectedFile(null); 
-        setPageRange(''); 
-        setSearchTerm(''); 
-        setIsLoading(false); 
+
+    const resetExtractorState = () => {
+        setModelType(null);
+        setSelectedFile(null);
+        setPageRange('');
+        setSearchTerm('');
+        setIsLoading(false);
         if (fileInputRef.current) {
             fileInputRef.current.value = '';
         }
     };
-    
+
     const handleFileSelect = (event) => {
         const file = event.target.files[0];
         if (file && file.type === 'application/pdf') {
@@ -77,7 +74,7 @@ function MainApp({ onLogout, isAdmin }) {
     const handleCardClick = (modelId) => {
         setModelType(modelId);
     };
-    
+
     const checkFullProgress = async (taskId) => {
         const token = localStorage.getItem('jwt_token');
         if (!token) {
@@ -120,10 +117,13 @@ function MainApp({ onLogout, isAdmin }) {
                     resetExtractorState();
                 }, 5000);
             }
-        } catch (error) { 
-            setProgressData(prev => ({ ...prev, message: `Erro de rede: ${error.message}`, status: 'error' })); 
+        } catch (error) {
+            setProgressData(prev => ({ ...prev, message: `Erro de rede: ${error.message}`, status: 'error' }));
             setIsLoading(false);
-            clearInterval(progressIntervalRef.current);
+            if (progressIntervalRef.current) { // Verifica se ainda existe antes de limpar
+               clearInterval(progressIntervalRef.current);
+               progressIntervalRef.current = null; // Garante que a referência é limpa
+            }
         }
     };
 
@@ -138,6 +138,7 @@ function MainApp({ onLogout, isAdmin }) {
 
             if (data.status === 'completed') {
                 clearInterval(progressIntervalRef.current);
+                progressIntervalRef.current = null; // Limpa referência
                 setShowProgressModal(false);
                 setPagesInfo(data.result);
                 setInitialPdfPath(data.pdf_path);
@@ -145,6 +146,7 @@ function MainApp({ onLogout, isAdmin }) {
                 setIsLoading(false);
             } else if (data.status === 'error') {
                 clearInterval(progressIntervalRef.current);
+                progressIntervalRef.current = null; // Limpa referência
                 setIsLoading(false);
                 setTimeout(() => {
                     setShowProgressModal(false);
@@ -154,19 +156,36 @@ function MainApp({ onLogout, isAdmin }) {
         } catch (error) {
             setProgressData(prev => ({ ...prev, message: `Erro de rede: ${error.message}`, status: 'error' }));
             setIsLoading(false);
-            clearInterval(progressIntervalRef.current);
+             if (progressIntervalRef.current) { // Verifica se ainda existe antes de limpar
+               clearInterval(progressIntervalRef.current);
+               progressIntervalRef.current = null; // Garante que a referência é limpa
+            }
         }
     };
 
     const handleStartProcess = () => {
+        if (!modelType) {
+             alert('Por favor, selecione um modelo.');
+             return;
+        }
+        if (!selectedFile) {
+             alert('Por favor, importe um ficheiro PDF.');
+             return;
+        }
+        if (!pageRange && (modelType !== '7')) { // Apenas modelos não-diretos exigem páginas inicialmente
+             alert('Por favor, defina as páginas a serem processadas.');
+             return;
+        }
+
         if (modelType === '7') {
             handleDirectProcess();
         } else {
             handleInitialProcess();
         }
     };
-    
+
     const handleDirectProcess = async () => {
+        // Redundante, mas mantém por segurança
         if (!selectedFile || !modelType) {
             alert('Por favor, selecione o modelo e o arquivo.');
             return;
@@ -175,10 +194,10 @@ function MainApp({ onLogout, isAdmin }) {
         setIsLoading(true);
         setShowProgressModal(true);
         setProgressData({ current_step: 0, total_steps: 3, message: 'Enviando para processamento...' });
-        
+
         const formData = new FormData();
         formData.append('pdf_file', selectedFile);
-        formData.append('pages', pageRange);
+        formData.append('pages', pageRange); // Envia mesmo se vazio, backend lida
         formData.append('model_type', modelType);
 
         const token = localStorage.getItem('jwt_token');
@@ -198,8 +217,9 @@ function MainApp({ onLogout, isAdmin }) {
                 const errorData = await response.json();
                 throw new Error(errorData.error || 'Falha ao iniciar o processamento.');
             }
-            
+
             const result = await response.json();
+             if (progressIntervalRef.current) clearInterval(progressIntervalRef.current); // Limpa anterior
             progressIntervalRef.current = setInterval(() => checkFullProgress(result.task_id), 3000);
         } catch (error) {
             setProgressData({ current_step: 3, total_steps: 3, message: `Erro: ${error.message}`, status: 'error' });
@@ -212,6 +232,7 @@ function MainApp({ onLogout, isAdmin }) {
     };
 
     const handleInitialProcess = async () => {
+         // Redundante, mas mantém por segurança
         if (!selectedFile || !pageRange || !modelType) {
             alert('Por favor, selecione o modelo, o arquivo e as páginas.');
             return;
@@ -220,7 +241,7 @@ function MainApp({ onLogout, isAdmin }) {
         setIsLoading(true);
         setShowProgressModal(true);
         setProgressData({ current_step: 0, total_steps: 1, message: 'Lendo os períodos do PDF...' });
-        
+
         const formData = new FormData();
         formData.append('pdf_file', selectedFile);
         formData.append('pages', pageRange);
@@ -242,8 +263,9 @@ function MainApp({ onLogout, isAdmin }) {
                 const errorData = await response.json();
                 throw new Error(errorData.error || 'Falha ao iniciar extração de períodos.');
             }
-            
+
             const result = await response.json();
+             if (progressIntervalRef.current) clearInterval(progressIntervalRef.current); // Limpa anterior
             progressIntervalRef.current = setInterval(() => checkPeriodExtractionProgress(result.task_id), 1500);
         } catch (error) {
             setProgressData({ current_step: 1, total_steps: 1, message: `Erro: ${error.message}`, status: 'error' });
@@ -254,13 +276,13 @@ function MainApp({ onLogout, isAdmin }) {
             }, 5000);
         }
     };
-    
+
     const handleConfirmAndProcess = async (confirmedPeriods) => {
         setShowPeriodModal(false);
         setIsLoading(true);
         setShowProgressModal(true);
         setProgressData({ current_step: 0, total_steps: 3, message: 'Enviando para processamento com IA...' });
-        
+
         const token = localStorage.getItem('jwt_token');
         if (!token) {
             onLogout();
@@ -270,7 +292,7 @@ function MainApp({ onLogout, isAdmin }) {
         try {
             const response = await fetch(`${API_BASE_URL}/process`, {
                 method: 'POST',
-                headers: { 
+                headers: {
                     'Authorization': `Bearer ${token}`,
                     'Content-Type': 'application/json',
                 },
@@ -287,6 +309,7 @@ function MainApp({ onLogout, isAdmin }) {
             }
 
             const result = await response.json();
+             if (progressIntervalRef.current) clearInterval(progressIntervalRef.current); // Limpa anterior
             progressIntervalRef.current = setInterval(() => checkFullProgress(result.task_id), 3000);
         } catch (error) {
             setProgressData({ current_step: 3, total_steps: 3, message: `Erro: ${error.message}`, status: 'error' });
@@ -297,7 +320,7 @@ function MainApp({ onLogout, isAdmin }) {
             }, 5000);
         }
     };
-    
+
     const modelNames = {
         '1': 'JBS Ponto',
         '6': 'Modelo sem DD/MM/AAAA',
@@ -305,16 +328,24 @@ function MainApp({ onLogout, isAdmin }) {
     };
 
     const availableModels = Object.keys(modelNames).filter(modelId => {
-        if (modelId === 'debug-docai' && !isAdmin) {
-            return false;
-        }
+        // Removido filtro de debug, já que não está em modelNames
         return modelNames[modelId].toLowerCase().includes(searchTerm.toLowerCase());
     });
-    
+
     const renderHeader = () => (
         <header className="top-bar">
-            <button className="icon-button" onClick={() => { if (view === 'extractor') setView('home'); }}>
-                <span className="material-symbols-outlined">{view === 'extractor' ? 'arrow_back' : 'menu'}</span>
+            {/* Botão com lógica e ícone fixo */}
+            <button
+                className="icon-button"
+                onClick={() => {
+                    // Sempre volta para 'home' e limpa o estado do extrator
+                    setView('home');
+                    resetExtractorState();
+                }}
+                title="Voltar ao início" // Título fixo
+            >
+                {/* Ícone sempre 'home' */}
+                <span className="material-symbols-outlined">home</span>
             </button>
             <h1 className="title">{view === 'extractor' ? 'Extrator de ponto' : 'Sistema Ponto'}</h1>
             <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}>
@@ -370,6 +401,12 @@ function MainApp({ onLogout, isAdmin }) {
                                         <p>{modelNames[modelId]}</p>
                                     </div>
                                 ))}
+                                {/* Adiciona um aviso se a pesquisa não retornar resultados */}
+                                {availableModels.length === 0 && (
+                                    <p style={{ color: '#a8b3c7', textAlign: 'center', gridColumn: '1 / -1' }}>
+                                        Nenhum modelo encontrado para "{searchTerm}".
+                                    </p>
+                                )}
                             </div>
                         </div>
                         <div className="extractor-actions">
@@ -386,18 +423,33 @@ function MainApp({ onLogout, isAdmin }) {
                             <input
                                 type="text"
                                 className="page-input"
-                                placeholder="Defina as páginas (ex: 1-10)"
+                                placeholder="Páginas (ex: 1-5, 8, 10-12)" // Placeholder atualizado
                                 value={pageRange}
                                 onChange={(e) => setPageRange(e.target.value)}
+                                // Desabilita se for modelo 7 e nenhum arquivo selecionado
+                                disabled={modelType === '7' && !selectedFile}
                             />
-                            <button className="start-button" onClick={handleStartProcess} disabled={isLoading}>
+                            <button className="start-button" onClick={handleStartProcess} disabled={isLoading || !modelType || !selectedFile || (!pageRange && modelType !== '7')}>
                                 {isLoading ? 'Aguarde...' : 'Iniciar'}
                             </button>
                         </div>
                     </div>
                 )}
             </main>
-            {showProgressModal && <ProgressModal {...progressData} onClose={() => setShowProgressModal(false)} />}
+            {showProgressModal && <ProgressModal {...progressData} onClose={() => {
+                 setShowProgressModal(false);
+                 // Adicional: Se o processo terminou (com sucesso ou erro), reseta o estado
+                 if (progressData.status === 'completed' || progressData.status === 'error') {
+                    resetExtractorState();
+                 }
+                 // Cancela o polling se o modal for fechado manualmente durante o processamento
+                 if (progressIntervalRef.current) {
+                    clearInterval(progressIntervalRef.current);
+                    progressIntervalRef.current = null;
+                 }
+                 // Reset isLoading se fechar manualmente durante o loading inicial
+                 if (isLoading) setIsLoading(false);
+            }} />}
             {showPeriodModal && <PeriodConfirmationModal pagesInfo={pagesInfo} onConfirm={handleConfirmAndProcess} onCancel={() => { setShowPeriodModal(false); resetExtractorState(); }} isLoading={isLoading} />}
         </div>
     );
