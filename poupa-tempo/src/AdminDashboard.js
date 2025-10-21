@@ -2,6 +2,8 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import './AdminDashboard.css';
+import { fetchWithAuth } from './apiUtils'; // Importa o fetch interceptor
+import { isTokenValid } from './authUtils';   // Importa a função de verificação
 
 const AdminDashboard = ({ onLogout }) => {
     const [users, setUsers] = useState([]);
@@ -12,207 +14,237 @@ const AdminDashboard = ({ onLogout }) => {
     const [message, setMessage] = useState('');
     const navigate = useNavigate();
 
-    const fetchUsers = async () => {
-        setError('');
-        const token = localStorage.getItem('jwt_token');
-        if (!token) {
-            onLogout();
-            return;
+    // Função auxiliar para verificar autenticação antes de ações
+    const ensureAuthenticated = () => {
+        if (!isTokenValid()) {
+            console.warn("Ação administrativa interrompida: Token inválido ou expirado.");
+             // Mostra alerta, mas deixa o App.js lidar com o redirecionamento via callback do fetchWithAuth
+             setError('A sua sessão expirou ou é inválida. Será redirecionado para o login.');
+             // Chama onLogout que foi passado como prop, que por sua vez chama navigate('/login')
+             onLogout();
+            return false;
         }
+        return true;
+    };
+
+    const fetchUsers = async () => {
+        // Verifica autenticação ANTES da chamada
+        if (!ensureAuthenticated()) return;
+
+        setError(''); // Limpa erros anteriores
         try {
-            const response = await fetch('/api/admin/users', {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            if (response.status === 401 || response.status === 403) {
-                onLogout();
-                return;
-            }
+            // Usa fetchWithAuth para a requisição GET
+            const response = await fetchWithAuth('/api/admin/users');
+
             if (response.ok) {
                 const data = await response.json();
                 setUsers(data);
             } else {
+                // Trata outros erros HTTP que não sejam 401
                 const errorData = await response.json();
                 setError(errorData.msg || 'Erro ao carregar usuários.');
             }
         } catch (err) {
-            setError('Erro de rede ao buscar usuários.');
+            // Se o erro for de autenticação, o onLogout já foi chamado pelo fetchWithAuth
+            // Trata outros erros (rede, etc.)
+            if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') {
+                setError('Erro de rede ao buscar usuários.');
+            }
         }
     };
 
     const handleCreateUser = async (e) => {
         e.preventDefault();
+        // Verifica autenticação ANTES da chamada
+        if (!ensureAuthenticated()) return;
+
         setError('');
         setMessage('');
-        const token = localStorage.getItem('jwt_token');
-        if (!token) return;
 
         try {
-            const response = await fetch('/api/admin/users', {
+            // Usa fetchWithAuth para a requisição POST
+            const response = await fetchWithAuth('/api/admin/users', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                // Content-Type será adicionado automaticamente para JSON
                 body: JSON.stringify({ email: newUserEmail, password: newUserPassword, role: newUserRole })
             });
-
-            if (response.status === 401 || response.status === 403) { onLogout(); return; }
 
             if (response.ok) {
                 setMessage('Usuário criado com sucesso!');
                 setNewUserEmail('');
                 setNewUserPassword('');
                 setNewUserRole('user');
-                fetchUsers();
+                fetchUsers(); // Recarrega a lista de usuários
             } else {
                 const errorData = await response.json();
                 setError(errorData.msg || 'Erro ao criar usuário.');
             }
         } catch (err) {
-            setError('Erro de rede ao criar usuário.');
+            if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') {
+                setError('Erro de rede ao criar usuário.');
+            }
         }
     };
 
     const handleToggleUserStatus = async (userId, currentStatus) => {
+         // Verifica autenticação ANTES da chamada
+         if (!ensureAuthenticated()) return;
+
         setError('');
         setMessage('');
-        const token = localStorage.getItem('jwt_token');
-        if (!token) return;
 
         try {
-            const response = await fetch(`/api/admin/users/${userId}/status`, {
+             // Usa fetchWithAuth para a requisição PUT
+            const response = await fetchWithAuth(`/api/admin/users/${userId}/status`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                 body: JSON.stringify({ is_active: !currentStatus })
             });
 
-            if (response.status === 401 || response.status === 403) { onLogout(); return; }
-
             if (response.ok) {
                 setMessage(`Status do usuário atualizado com sucesso!`);
-                fetchUsers();
+                fetchUsers(); // Recarrega a lista
             } else {
                 const errorData = await response.json();
                 setError(errorData.msg || 'Erro ao atualizar status.');
             }
         } catch (err) {
-            setError('Erro de rede ao atualizar status.');
+            if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') {
+                setError('Erro de rede ao atualizar status.');
+            }
         }
     };
 
     const handleDeleteUser = async (userId, userEmail) => {
+        // Verifica autenticação ANTES da confirmação e da chamada
+        if (!ensureAuthenticated()) return;
+
         setError('');
         setMessage('');
-        const token = localStorage.getItem('jwt_token');
-        if (!token) return;
 
         if (!window.confirm(`Tem certeza que deseja excluir o usuário ${userEmail}? Esta ação é irreversível.`)) {
             return;
         }
 
         try {
-            const response = await fetch(`/api/admin/users/${userId}`, {
-                method: 'DELETE',
-                headers: { 'Authorization': `Bearer ${token}` }
+            // Usa fetchWithAuth para a requisição DELETE
+            const response = await fetchWithAuth(`/api/admin/users/${userId}`, {
+                method: 'DELETE'
             });
-
-            if (response.status === 401 || response.status === 403) { onLogout(); return; }
 
             if (response.ok) {
                 setMessage(`Usuário ${userEmail} excluído com sucesso!`);
-                fetchUsers();
+                fetchUsers(); // Recarrega a lista
             } else {
                 const errorData = await response.json();
                 setError(errorData.msg || 'Erro ao excluir usuário.');
             }
         } catch (err) {
-            setError('Erro de rede ao excluir usuário.');
+             if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') {
+                setError('Erro de rede ao excluir usuário.');
+            }
         }
     };
-    
+
     const handleResetAllCounts = async () => {
+         // Verifica autenticação ANTES da confirmação e da chamada
+         if (!ensureAuthenticated()) return;
+
         setError('');
         setMessage('');
-        const token = localStorage.getItem('jwt_token');
-        if (!token) return;
 
-        if (!window.confirm("Tem certeza que deseja zerar a contagem de páginas para TODOS os usuários? Esta ação não pode ser desfeita.")) {
+        if (!window.confirm("Tem certeza que deseja zerar a contagem de páginas para TODOS os usuários não-admin? Esta ação não pode ser desfeita.")) {
             return;
         }
 
         try {
-            const response = await fetch(`/api/admin/users/reset-pages`, {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}` }
+             // Usa fetchWithAuth para a requisição POST
+            const response = await fetchWithAuth(`/api/admin/users/reset-pages`, {
+                method: 'POST'
             });
-
-            if (response.status === 401 || response.status === 403) { onLogout(); return; }
 
             if (response.ok) {
                 const data = await response.json();
                 setMessage(data.msg || "Contagem de páginas zerada com sucesso!");
-                fetchUsers();
+                fetchUsers(); // Recarrega a lista
             } else {
                 const errorData = await response.json();
                 setError(errorData.msg || 'Erro ao zerar a contagem de páginas.');
             }
         } catch (err) {
-            setError('Erro de rede ao tentar zerar a contagem.');
+             if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') {
+                setError('Erro de rede ao tentar zerar a contagem.');
+            }
         }
     };
 
     const handleResetUserCount = async (userId, userEmail) => {
+        // Verifica autenticação ANTES da confirmação e da chamada
+        if (!ensureAuthenticated()) return;
+
         setError('');
         setMessage('');
-        const token = localStorage.getItem('jwt_token');
-        if (!token) return;
 
         if (!window.confirm(`Tem certeza de que deseja zerar a contagem de páginas para o usuário ${userEmail}?`)) {
             return;
         }
 
         try {
-            const response = await fetch(`/api/admin/users/${userId}/reset-pages`, {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}` }
+            // Usa fetchWithAuth para a requisição POST
+            const response = await fetchWithAuth(`/api/admin/users/${userId}/reset-pages`, {
+                method: 'POST'
             });
-
-            if (response.status === 401 || response.status === 403) { onLogout(); return; }
 
             if (response.ok) {
                 const data = await response.json();
                 setMessage(data.msg || "Contagem do usuário zerada com sucesso!");
-                fetchUsers();
+                fetchUsers(); // Recarrega a lista
             } else {
                 const errorData = await response.json();
                 setError(errorData.msg || 'Erro ao zerar contagem do usuário.');
             }
         } catch (err) {
-            setError('Erro de rede ao tentar zerar a contagem.');
+             if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') {
+                setError('Erro de rede ao tentar zerar a contagem.');
+            }
         }
     };
-    
+
+    // useEffect para buscar usuários na montagem
     useEffect(() => {
         fetchUsers();
-    }, []);
-    
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []); // Executa apenas na montagem
+
+    // useEffect para limpar mensagens após um tempo
     useEffect(() => {
+        let timer;
         if (message || error) {
-            const timer = setTimeout(() => { setMessage(''); setError(''); }, 5000);
-            return () => clearTimeout(timer);
+            timer = setTimeout(() => {
+                setMessage('');
+                setError('');
+            }, 5000); // Limpa após 5 segundos
         }
+        return () => clearTimeout(timer); // Limpa o timer se o componente desmontar
     }, [message, error]);
+
 
     return (
         <div className="admin-dashboard-container">
             <header className="admin-header">
                 <h1>Painel de Administração</h1>
                 <div>
+                    {/* Botão para voltar para a app principal */}
                     <button onClick={() => navigate('/app')} className="access-system-button">Acessar Sistema</button>
+                    {/* Botão de logout manual */}
                     <button onClick={onLogout} className="logout-button">Sair</button>
                 </div>
             </header>
             <main className="admin-content">
+                {/* Exibe mensagens de erro ou sucesso */}
                 {error && <p className="error-message">{error}</p>}
                 {message && <p className="success-message">{message}</p>}
 
+                {/* Secção para criar novo usuário */}
                 <section className="create-user-section">
                     <h2>Criar Novo Usuário</h2>
                     <form onSubmit={handleCreateUser} className="create-user-form">
@@ -226,49 +258,61 @@ const AdminDashboard = ({ onLogout }) => {
                     </form>
                 </section>
 
+                {/* Secção para gerenciar usuários existentes */}
                 <section className="user-list-section">
                      <div className="user-list-header">
                         <h2>Gerenciar Usuários</h2>
+                        {/* Botão para zerar contagem de todos os não-admins */}
                         <button onClick={handleResetAllCounts} className="reset-button">
-                            Zerar Contagem de Páginas
+                            Zerar Contagem Geral (não-admins)
                         </button>
                     </div>
-                     <table className="users-table">
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>E-mail</th>
-                                <th>Google ID</th>
-                                <th>Status</th>
-                                <th>Nível</th>
-                                <th>Páginas Usadas</th>
-                                <th>Ações</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {users.map((user) => (
-                                <tr key={user.id}>
-                                    <td>{user.id}</td>
-                                    <td>{user.email}</td>
-                                    <td>{user.google_id ? 'Sim' : 'Não'}</td>
-                                    <td>{user.is_active ? 'Ativo' : 'Inativo'}</td>
-                                    <td>{user.role}</td>
-                                    <td>{user.page_count}</td>
-                                    <td className="actions-cell">
-                                        <button onClick={() => handleToggleUserStatus(user.id, user.is_active)} className={user.is_active ? 'deactivate-button' : 'activate-button'}>
-                                            {user.is_active ? 'Desativar' : 'Ativar'}
-                                        </button>
-                                        <button onClick={() => handleResetUserCount(user.id, user.email)} className="reset-user-button">
-                                            Zerar
-                                        </button>
-                                        <button onClick={() => handleDeleteUser(user.id, user.email)} className="delete-button">
-                                            Excluir
-                                        </button>
-                                    </td>
+                     <div className="table-responsive"> {/* Wrapper para responsividade */}
+                         <table className="users-table">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>E-mail</th>
+                                    <th>Google</th>
+                                    <th>Status</th>
+                                    <th>Nível</th>
+                                    <th>Páginas</th>
+                                    <th>Ações</th>
                                 </tr>
-                            ))}
-                        </tbody>
-                    </table>
+                            </thead>
+                            <tbody>
+                                {users.map((user) => (
+                                    <tr key={user.id}>
+                                        <td data-label="ID">{user.id}</td>
+                                        <td data-label="E-mail">{user.email}</td>
+                                        <td data-label="Google">{user.google_id ? 'Sim' : 'Não'}</td>
+                                        <td data-label="Status">{user.is_active ? 'Ativo' : 'Inativo'}</td>
+                                        <td data-label="Nível">{user.role}</td>
+                                        <td data-label="Páginas">{user.page_count}</td>
+                                        <td data-label="Ações" className="actions-cell">
+                                            {/* Botão Ativar/Desativar */}
+                                            <button onClick={() => handleToggleUserStatus(user.id, user.is_active)} className={user.is_active ? 'deactivate-button' : 'activate-button'}>
+                                                {user.is_active ? 'Desativar' : 'Ativar'}
+                                            </button>
+                                            {/* Botão Zerar Contagem Individual */}
+                                            <button onClick={() => handleResetUserCount(user.id, user.email)} className="reset-user-button" title="Zerar contagem de páginas deste usuário">
+                                                Zerar
+                                            </button>
+                                            {/* Botão Excluir */}
+                                            <button onClick={() => handleDeleteUser(user.id, user.email)} className="delete-button">
+                                                Excluir
+                                            </button>
+                                        </td>
+                                    </tr>
+                                ))}
+                                {users.length === 0 && (
+                                    <tr>
+                                        <td colSpan="7" style={{ textAlign: 'center', color: '#888' }}>Nenhum usuário encontrado.</td>
+                                    </tr>
+                                )}
+                            </tbody>
+                        </table>
+                    </div> {/* Fim .table-responsive */}
                 </section>
             </main>
         </div>

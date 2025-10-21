@@ -86,35 +86,58 @@ def google_auth():
 @app.route('/api/auth/google/callback', methods=['GET'])
 def google_callback():
     if 'error' in request.args:
+        # Mantém o tratamento de erros do Google
         return redirect(f"{FRONTEND_URL}/login?error={request.args['error']}")
     if 'oauth_state' not in session or session['oauth_state'] != request.args.get('state'):
+        # Mantém a validação do estado
         return redirect(f"{FRONTEND_URL}/login?error=InvalidOAuthState")
+
     redirect_uri = url_for('google_callback', _external=True)
     google = OAuth2Session(GOOGLE_CLIENT_ID, redirect_uri=redirect_uri, state=session['oauth_state'])
+
     try:
+        # Busca o token do Google
         token = google.fetch_token(GOOGLE_TOKEN_URL, client_secret=GOOGLE_CLIENT_SECRET, authorization_response=request.url)
     except Exception as e:
-        print(f"Erro ao buscar token: {e}")
+        print(f"Erro ao buscar token do Google: {e}")
         return redirect(f"{FRONTEND_URL}/login?error=FailedToFetchGoogleToken")
+
+    # Busca informações do utilizador do Google
     user_info = google.get(GOOGLE_USERINFO_URL).json()
     email = user_info.get('email')
     google_id = user_info.get('id')
+
     if not email:
+        # Se o Google não retornar um email, não podemos prosseguir
         return redirect(f"{FRONTEND_URL}/login?error=NoEmailFromGoogle")
+
+    # --- LÓGICA ALTERADA AQUI ---
     user = User.query.filter_by(google_id=google_id).first()
     if not user:
+        # Se não encontrou pelo google_id, tenta encontrar pelo email
         user = User.query.filter_by(email=email).first()
         if user:
+            # Encontrou pelo email, associa o google_id
             user.google_id = google_id
             db.session.commit()
+            print(f"Associado Google ID ao utilizador existente: {email}")
         else:
-            user = User(email=email, google_id=google_id, is_active=False, role='user')
-            db.session.add(user)
-            db.session.commit()
+            # <<< ALTERAÇÃO PRINCIPAL: Não cria novo utilizador >>>
+            # Se não encontrou nem por google_id nem por email, redireciona com erro
+            print(f"Tentativa de login Google falhou: Utilizador não encontrado ({email})")
+            return redirect(f"{FRONTEND_URL}/login?error=UserNotFound")
+            # <<< FIM DA ALTERAÇÃO PRINCIPAL >>>
+
+    # --- Lógica existente para verificar se está ativo ---
     if not user.is_active:
+        # Se o utilizador existe mas está inativo
+        print(f"Tentativa de login Google falhou: Conta inativa ({email})")
         return redirect(f"{FRONTEND_URL}/login?error=AccountInactive")
+
+    # Se chegou até aqui, o utilizador existe e está ativo
     access_token = create_access_token(identity=user)
     frontend_redirect_url = FRONTEND_URL + f'/login?token={access_token}'
+    print(f"Login Google bem-sucedido para: {email}")
     return redirect(frontend_redirect_url)
 
 # --- Rotas de Administração (Protegidas por JWT e Role) ---
@@ -248,4 +271,4 @@ def create_tables():
             )
             db.session.add(admin_user)
             db.session.commit()
-            print("Usuário admin padrão criado: admin@example.com / admin123")
+            print("Usuário admin padrão cRiado: admin@example.com / admin123")

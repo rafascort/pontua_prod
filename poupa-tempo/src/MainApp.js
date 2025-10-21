@@ -6,14 +6,33 @@ import PeriodConfirmationModal from './PeriodConfirmationModal';
 import './App.css';
 import './ProgressModal.css';
 import './PeriodConfirmationModal.css';
+import { fetchWithAuth } from './apiUtils'; // Importa o fetch interceptor
+import { isTokenValid } from './authUtils'; // Importa a função de verificação
 
-const API_BASE_URL = '/api';
+const API_BASE_URL = '/api'; // Define a base da URL da API
 
+// --- ALTERAÇÃO AQUI: Manter apenas modelos 1, 6, 7 ---
 const MODEL_IMAGE_PATHS = {
-    '1': process.env.PUBLIC_URL + '/Modelo1.png',
-    '6': process.env.PUBLIC_URL + '/Modelo_IA_Geral.png',
-    '7': process.env.PUBLIC_URL + '/Modelo_IA_Geral.png',
+    '1': process.env.PUBLIC_URL + '/Modelo1.png', // JBS
+    // '2': process.env.PUBLIC_URL + '/Modelo2.png', // Removido
+    // '3': process.env.PUBLIC_URL + '/Modelo3.png', // Removido
+    // '4': process.env.PUBLIC_URL + '/Modelo4.png', // Removido
+    // '5': process.env.PUBLIC_URL + '/Modelo5.png', // Removido
+    '6': process.env.PUBLIC_URL + '/Modelo_IA_Geral.png', // IA Sem Data
+    '7': process.env.PUBLIC_URL + '/Modelo_IA_Geral.png', // IA Com Data
 };
+
+// --- ALTERAÇÃO AQUI: Manter apenas nomes dos modelos 1, 6, 7 ---
+const modelNames = {
+    '1': 'JBS Ponto',
+    // '2': 'BRF Ponto', // Removido
+    // '3': 'PontoMais Web', // Removido
+    // '4': 'Minuano Web', // Removido
+    // '5': 'Rudder / Planalto', // Removido
+    '6': 'IA Geral (Sem Data)', // Modelo sem DD/MM/AAAA
+    '7': 'IA Geral (Com Data)', // Modelo com DD/MM/AAAA
+};
+// --- FIM DAS ALTERAÇÕES ---
 
 function MainApp({ onLogout, isAdmin }) {
     const navigate = useNavigate();
@@ -25,7 +44,6 @@ function MainApp({ onLogout, isAdmin }) {
     const [showProgressModal, setShowProgressModal] = useState(false);
     const [progressData, setProgressData] = useState({ current_step: 0, total_steps: 1, message: 'Iniciando...' });
     const [isLoading, setIsLoading] = useState(false);
-
     const [showPeriodModal, setShowPeriodModal] = useState(false);
     const [pagesInfo, setPagesInfo] = useState([]);
     const [initialPdfPath, setInitialPdfPath] = useState('');
@@ -33,12 +51,14 @@ function MainApp({ onLogout, isAdmin }) {
     const fileInputRef = useRef(null);
     const progressIntervalRef = useRef(null);
 
+    // Pré-carrega as imagens dos modelos
     useEffect(() => {
         Object.values(MODEL_IMAGE_PATHS).forEach(path => {
             if (path) new Image().src = path;
         });
     }, []);
 
+    // Limpa o intervalo de progresso ao desmontar
     useEffect(() => {
         return () => {
             if (progressIntervalRef.current) {
@@ -47,16 +67,38 @@ function MainApp({ onLogout, isAdmin }) {
         };
     }, []);
 
+    // Reseta o estado do extrator
     const resetExtractorState = () => {
         setModelType(null);
         setSelectedFile(null);
         setPageRange('');
         setSearchTerm('');
         setIsLoading(false);
+        setShowProgressModal(false);
+        setShowPeriodModal(false);
+        setPagesInfo([]);
+        setInitialPdfPath('');
+        setProgressData({ current_step: 0, total_steps: 1, message: 'Iniciando...' });
+        if (progressIntervalRef.current) {
+            clearInterval(progressIntervalRef.current);
+            progressIntervalRef.current = null;
+        }
         if (fileInputRef.current) {
             fileInputRef.current.value = '';
         }
     };
+
+    // --- ALTERAÇÃO AQUI: Função de verificação de token ---
+    const ensureAuthenticated = () => {
+        if (!isTokenValid()) {
+            console.warn("Ação interrompida: Token inválido ou expirado.");
+            alert('A sua sessão expirou ou é inválida. Por favor, faça login novamente.');
+            onLogout(); // Chama a função de logout do App.js
+            return false;
+        }
+        return true;
+    };
+    // --- FIM DA ALTERAÇÃO ---
 
     const handleFileSelect = (event) => {
         const file = event.target.files[0];
@@ -64,6 +106,9 @@ function MainApp({ onLogout, isAdmin }) {
             setSelectedFile(file);
         } else {
             setSelectedFile(null);
+            if (file) {
+                alert('Por favor, selecione um ficheiro PDF.');
+            }
         }
     };
 
@@ -75,18 +120,14 @@ function MainApp({ onLogout, isAdmin }) {
         setModelType(modelId);
     };
 
-    const checkFullProgress = async (taskId) => {
-        const token = localStorage.getItem('jwt_token');
-        if (!token) {
-            onLogout();
-            return;
-        }
+    // Função unificada para verificar progresso
+    const checkProgress = async (taskId, isPeriodExtraction = false) => {
         try {
-            const response = await fetch(`${API_BASE_URL}/progress/${taskId}`, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
+            // --- ALTERAÇÃO AQUI: Usa fetchWithAuth ---
+            const response = await fetchWithAuth(`${API_BASE_URL}/progress/${taskId}`);
             if (!response.ok) {
-                throw new Error('Erro ao verificar progresso.');
+                const errorData = await response.json();
+                throw new Error(errorData.error || 'Erro ao verificar progresso.');
             }
             const data = await response.json();
             setProgressData(data);
@@ -96,258 +137,195 @@ function MainApp({ onLogout, isAdmin }) {
                 progressIntervalRef.current = null;
                 setIsLoading(false);
 
-                if (data.status === 'completed' && data.file_path) {
-                    const downloadResponse = await fetch(`${API_BASE_URL}/download/${taskId}`, {
-                        headers: { 'Authorization': `Bearer ${token}` }
-                    });
-                    if (downloadResponse.ok) {
-                        const blob = await downloadResponse.blob();
-                        const url = window.URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = data.filename || 'resultado.csv';
-                        document.body.appendChild(a);
-                        a.click();
-                        a.remove();
-                        window.URL.revokeObjectURL(url);
+                if (data.status === 'completed') {
+                    if (isPeriodExtraction) {
+                        setShowProgressModal(false);
+                        setPagesInfo(data.result || []);
+                        setInitialPdfPath(data.pdf_path || '');
+                        setShowPeriodModal(true);
+                    } else {
+                        if (data.file_path) {
+                            try {
+                                // --- ALTERAÇÃO AQUI: Usa fetchWithAuth ---
+                                const downloadResponse = await fetchWithAuth(`${API_BASE_URL}/download/${taskId}`);
+                                if (downloadResponse.ok) {
+                                    const blob = await downloadResponse.blob();
+                                    const url = window.URL.createObjectURL(blob);
+                                    const a = document.createElement('a');
+                                    a.href = url;
+                                    a.download = data.filename || 'resultado.csv';
+                                    document.body.appendChild(a);
+                                    a.click(); a.remove(); window.URL.revokeObjectURL(url);
+                                    setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 3000);
+                                } else { throw new Error('Falha ao iniciar o download.'); }
+                            } catch (downloadError){
+                                setProgressData(prev => ({ ...prev, message: `Erro no download: ${downloadError.message}`, status: 'error' }));
+                                setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
+                            }
+                        } else {
+                             console.warn("Processamento concluído sem ficheiro.");
+                             setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
+                        }
                     }
+                } else { // Status === 'error'
+                    console.error("Erro na tarefa:", data.error);
+                    setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
                 }
-                setTimeout(() => {
-                    setShowProgressModal(false);
-                    resetExtractorState();
-                }, 5000);
             }
         } catch (error) {
-            setProgressData(prev => ({ ...prev, message: `Erro de rede: ${error.message}`, status: 'error' }));
-            setIsLoading(false);
-            if (progressIntervalRef.current) { // Verifica se ainda existe antes de limpar
-               clearInterval(progressIntervalRef.current);
-               progressIntervalRef.current = null; // Garante que a referência é limpa
+            // --- ALTERAÇÃO AQUI: Não trata erro de sessão (apiUtils.js já tratou) ---
+            if (error.message !== 'Sessão expirada ou inválida.' && error.message !== 'Não autenticado.') {
+                console.error("Erro ao verificar progresso:", error);
+                setProgressData(prev => ({ ...prev, message: `Erro: ${error.message}`, status: 'error' }));
+                setIsLoading(false);
+                if (progressIntervalRef.current) { clearInterval(progressIntervalRef.current); progressIntervalRef.current = null; }
+                setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
             }
+            // --- FIM DA ALTERAÇÃO ---
         }
     };
 
-    const checkPeriodExtractionProgress = async (taskId) => {
-        const token = localStorage.getItem('jwt_token');
-        try {
-            const response = await fetch(`${API_BASE_URL}/progress/${taskId}`, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            const data = await response.json();
-            setProgressData(data);
-
-            if (data.status === 'completed') {
-                clearInterval(progressIntervalRef.current);
-                progressIntervalRef.current = null; // Limpa referência
-                setShowProgressModal(false);
-                setPagesInfo(data.result);
-                setInitialPdfPath(data.pdf_path);
-                setShowPeriodModal(true);
-                setIsLoading(false);
-            } else if (data.status === 'error') {
-                clearInterval(progressIntervalRef.current);
-                progressIntervalRef.current = null; // Limpa referência
-                setIsLoading(false);
-                setTimeout(() => {
-                    setShowProgressModal(false);
-                    resetExtractorState();
-                }, 5000);
-            }
-        } catch (error) {
-            setProgressData(prev => ({ ...prev, message: `Erro de rede: ${error.message}`, status: 'error' }));
-            setIsLoading(false);
-             if (progressIntervalRef.current) { // Verifica se ainda existe antes de limpar
-               clearInterval(progressIntervalRef.current);
-               progressIntervalRef.current = null; // Garante que a referência é limpa
-            }
-        }
-    };
-
+    // Função chamada ao clicar em "Iniciar"
     const handleStartProcess = () => {
-        if (!modelType) {
-             alert('Por favor, selecione um modelo.');
-             return;
-        }
-        if (!selectedFile) {
-             alert('Por favor, importe um ficheiro PDF.');
-             return;
-        }
-        if (!pageRange && (modelType !== '7')) { // Apenas modelos não-diretos exigem páginas inicialmente
-             alert('Por favor, defina as páginas a serem processadas.');
+        // --- ALTERAÇÃO AQUI: Verificação de token antes da ação ---
+        if (!ensureAuthenticated()) return;
+        // --- FIM DA ALTERAÇÃO ---
+
+        if (!modelType) { alert('Por favor, selecione um modelo.'); return; }
+        if (!selectedFile) { alert('Por favor, importe um ficheiro PDF.'); return; }
+        if (!pageRange && modelType !== '7') {
+             alert('Por favor, defina as páginas a serem processadas (ex: 1-5, 8).');
              return;
         }
 
-        if (modelType === '7') {
+        setIsLoading(true);
+        setShowProgressModal(true);
+
+        if (modelType === '7') { // Processamento Direto para IA com Data
+            setProgressData({ current_step: 0, total_steps: 1, message: 'Enviando para processamento direto...' });
             handleDirectProcess();
-        } else {
+        } else { // Extração de Período para JBS (1) e IA sem Data (6)
+            setProgressData({ current_step: 0, total_steps: 1, message: 'Lendo os períodos do PDF...' });
             handleInitialProcess();
         }
     };
 
+    // Função para processamento direto (Modelo 7)
     const handleDirectProcess = async () => {
-        // Redundante, mas mantém por segurança
-        if (!selectedFile || !modelType) {
-            alert('Por favor, selecione o modelo e o arquivo.');
-            return;
-        }
-
-        setIsLoading(true);
-        setShowProgressModal(true);
-        setProgressData({ current_step: 0, total_steps: 3, message: 'Enviando para processamento...' });
+        // --- ALTERAÇÃO AQUI: Verificação de token (redundante, mas seguro) ---
+        if (!ensureAuthenticated()) return;
+        // --- FIM DA ALTERAÇÃO ---
 
         const formData = new FormData();
         formData.append('pdf_file', selectedFile);
-        formData.append('pages', pageRange); // Envia mesmo se vazio, backend lida
-        formData.append('model_type', modelType);
-
-        const token = localStorage.getItem('jwt_token');
-        if (!token) {
-            onLogout();
-            return;
-        }
+        formData.append('pages', pageRange);
+        formData.append('model_type', modelType); // Será '7'
 
         try {
-            const response = await fetch(`${API_BASE_URL}/process-direct`, {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}` },
-                body: formData,
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error || 'Falha ao iniciar o processamento.');
-            }
-
+            // --- ALTERAÇÃO AQUI: Usa fetchWithAuth ---
+            const response = await fetchWithAuth(`${API_BASE_URL}/process-direct`, { method: 'POST', body: formData });
+            if (!response.ok) { const d = await response.json(); throw new Error(d.error || 'Falha.'); }
             const result = await response.json();
-             if (progressIntervalRef.current) clearInterval(progressIntervalRef.current); // Limpa anterior
-            progressIntervalRef.current = setInterval(() => checkFullProgress(result.task_id), 3000);
+            if (result.task_id) {
+                 if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+                 progressIntervalRef.current = setInterval(() => checkProgress(result.task_id, false), 3000);
+            } else { throw new Error("API não retornou task_id."); }
         } catch (error) {
-            setProgressData({ current_step: 3, total_steps: 3, message: `Erro: ${error.message}`, status: 'error' });
-            setTimeout(() => {
-                setShowProgressModal(false);
+             // --- ALTERAÇÃO AQUI: Não trata erro de sessão ---
+             if (error.message !== 'Sessão expirada ou inválida.' && error.message !== 'Não autenticado.') {
+                setProgressData({ current_step: 1, total_steps: 1, message: `Erro: ${error.message}`, status: 'error' });
                 setIsLoading(false);
-                resetExtractorState();
-            }, 5000);
+                setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
+            }
+            // --- FIM DA ALTERAÇÃO ---
         }
     };
 
+    // Função para iniciar extração de períodos (Modelos 1, 6)
     const handleInitialProcess = async () => {
-         // Redundante, mas mantém por segurança
-        if (!selectedFile || !pageRange || !modelType) {
-            alert('Por favor, selecione o modelo, o arquivo e as páginas.');
-            return;
-        }
-
-        setIsLoading(true);
-        setShowProgressModal(true);
-        setProgressData({ current_step: 0, total_steps: 1, message: 'Lendo os períodos do PDF...' });
+        // --- ALTERAÇÃO AQUI: Verificação de token (redundante, mas seguro) ---
+        if (!ensureAuthenticated()) return;
+        // --- FIM DA ALTERAÇÃO ---
 
         const formData = new FormData();
         formData.append('pdf_file', selectedFile);
         formData.append('pages', pageRange);
 
-        const token = localStorage.getItem('jwt_token');
-        if (!token) {
-            onLogout();
-            return;
-        }
-
         try {
-            const response = await fetch(`${API_BASE_URL}/extract-periods`, {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}` },
-                body: formData,
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error || 'Falha ao iniciar extração de períodos.');
-            }
-
+            // --- ALTERAÇÃO AQUI: Usa fetchWithAuth ---
+            const response = await fetchWithAuth(`${API_BASE_URL}/extract-periods`, { method: 'POST', body: formData });
+             if (!response.ok) { const d = await response.json(); throw new Error(d.error || 'Falha.'); }
             const result = await response.json();
-             if (progressIntervalRef.current) clearInterval(progressIntervalRef.current); // Limpa anterior
-            progressIntervalRef.current = setInterval(() => checkPeriodExtractionProgress(result.task_id), 1500);
+             if (result.task_id) {
+                 if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+                 progressIntervalRef.current = setInterval(() => checkProgress(result.task_id, true), 1500);
+             } else { throw new Error("API não retornou task_id."); }
         } catch (error) {
-            setProgressData({ current_step: 1, total_steps: 1, message: `Erro: ${error.message}`, status: 'error' });
-            setTimeout(() => {
-                setShowProgressModal(false);
+            // --- ALTERAÇÃO AQUI: Não trata erro de sessão ---
+            if (error.message !== 'Sessão expirada ou inválida.' && error.message !== 'Não autenticado.') {
+                setProgressData({ current_step: 1, total_steps: 1, message: `Erro: ${error.message}`, status: 'error' });
                 setIsLoading(false);
-                resetExtractorState();
-            }, 5000);
+                 setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
+            }
+            // --- FIM DA ALTERAÇÃO ---
         }
     };
 
+    // Função chamada após confirmar os períodos no modal
     const handleConfirmAndProcess = async (confirmedPeriods) => {
+        // --- ALTERAÇÃO AQUI: Verificação de token antes da ação ---
+        if (!ensureAuthenticated()) { setShowPeriodModal(false); return; }
+        // --- FIM DA ALTERAÇÃO ---
+
         setShowPeriodModal(false);
         setIsLoading(true);
         setShowProgressModal(true);
-        setProgressData({ current_step: 0, total_steps: 3, message: 'Enviando para processamento com IA...' });
-
-        const token = localStorage.getItem('jwt_token');
-        if (!token) {
-            onLogout();
-            return;
-        }
+        setProgressData({ current_step: 0, total_steps: 3, message: 'Enviando para processamento final...' });
 
         try {
-            const response = await fetch(`${API_BASE_URL}/process`, {
+            // --- ALTERAÇÃO AQUI: Usa fetchWithAuth ---
+            const response = await fetchWithAuth(`${API_BASE_URL}/process`, {
                 method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                },
                 body: JSON.stringify({
                     pdf_path: initialPdfPath,
                     pages_with_periods: confirmedPeriods,
-                    model_type: modelType,
+                    model_type: modelType, // Envia o tipo de modelo (será 1 ou 6)
                 })
             });
+            // --- FIM DA ALTERAÇÃO ---
 
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error || 'Falha ao iniciar processamento completo.');
-            }
-
+             if (!response.ok) { const d = await response.json(); throw new Error(d.error || 'Falha.'); }
             const result = await response.json();
-             if (progressIntervalRef.current) clearInterval(progressIntervalRef.current); // Limpa anterior
-            progressIntervalRef.current = setInterval(() => checkFullProgress(result.task_id), 3000);
+            if (result.task_id) {
+                 if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+                 progressIntervalRef.current = setInterval(() => checkProgress(result.task_id, false), 3000);
+             } else { throw new Error("API não retornou task_id."); }
         } catch (error) {
-            setProgressData({ current_step: 3, total_steps: 3, message: `Erro: ${error.message}`, status: 'error' });
-            setTimeout(() => {
-                setShowProgressModal(false);
+            // --- ALTERAÇÃO AQUI: Não trata erro de sessão ---
+            if (error.message !== 'Sessão expirada ou inválida.' && error.message !== 'Não autenticado.') {
+                setProgressData({ current_step: 3, total_steps: 3, message: `Erro: ${error.message}`, status: 'error' });
                 setIsLoading(false);
-                resetExtractorState();
-            }, 5000);
+                 setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
+            }
+            // --- FIM DA ALTERAÇÃO ---
         }
     };
 
-    const modelNames = {
-        '1': 'JBS Ponto',
-        '6': 'Modelo sem DD/MM/AAAA',
-        '7': 'Modelo com DD/MM/AAAA',
-    };
-
+    // Filtra modelos disponíveis (agora só tem 1, 6, 7 em modelNames)
     const availableModels = Object.keys(modelNames).filter(modelId => {
-        // Removido filtro de debug, já que não está em modelNames
         return modelNames[modelId].toLowerCase().includes(searchTerm.toLowerCase());
     });
 
     const renderHeader = () => (
         <header className="top-bar">
-            {/* Botão com lógica e ícone fixo */}
             <button
                 className="icon-button"
-                onClick={() => {
-                    // Sempre volta para 'home' e limpa o estado do extrator
-                    setView('home');
-                    resetExtractorState();
-                }}
-                title="Voltar ao início" // Título fixo
+                onClick={() => { setView('home'); resetExtractorState(); }}
+                title="Voltar ao início"
             >
-                {/* Ícone sempre 'home' */}
                 <span className="material-symbols-outlined">home</span>
             </button>
-            <h1 className="title">{view === 'extractor' ? 'Extrator de ponto' : 'Sistema Ponto'}</h1>
+            <h1 className="title">{view === 'extractor' ? 'Extrator de Ponto' : 'Sistema Ponto'}</h1>
             <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}>
                 {isAdmin && (
                     <button className="icon-button" title="Painel de Administração" onClick={() => navigate('/admin')}>
@@ -395,13 +373,12 @@ function MainApp({ onLogout, isAdmin }) {
                                             <img src={MODEL_IMAGE_PATHS[modelId]} alt={`Modelo ${modelNames[modelId]}`} />
                                         ) : (
                                             <div style={{ height: '160px', background: '#2c3e50', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                                <span className="material-symbols-outlined" style={{ fontSize: '60px', color: '#ecf0f1' }}>smart_toy</span>
+                                                <span className="material-symbols-outlined" style={{ fontSize: '60px', color: '#ecf0f1' }}>description</span>
                                             </div>
                                         )}
                                         <p>{modelNames[modelId]}</p>
                                     </div>
                                 ))}
-                                {/* Adiciona um aviso se a pesquisa não retornar resultados */}
                                 {availableModels.length === 0 && (
                                     <p style={{ color: '#a8b3c7', textAlign: 'center', gridColumn: '1 / -1' }}>
                                         Nenhum modelo encontrado para "{searchTerm}".
@@ -417,40 +394,49 @@ function MainApp({ onLogout, isAdmin }) {
                                 onChange={handleFileSelect}
                                 style={{ display: 'none' }}
                             />
-                            <button className="extractor-button" onClick={handleUploadClick}>
+                            <button className="extractor-button" onClick={handleUploadClick} disabled={isLoading}>
                                 {selectedFile ? `Ficheiro: ${selectedFile.name}` : 'Importar Ficheiro PDF'}
                             </button>
                             <input
                                 type="text"
                                 className="page-input"
-                                placeholder="Páginas (ex: 1-5, 8, 10-12)" // Placeholder atualizado
+                                placeholder={modelType === '7' ? "Páginas (Opcional, ex: 1-5, 8)" : "Páginas (Obrigatório, ex: 1-5, 8)"}
                                 value={pageRange}
                                 onChange={(e) => setPageRange(e.target.value)}
-                                // Desabilita se for modelo 7 e nenhum arquivo selecionado
-                                disabled={modelType === '7' && !selectedFile}
+                                disabled={isLoading || !selectedFile}
                             />
-                            <button className="start-button" onClick={handleStartProcess} disabled={isLoading || !modelType || !selectedFile || (!pageRange && modelType !== '7')}>
-                                {isLoading ? 'Aguarde...' : 'Iniciar'}
+                            <button
+                                className="start-button"
+                                onClick={handleStartProcess}
+                                disabled={isLoading || !modelType || !selectedFile || (!pageRange && modelType !== '7')}
+                            >
+                                {isLoading ? 'Processando...' : 'Iniciar'}
                             </button>
                         </div>
                     </div>
                 )}
             </main>
-            {showProgressModal && <ProgressModal {...progressData} onClose={() => {
-                 setShowProgressModal(false);
-                 // Adicional: Se o processo terminou (com sucesso ou erro), reseta o estado
-                 if (progressData.status === 'completed' || progressData.status === 'error') {
-                    resetExtractorState();
-                 }
-                 // Cancela o polling se o modal for fechado manualmente durante o processamento
-                 if (progressIntervalRef.current) {
-                    clearInterval(progressIntervalRef.current);
-                    progressIntervalRef.current = null;
-                 }
-                 // Reset isLoading se fechar manualmente durante o loading inicial
-                 if (isLoading) setIsLoading(false);
-            }} />}
-            {showPeriodModal && <PeriodConfirmationModal pagesInfo={pagesInfo} onConfirm={handleConfirmAndProcess} onCancel={() => { setShowPeriodModal(false); resetExtractorState(); }} isLoading={isLoading} />}
+            {showProgressModal &&
+                <ProgressModal
+                    {...progressData}
+                    onClose={() => {
+                         if (!isLoading && (progressData.status === 'completed' || progressData.status === 'error')) {
+                            setShowProgressModal(false);
+                            resetExtractorState();
+                         } else if (!isLoading) {
+                              setShowProgressModal(false);
+                         }
+                    }}
+                />
+            }
+            {showPeriodModal &&
+                <PeriodConfirmationModal
+                    pagesInfo={pagesInfo}
+                    onConfirm={handleConfirmAndProcess}
+                    onCancel={() => { setShowPeriodModal(false); resetExtractorState(); }}
+                    isLoading={isLoading}
+                />
+            }
         </div>
     );
 }
