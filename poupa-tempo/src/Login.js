@@ -16,22 +16,32 @@ const Login = ({ onLogin }) => {
       const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
       const decodedToken = JSON.parse(window.atob(base64));
 
-      // Importante: A verificação de is_active AGORA é feita ANTES de salvar o token
+      // 1. Verificação de Ativo
       if (!decodedToken.is_active) {
         setErro('Sua conta está inativa. Entre em contato com o suporte.');
-        localStorage.removeItem('jwt_token'); // Não salva token de conta inativa
-        // Não chama onLogin()
-        navigate('/login', { replace: true }); // Permanece na página de login
+        localStorage.removeItem('jwt_token'); 
+        navigate('/login', { replace: true }); 
         return;
       }
 
-      // Se ativo, salva o token e chama o callback de sucesso
+      // 2. Salva o token
       localStorage.setItem('jwt_token', token);
       onLogin(); // Notifica o App.js sobre o login bem-sucedido
 
-      // Navega para a aplicação principal
-      // A lógica de redirecionar para /admin se for admin pode ser feita no App.js
-      navigate('/app', { replace: true });
+      // 3. LÓGICA DE REDIRECIONAMENTO (MODIFICADA)
+      const planStatus = decodedToken.plan_status || 'free';
+      const userRole = decodedToken.role || 'user';
+
+      if (userRole === 'admin') {
+          // Se for admin, vai para /admin
+          navigate('/admin', { replace: true });
+      } else if (planStatus === 'free' || planStatus === 'inactive' || !planStatus) {
+          // Se for usuário comum E o plano for 'free' ou 'inactive', vai para /planos
+          navigate('/planos', { replace: true });
+      } else {
+          // Se for usuário comum E tiver um plano pago ativo, vai para /app
+          navigate('/app', { replace: true });
+      }
 
     } catch (e) {
       console.error("Erro ao decodificar token JWT para navegação:", e);

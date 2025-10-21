@@ -1,0 +1,287 @@
+/* --- Reset Básico --- */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+/* Garante que o body e o root ocupem a tela toda */
+html, body, #root {
+    height: 100%;
+}
+
+body {
+    font-family: 'Roboto', sans-serif;
+    line-height: 1.6;
+    color: #e0e6ed; /* Cor de texto clara */
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+}
+
+.landing-wrapper {
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.landing-container {
+    width: 90%;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px 0;
+}
+
+/* --- Header --- */
+.landing-header {
+    background-color: rgba(0, 0, 0, 0.3);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 15px 0;
+    position: sticky; /* Make header sticky */
+    top: 0;
+    z-index: 100; /* Ensure header stays on top */
+    backdrop-filter: blur(5px); /* Optional: blur background behind header */
+}
+
+.landing-header .landing-container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.landing-header h1 {
+    font-size: 1.8rem;
+    font-weight: 500;
+    color: #ffffff;
+}
+
+.landing-header nav a {
+    color: #e0e6ed;
+    text-decoration: none;
+    margin-left: 15px;
+    padding: 8px 15px;
+    border-radius: 5px;
+    transition: background-color 0.3s ease;
+    font-weight: 500; /* Medium weight for nav links */
+}
+
+.landing-header nav a:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+.landing-header nav a.button-primary {
+    background: linear-gradient(135deg, #4a9eff 0%, #0066cc 100%);
+    color: #ffffff;
+    font-weight: 500;
+}
+.landing-header nav a.button-primary:hover {
+    background: linear-gradient(135deg, #66b3ff 0%, #0052a3 100%);
+}
+
+
+/* --- Main Content --- */
+.landing-main {
+    flex-grow: 1; /* Faz o main ocupar o espaço restante */
+}
+
+.landing-main section {
+    padding: 60px 0;
+}
+
+.landing-main section h2 {
+    text-align: center;
+    font-size: 2.2rem;
+    margin-bottom: 40px;
+    color: #ffffff;
+    font-weight: 500;
+}
+
+/* --- Hero Section --- */
+#hero {
+    text-align: center;
+    padding: 80px 0;
+}
+
+#hero h2 {
+    font-size: 2.8rem;
+    margin-bottom: 20px;
+    line-height: 1.2;
+}
+
+#hero p {
+    font-size: 1.2rem;
+    color: #a8b3c7;
+    max-width: 700px;
+    margin: 0 auto 30px auto;
+}
+
+#hero .cta-button {
+    display: inline-block;
+    background: linear-gradient(135deg, #4a9eff 0%, #0066cc 100%);
+    color: #ffffff;
+    padding: 12px 25px;
+    text-decoration: none;
+    border-radius: 5px;
+    font-size: 1.1rem;
+    font-weight: 500;
+    transition: all 0.3s ease;
+    border: none;
+    cursor: pointer;
+}
+#hero .cta-button:hover {
+    background: linear-gradient(135deg, #66b3ff 0%, #0052a3 100%);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 15px rgba(74, 158, 255, 0.3);
+}
+
+
+/* --- Features Section --- */
+#features .features-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 30px;
+}
+
+#features .feature-item {
+    background: rgba(0, 0, 0, 0.2);
+    padding: 25px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    text-align: center;
+}
+
+#features .feature-item h3 {
+    font-size: 1.4rem;
+    margin-bottom: 15px;
+    color: #ffffff;
+    font-weight: 500;
+}
+
+#features .feature-item p {
+    color: #a8b3c7;
+    font-size: 0.95rem;
+}
+
+/* --- Pricing Section --- */
+#pricing {
+    background-color: rgba(0, 0, 0, 0.1); /* Fundo ligeiramente diferente */
+}
+
+#pricing table {
+    width: 100%;
+    border-collapse: collapse;
+    background-color: rgba(0, 0, 0, 0.3);
+    border-radius: 8px;
+    overflow: hidden; /* Para arredondar as bordas da tabela */
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+    margin-top: 20px;
+}
+
+#pricing th, #pricing td {
+    padding: 18px 20px; /* Increased padding */
+    text-align: left;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    font-size: 1rem; /* Slightly larger font size */
+}
+
+#pricing th {
+    background-color: rgba(74, 158, 255, 0.1);
+    color: #ffffff;
+    font-weight: 500;
+    font-size: 1.1rem;
+}
+
+#pricing tr:last-child td {
+    border-bottom: none;
+}
+
+#pricing td:first-child {
+    font-weight: bold;
+    color: #66b3ff; /* Lighter blue for plan name */
+}
+
+#pricing td {
+    color: #caced3;
+}
+
+#pricing td .price { /* Style the price specifically */
+    font-weight: bold;
+    color: #ffffff;
+}
+
+#pricing td .details { /* Style for extra details like /mês */
+    font-size: 0.9rem;
+    color: #a8b3c7;
+    margin-left: 5px;
+}
+
+#pricing .highlight { /* Class to highlight value per extra page */
+    color: #ffc107; /* Example highlight color (yellow) */
+    font-weight: bold;
+}
+
+/* --- Footer --- */
+.landing-footer {
+    background-color: rgba(0, 0, 0, 0.4);
+    color: #a8b3c7;
+    text-align: center;
+    padding: 20px 0;
+    margin-top: auto; /* Empurra o footer para baixo */
+    font-size: 0.9rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* --- Responsividade Básica --- */
+@media (max-width: 768px) {
+    .landing-header .landing-container {
+        flex-direction: column;
+        align-items: center;
+    }
+    .landing-header h1 {
+        margin-bottom: 10px;
+    }
+    .landing-header nav {
+        margin-top: 10px;
+    }
+    #hero h2 {
+        font-size: 2.2rem;
+    }
+    #hero p {
+        font-size: 1.1rem;
+    }
+    .landing-main section h2 {
+        font-size: 1.8rem;
+    }
+    #pricing th, #pricing td {
+        padding: 12px 10px; /* Adjust padding for smaller screens */
+        font-size: 0.9rem;
+        display: block; /* Stack cells vertically */
+        text-align: right; /* Align text to the right */
+        border-bottom: none; /* Remove bottom border for stacked cells */
+        position: relative;
+        padding-left: 50%; /* Make space for the label */
+    }
+    #pricing th {
+        display: none; /* Hide table headers */
+    }
+    #pricing td::before { /* Add labels using pseudo-elements */
+        content: attr(data-label);
+        position: absolute;
+        left: 10px;
+        width: 45%;
+        padding-right: 10px;
+        white-space: nowrap;
+        text-align: left;
+        font-weight: bold;
+        color: #ffffff;
+    }
+    #pricing tr {
+        display: block;
+        margin-bottom: 15px;
+        border-radius: 8px;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background-color: rgba(0, 0, 0, 0.3);
+    }
+    #pricing tr td:last-child {
+       border-bottom: none; /* No border for the last cell in stacked view */
+    }
+}

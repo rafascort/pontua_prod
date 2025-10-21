@@ -1,231 +1,222 @@
-// src/AdminDashboard.js
-import React, { useState, useEffect } from 'react';
+// /opt/pontua/AutoPonto/poupa-tempo/src/AdminDashboard.js
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import './AdminDashboard.css';
-import { fetchWithAuth } from './apiUtils'; // Importa o fetch interceptor
-import { isTokenValid } from './authUtils';   // Importa a função de verificação
+import { fetchWithAuth } from './apiUtils';
+import { isTokenValid, decodeToken } from './authUtils';
+import PasswordResetModal from './PasswordResetModal';
 
 const AdminDashboard = ({ onLogout }) => {
     const [users, setUsers] = useState([]);
-    const [newUserEmail, setNewUserEmail] = useState('');
-    const [newUserPassword, setNewUserPassword] = useState('');
-    const [newUserRole, setNewUserRole] = useState('user');
     const [error, setError] = useState('');
     const [message, setMessage] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [page, setPage] = useState(1);
+    const [totalPages, setTotalPages] = useState(1);
+    const [search, setSearch] = useState('');
+    const [userToResetPassword, setUserToResetPassword] = useState(null);
+    const [isResettingPassword, setIsResettingPassword] = useState(false);
+
+    // --- NOVOS ESTADOS PARA SORT/FILTER ---
+    const [sortField, setSortField] = useState('id'); // Default sort field
+    const [sortOrder, setSortOrder] = useState('asc');  // Default sort order
+    const [filterPlan, setFilterPlan] = useState('all'); // Default filter ('all', 'free', 'basic', etc.)
+    // --- FIM NOVOS ESTADOS ---
+
     const navigate = useNavigate();
 
-    // Função auxiliar para verificar autenticação antes de ações
-    const ensureAuthenticated = () => {
+    const ensureAuthenticated = useCallback(() => {
         if (!isTokenValid()) {
             console.warn("Ação administrativa interrompida: Token inválido ou expirado.");
-             // Mostra alerta, mas deixa o App.js lidar com o redirecionamento via callback do fetchWithAuth
-             setError('A sua sessão expirou ou é inválida. Será redirecionado para o login.');
-             // Chama onLogout que foi passado como prop, que por sua vez chama navigate('/login')
-             onLogout();
+            setError('A sua sessão expirou ou é inválida. Será redirecionado para o login.');
+            setTimeout(onLogout, 1500);
             return false;
         }
         return true;
-    };
+    }, [onLogout]);
 
-    const fetchUsers = async () => {
-        // Verifica autenticação ANTES da chamada
+    // --- fetchUsers ATUALIZADO ---
+    const fetchUsers = useCallback(async (
+        currentPage = 1,
+        currentSearch = '',
+        currentSortField = 'id',
+        currentSortOrder = 'asc',
+        currentFilterPlan = 'all'
+    ) => {
         if (!ensureAuthenticated()) return;
 
-        setError(''); // Limpa erros anteriores
+        setIsLoading(true);
+        setError('');
         try {
-            // Usa fetchWithAuth para a requisição GET
-            const response = await fetchWithAuth('/api/admin/users');
+            const queryParams = new URLSearchParams({
+                page: currentPage,
+                per_page: 10,
+                search: currentSearch,
+                sort_by: currentSortField,
+                sort_order: currentSortOrder,
+                filter_plan: currentFilterPlan, // Adiciona filtro de plano
+            });
+            const response = await fetchWithAuth(`/api/admin/users?${queryParams.toString()}`);
 
             if (response.ok) {
                 const data = await response.json();
-                setUsers(data);
+                setUsers(data.users || []);
+                setTotalPages(data.total_pages || 1);
+                setPage(data.current_page || 1);
             } else {
-                // Trata outros erros HTTP que não sejam 401
                 const errorData = await response.json();
                 setError(errorData.msg || 'Erro ao carregar usuários.');
+                setUsers([]);
             }
         } catch (err) {
-            // Se o erro for de autenticação, o onLogout já foi chamado pelo fetchWithAuth
-            // Trata outros erros (rede, etc.)
             if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') {
                 setError('Erro de rede ao buscar usuários.');
+                setUsers([]);
             }
+        } finally {
+            setIsLoading(false);
         }
+    }, [ensureAuthenticated]); // Só depende de ensureAuthenticated agora
+
+    // Handler para clique no header da tabela (sorting)
+    const handleSort = (field) => {
+        const newOrder = (field === sortField && sortOrder === 'asc') ? 'desc' : 'asc';
+        setSortField(field);
+        setSortOrder(newOrder);
+        // Chama fetchUsers com os novos parâmetros de ordenação, resetando para a página 1
+        fetchUsers(1, search, field, newOrder, filterPlan);
     };
 
-    const handleCreateUser = async (e) => {
+    // Handler para mudança no filtro de plano
+    const handleFilterPlanChange = (e) => {
+        const newPlanFilter = e.target.value;
+        setFilterPlan(newPlanFilter);
+        // Chama fetchUsers com o novo filtro, resetando para a página 1
+        fetchUsers(1, search, sortField, sortOrder, newPlanFilter);
+    };
+
+    const handleSearchChange = (e) => {
+        setSearch(e.target.value);
+    };
+
+    // Handler para submit da busca (apenas dispara o fetch com o estado atual)
+    const handleSearchSubmit = (e) => {
         e.preventDefault();
-        // Verifica autenticação ANTES da chamada
-        if (!ensureAuthenticated()) return;
+        fetchUsers(1, search, sortField, sortOrder, filterPlan); // Busca na página 1
+    };
 
-        setError('');
-        setMessage('');
-
-        try {
-            // Usa fetchWithAuth para a requisição POST
-            const response = await fetchWithAuth('/api/admin/users', {
-                method: 'POST',
-                // Content-Type será adicionado automaticamente para JSON
-                body: JSON.stringify({ email: newUserEmail, password: newUserPassword, role: newUserRole })
-            });
-
-            if (response.ok) {
-                setMessage('Usuário criado com sucesso!');
-                setNewUserEmail('');
-                setNewUserPassword('');
-                setNewUserRole('user');
-                fetchUsers(); // Recarrega a lista de usuários
-            } else {
-                const errorData = await response.json();
-                setError(errorData.msg || 'Erro ao criar usuário.');
-            }
-        } catch (err) {
-            if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') {
-                setError('Erro de rede ao criar usuário.');
-            }
+    // Handler para mudança de página
+    const handlePageChange = (newPage) => {
+        if (newPage >= 1 && newPage <= totalPages && newPage !== page) {
+             setPage(newPage); // Atualiza o estado da página
+             // FetchUsers será chamado pelo useEffect abaixo
         }
     };
 
+
+    // useEffect para buscar usuários na montagem E quando filtros/ordenação/página mudam
+    useEffect(() => {
+        fetchUsers(page, search, sortField, sortOrder, filterPlan);
+    // IMPORTANTE: Inclua todas as dependências que disparam o fetch
+    }, [fetchUsers, page, sortField, sortOrder, filterPlan, search]);
+
+
+    // Limpar mensagens (igual antes)
+    useEffect(() => {
+        let timer;
+        if (message || error) { timer = setTimeout(() => { setMessage(''); setError(''); }, 5000); }
+        return () => clearTimeout(timer);
+    }, [message, error]);
+
+    // Funções de ação (handleToggleUserStatus, etc.) - Chamam fetchUsers com estado atual
     const handleToggleUserStatus = async (userId, currentStatus) => {
-         // Verifica autenticação ANTES da chamada
-         if (!ensureAuthenticated()) return;
-
-        setError('');
-        setMessage('');
-
+        if (!ensureAuthenticated()) return;
+        setError(''); setMessage('');
         try {
-             // Usa fetchWithAuth para a requisição PUT
-            const response = await fetchWithAuth(`/api/admin/users/${userId}/status`, {
-                method: 'PUT',
-                body: JSON.stringify({ is_active: !currentStatus })
-            });
-
-            if (response.ok) {
-                setMessage(`Status do usuário atualizado com sucesso!`);
-                fetchUsers(); // Recarrega a lista
-            } else {
-                const errorData = await response.json();
-                setError(errorData.msg || 'Erro ao atualizar status.');
-            }
-        } catch (err) {
-            if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') {
-                setError('Erro de rede ao atualizar status.');
-            }
-        }
+           const response = await fetchWithAuth(`/api/admin/users/${userId}/status`, {
+               method: 'PUT',
+               body: JSON.stringify({ is_active: !currentStatus })
+           });
+           if (response.ok) {
+               setMessage(`Status atualizado!`);
+               fetchUsers(page, search, sortField, sortOrder, filterPlan); // Recarrega com filtros atuais
+           } else { const d = await response.json(); setError(d.msg || 'Erro.'); }
+        } catch (err) { if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') { setError('Erro de rede.'); } }
     };
 
     const handleDeleteUser = async (userId, userEmail) => {
-        // Verifica autenticação ANTES da confirmação e da chamada
         if (!ensureAuthenticated()) return;
-
-        setError('');
-        setMessage('');
-
-        if (!window.confirm(`Tem certeza que deseja excluir o usuário ${userEmail}? Esta ação é irreversível.`)) {
-            return;
-        }
-
+        setError(''); setMessage('');
+        if (!window.confirm(`Excluir ${userEmail}?`)) return;
         try {
-            // Usa fetchWithAuth para a requisição DELETE
-            const response = await fetchWithAuth(`/api/admin/users/${userId}`, {
-                method: 'DELETE'
-            });
-
+            const response = await fetchWithAuth(`/api/admin/users/${userId}`, { method: 'DELETE' });
             if (response.ok) {
-                setMessage(`Usuário ${userEmail} excluído com sucesso!`);
-                fetchUsers(); // Recarrega a lista
-            } else {
-                const errorData = await response.json();
-                setError(errorData.msg || 'Erro ao excluir usuário.');
-            }
-        } catch (err) {
-             if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') {
-                setError('Erro de rede ao excluir usuário.');
-            }
-        }
+                setMessage(`Usuário ${userEmail} excluído!`);
+                // Volta para página 1 se for a última página e só tiver 1 user nela
+                const newPage = (users.length === 1 && page > 1) ? page - 1 : page;
+                fetchUsers(newPage, search, sortField, sortOrder, filterPlan);
+            } else { const d = await response.json(); setError(d.msg || 'Erro.'); }
+        } catch (err) { if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') { setError('Erro de rede.'); } }
     };
 
-    const handleResetAllCounts = async () => {
-         // Verifica autenticação ANTES da confirmação e da chamada
+     const handleResetAllCounts = async () => {
          if (!ensureAuthenticated()) return;
+         setError(''); setMessage('');
+         if (!window.confirm("Zerar contagem geral (não-admins)?")) return;
+         try {
+             const response = await fetchWithAuth(`/api/admin/users/reset-pages`, { method: 'POST' });
+             if (response.ok) { const d = await response.json(); setMessage(d.msg || "OK!"); fetchUsers(page, search, sortField, sortOrder, filterPlan); }
+             else { const d = await response.json(); setError(d.msg || 'Erro.'); }
+         } catch (err) { if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') { setError('Erro de rede.'); } }
+     };
 
-        setError('');
-        setMessage('');
+     const handleResetUserCount = async (userId, userEmail) => {
+         if (!ensureAuthenticated()) return;
+         setError(''); setMessage('');
+         if (!window.confirm(`Zerar contagem para ${userEmail}?`)) return;
+         try {
+             const response = await fetchWithAuth(`/api/admin/users/${userId}/reset-pages`, { method: 'POST' });
+             if (response.ok) { const d = await response.json(); setMessage(d.msg || "OK!"); fetchUsers(page, search, sortField, sortOrder, filterPlan); }
+             else { const d = await response.json(); setError(d.msg || 'Erro.'); }
+         } catch (err) { if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') { setError('Erro de rede.'); } }
+     };
 
-        if (!window.confirm("Tem certeza que deseja zerar a contagem de páginas para TODOS os usuários não-admin? Esta ação não pode ser desfeita.")) {
-            return;
-        }
-
-        try {
-             // Usa fetchWithAuth para a requisição POST
-            const response = await fetchWithAuth(`/api/admin/users/reset-pages`, {
-                method: 'POST'
-            });
-
-            if (response.ok) {
-                const data = await response.json();
-                setMessage(data.msg || "Contagem de páginas zerada com sucesso!");
-                fetchUsers(); // Recarrega a lista
-            } else {
-                const errorData = await response.json();
-                setError(errorData.msg || 'Erro ao zerar a contagem de páginas.');
-            }
-        } catch (err) {
-             if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') {
-                setError('Erro de rede ao tentar zerar a contagem.');
-            }
-        }
+    // Funções do Modal (iguais antes)
+    const openPasswordResetModal = (user) => setUserToResetPassword(user);
+    const closePasswordResetModal = () => { setUserToResetPassword(null); setIsResettingPassword(false); };
+    const handleConfirmPasswordReset = async (newPassword) => {
+       if (!userToResetPassword || !ensureAuthenticated()) return;
+       setIsResettingPassword(true); setError(''); setMessage('');
+       try {
+           const response = await fetchWithAuth(`/api/admin/users/${userToResetPassword.id}`, {
+               method: 'PUT', body: JSON.stringify({ new_password: newPassword })
+           });
+           if (response.ok) {
+               setMessage(`Senha para ${userToResetPassword.email} resetada!`);
+               closePasswordResetModal();
+           } else {
+               const errorData = await response.json();
+               alert(`Erro: ${errorData.msg || 'Erro desconhecido.'}`);
+               setError(errorData.msg || 'Erro ao resetar senha.');
+           }
+       } catch (err) {
+            if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') {
+               setError('Erro de rede ao resetar senha.');
+           }
+       } finally { setIsResettingPassword(false); }
     };
 
-    const handleResetUserCount = async (userId, userEmail) => {
-        // Verifica autenticação ANTES da confirmação e da chamada
-        if (!ensureAuthenticated()) return;
 
-        setError('');
-        setMessage('');
+    // Email do admin logado (igual antes)
+    const token = localStorage.getItem('jwt_token');
+    const decodedToken = decodeToken(token);
+    const loggedInAdminEmail = decodedToken?.email;
 
-        if (!window.confirm(`Tem certeza de que deseja zerar a contagem de páginas para o usuário ${userEmail}?`)) {
-            return;
-        }
-
-        try {
-            // Usa fetchWithAuth para a requisição POST
-            const response = await fetchWithAuth(`/api/admin/users/${userId}/reset-pages`, {
-                method: 'POST'
-            });
-
-            if (response.ok) {
-                const data = await response.json();
-                setMessage(data.msg || "Contagem do usuário zerada com sucesso!");
-                fetchUsers(); // Recarrega a lista
-            } else {
-                const errorData = await response.json();
-                setError(errorData.msg || 'Erro ao zerar contagem do usuário.');
-            }
-        } catch (err) {
-             if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') {
-                setError('Erro de rede ao tentar zerar a contagem.');
-            }
-        }
+    // Helper para ícone de ordenação
+    const getSortIcon = (field) => {
+        if (field !== sortField) return <span className="sort-icon">↕</span>; // Ícone padrão
+        return sortOrder === 'asc' ? <span className="sort-icon">▲</span> : <span className="sort-icon">▼</span>;
     };
-
-    // useEffect para buscar usuários na montagem
-    useEffect(() => {
-        fetchUsers();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []); // Executa apenas na montagem
-
-    // useEffect para limpar mensagens após um tempo
-    useEffect(() => {
-        let timer;
-        if (message || error) {
-            timer = setTimeout(() => {
-                setMessage('');
-                setError('');
-            }, 5000); // Limpa após 5 segundos
-        }
-        return () => clearTimeout(timer); // Limpa o timer se o componente desmontar
-    }, [message, error]);
 
 
     return (
@@ -233,88 +224,148 @@ const AdminDashboard = ({ onLogout }) => {
             <header className="admin-header">
                 <h1>Painel de Administração</h1>
                 <div>
-                    {/* Botão para voltar para a app principal */}
                     <button onClick={() => navigate('/app')} className="access-system-button">Acessar Sistema</button>
-                    {/* Botão de logout manual */}
                     <button onClick={onLogout} className="logout-button">Sair</button>
                 </div>
             </header>
             <main className="admin-content">
-                {/* Exibe mensagens de erro ou sucesso */}
                 {error && <p className="error-message">{error}</p>}
                 {message && <p className="success-message">{message}</p>}
 
-                {/* Secção para criar novo usuário */}
-                <section className="create-user-section">
-                    <h2>Criar Novo Usuário</h2>
-                    <form onSubmit={handleCreateUser} className="create-user-form">
-                        <input type="email" placeholder="E-mail" value={newUserEmail} onChange={(e) => setNewUserEmail(e.target.value)} required />
-                        <input type="password" placeholder="Senha" value={newUserPassword} onChange={(e) => setNewUserPassword(e.target.value)} required />
-                        <select value={newUserRole} onChange={(e) => setNewUserRole(e.target.value)}>
-                            <option value="user">Usuário Comum</option>
-                            <option value="admin">Administrador</option>
-                        </select>
-                        <button type="submit">Criar Usuário</button>
-                    </form>
-                </section>
-
-                {/* Secção para gerenciar usuários existentes */}
                 <section className="user-list-section">
-                     <div className="user-list-header">
+                    <div className="user-list-header">
                         <h2>Gerenciar Usuários</h2>
-                        {/* Botão para zerar contagem de todos os não-admins */}
                         <button onClick={handleResetAllCounts} className="reset-button">
                             Zerar Contagem Geral (não-admins)
                         </button>
                     </div>
-                     <div className="table-responsive"> {/* Wrapper para responsividade */}
-                         <table className="users-table">
+
+                     {/* --- ÁREA DE FILTRO E BUSCA --- */}
+                    <div className="filter-search-area">
+                         <div className="filter-group">
+                             <label htmlFor="planFilter">Filtrar por Plano:</label>
+                             <select id="planFilter" value={filterPlan} onChange={handleFilterPlanChange}>
+                                 <option value="all">Todos</option>
+                                 <option value="free">Free</option>
+                                 <option value="basic">Básico</option>
+                                 <option value="standard">Padrão</option>
+                                 <option value="premium">Premium</option>
+                                 {/* Adicione outros status de plano se houver */}
+                             </select>
+                         </div>
+                        <form onSubmit={handleSearchSubmit} className="search-form">
+                             <label htmlFor="searchEmail">Buscar por Email:</label>
+                             <input
+                                id="searchEmail"
+                                type="text"
+                                placeholder="Digite o email..."
+                                value={search}
+                                onChange={handleSearchChange}
+                             />
+                             <button type="submit">Buscar</button>
+                        </form>
+                    </div>
+                     {/* --- FIM ÁREA DE FILTRO E BUSCA --- */}
+
+                    <div className="table-responsive">
+                        <table className="users-table">
                             <thead>
                                 <tr>
-                                    <th>ID</th>
-                                    <th>E-mail</th>
-                                    <th>Google</th>
-                                    <th>Status</th>
-                                    <th>Nível</th>
-                                    <th>Páginas</th>
+                                    {/* Cabeçalhos clicáveis para ordenar */}
+                                    <th onClick={() => handleSort('id')} className={sortField === 'id' ? `sort-${sortOrder}` : ''}>
+                                        ID {getSortIcon('id')}
+                                    </th>
+                                    <th onClick={() => handleSort('email')} className={sortField === 'email' ? `sort-${sortOrder}` : ''}>
+                                        E-mail {getSortIcon('email')}
+                                    </th>
+                                    <th onClick={() => handleSort('status')} className={sortField === 'status' ? `sort-${sortOrder}` : ''}>
+                                        Status {getSortIcon('status')}
+                                    </th>
+                                    <th onClick={() => handleSort('role')} className={sortField === 'role' ? `sort-${sortOrder}` : ''}>
+                                        Nível {getSortIcon('role')}
+                                    </th>
+                                    <th onClick={() => handleSort('plan')} className={sortField === 'plan' ? `sort-${sortOrder}` : ''}>
+                                        Plano {getSortIcon('plan')}
+                                    </th>
+                                    <th onClick={() => handleSort('pages')} className={sortField === 'pages' ? `sort-${sortOrder}` : ''}>
+                                        Páginas {getSortIcon('pages')}
+                                    </th>
                                     <th>Ações</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                {users.map((user) => (
-                                    <tr key={user.id}>
-                                        <td data-label="ID">{user.id}</td>
-                                        <td data-label="E-mail">{user.email}</td>
-                                        <td data-label="Google">{user.google_id ? 'Sim' : 'Não'}</td>
-                                        <td data-label="Status">{user.is_active ? 'Ativo' : 'Inativo'}</td>
-                                        <td data-label="Nível">{user.role}</td>
-                                        <td data-label="Páginas">{user.page_count}</td>
-                                        <td data-label="Ações" className="actions-cell">
-                                            {/* Botão Ativar/Desativar */}
-                                            <button onClick={() => handleToggleUserStatus(user.id, user.is_active)} className={user.is_active ? 'deactivate-button' : 'activate-button'}>
-                                                {user.is_active ? 'Desativar' : 'Ativar'}
-                                            </button>
-                                            {/* Botão Zerar Contagem Individual */}
-                                            <button onClick={() => handleResetUserCount(user.id, user.email)} className="reset-user-button" title="Zerar contagem de páginas deste usuário">
-                                                Zerar
-                                            </button>
-                                            {/* Botão Excluir */}
-                                            <button onClick={() => handleDeleteUser(user.id, user.email)} className="delete-button">
-                                                Excluir
-                                            </button>
-                                        </td>
-                                    </tr>
-                                ))}
-                                {users.length === 0 && (
-                                    <tr>
-                                        <td colSpan="7" style={{ textAlign: 'center', color: '#888' }}>Nenhum usuário encontrado.</td>
-                                    </tr>
+                                {isLoading ? (
+                                    <tr><td colSpan="7" style={{ textAlign: 'center' }}>Carregando...</td></tr>
+                                ) : users.length > 0 ? (
+                                    users.map((user) => (
+                                        <tr key={user.id}>
+                                            <td data-label="ID">{user.id}</td>
+                                            <td data-label="E-mail">{user.email}</td>
+                                            <td data-label="Status">{user.is_active ? 'Ativo' : 'Inativo'}</td>
+                                            <td data-label="Nível">{user.role}</td>
+                                            <td data-label="Plano">{user.plan_status || 'free'}</td>
+                                            <td data-label="Páginas">{user.page_count}</td>
+                                            <td data-label="Ações" className="actions-cell">
+                                                <button
+                                                    onClick={() => handleToggleUserStatus(user.id, user.is_active)}
+                                                    className={user.is_active ? 'deactivate-button' : 'activate-button'}
+                                                    disabled={user.email === loggedInAdminEmail}
+                                                    title={user.email === loggedInAdminEmail ? "Não pode alterar seu próprio status" : (user.is_active ? "Desativar usuário" : "Ativar usuário")}
+                                                >
+                                                    {user.is_active ? 'Desativar' : 'Ativar'}
+                                                </button>
+                                                 <button
+                                                    onClick={() => openPasswordResetModal(user)}
+                                                    className="reset-user-button"
+                                                    title="Resetar senha deste usuário">
+                                                    Senha
+                                                 </button>
+                                                <button
+                                                    onClick={() => handleResetUserCount(user.id, user.email)}
+                                                    className="reset-user-button"
+                                                    title="Zerar contagem de páginas">
+                                                    Zerar
+                                                </button>
+                                                <button
+                                                    onClick={() => handleDeleteUser(user.id, user.email)}
+                                                    className="delete-button"
+                                                    disabled={user.email === loggedInAdminEmail}
+                                                    title={user.email === loggedInAdminEmail ? "Não pode excluir sua própria conta" : "Excluir usuário"}
+                                                >
+                                                    Excluir
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))
+                                ) : (
+                                    <tr><td colSpan="7" style={{ textAlign: 'center' }}>Nenhum usuário encontrado.</td></tr>
                                 )}
                             </tbody>
                         </table>
-                    </div> {/* Fim .table-responsive */}
+                    </div>
+                    {/* Paginação */}
+                    {!isLoading && totalPages > 1 && (
+                        <div className="pagination">
+                            <button onClick={() => handlePageChange(page - 1)} disabled={page <= 1}>
+                                Anterior
+                            </button>
+                            <span>Página {page} de {totalPages}</span>
+                            <button onClick={() => handlePageChange(page + 1)} disabled={page >= totalPages}>
+                                Próxima
+                            </button>
+                        </div>
+                    )}
                 </section>
             </main>
+
+             {userToResetPassword && (
+                 <PasswordResetModal
+                    userEmail={userToResetPassword.email}
+                    onConfirm={handleConfirmPasswordReset}
+                    onCancel={closePasswordResetModal}
+                    isLoading={isResettingPassword}
+                 />
+             )}
         </div>
     );
 };

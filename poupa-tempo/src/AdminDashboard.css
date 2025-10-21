@@ -1,12 +1,13 @@
 /* src/AdminDashboard.css */
 .admin-dashboard-container {
     padding: 20px;
-    max-width: 1200px;
-    margin: 0 auto;
+    max-width: 1400px; /* Increased max-width */
+    margin: 20px auto; /* Added top/bottom margin */
     font-family: Arial, sans-serif;
-    background-color: #f4f7f6;
+    /* Removed background-color to let the parent's gradient show */
     border-radius: 8px;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    /* Removed box-shadow, assuming parent provides background */
+    color: #333; /* Default text color to dark */
 }
 
 .admin-header {
@@ -16,16 +17,16 @@
     margin-bottom: 30px;
     padding-bottom: 15px;
     border-bottom: 1px solid #e0e0e0;
+    color: #e0e6ed; /* Light color for header text */
 }
 
 .admin-header h1 {
-    color: #333;
+    color: #ffffff; /* Explicitly white title */
     font-size: 2.2em;
     margin: 0;
 }
 
-.logout-button {
-    background-color: #dc3545;
+.logout-button, .access-system-button, .reset-button { /* Shared button styles */
     color: white;
     padding: 10px 20px;
     border: none;
@@ -35,167 +36,211 @@
     transition: background-color 0.3s ease;
 }
 
-.logout-button:hover {
-    background-color: #c82333;
-}
+.logout-button { background-color: #dc3545; }
+.logout-button:hover { background-color: #c82333; }
+.access-system-button { background-color: #007bff; }
+.access-system-button:hover { background-color: #0056b3; }
+.reset-button { background-color: #6c757d; }
+.reset-button:hover { background-color: #5a6268; }
+
 
 .admin-content section {
-    background-color: #fff;
+    background-color: #fff; /* White background for sections */
+    color: #333; /* Dark text within sections */
     padding: 25px;
     border-radius: 8px;
-    box-shadow: 0 1px 5px rgba(0, 0, 0, 0.05);
+    box-shadow: 0 1px 5px rgba(0, 0, 0, 0.1); /* Subtle shadow */
     margin-bottom: 30px;
 }
 
 .admin-content h2 {
-    color: #555;
+    color: #333; /* Darker heading color */
     font-size: 1.8em;
     margin-top: 0;
     margin-bottom: 20px;
-    border-bottom: 1px solid #f0f0f0;
+    border-bottom: 1px solid #e0e0e0; /* Lighter border */
     padding-bottom: 10px;
 }
 
-.error-message {
-    color: #dc3545;
-    background-color: #f8d7da;
-    border: 1px solid #f5c6cb;
+.error-message, .success-message { /* Keep message styles */
     padding: 10px;
     border-radius: 5px;
     margin-bottom: 20px;
     text-align: center;
 }
+.error-message { color: #721c24; background-color: #f8d7da; border: 1px solid #f5c6cb; }
+.success-message { color: #155724; background-color: #d4edda; border: 1px solid #c3e6cb; }
 
-.success-message {
-    color: #28a745;
-    background-color: #d4edda;
-    border: 1px solid #c3e6cb;
-    padding: 10px;
-    border-radius: 5px;
-    margin-bottom: 20px;
-    text-align: center;
-}
-
-/* Create User Form */
-.create-user-form {
-    display: grid;
-    grid-template-columns: 1fr 1fr 1fr auto;
+/* Filter and Search Area */
+.filter-search-area {
+    display: flex;
     gap: 15px;
-    align-items: end;
+    margin-bottom: 20px;
+    align-items: flex-end; /* Align items to bottom */
 }
 
-.create-user-form input[type="email"],
-.create-user-form input[type="password"],
-.create-user-form select {
-    width: 100%;
-    padding: 10px;
+.filter-group, .search-form {
+    display: flex;
+    flex-direction: column; /* Stack label above input/select */
+}
+
+.filter-group label, .search-form label {
+     font-size: 0.9em;
+     color: #555;
+     margin-bottom: 5px;
+}
+
+
+.filter-group select, .search-form input[type="text"] {
+    padding: 8px 12px;
     border: 1px solid #ccc;
     border-radius: 4px;
     font-size: 1em;
 }
 
-.create-user-form button {
-    background-color: #007bff;
-    color: white;
-    padding: 10px 15px;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 1em;
-    transition: background-color 0.3s ease;
+.search-form {
+    flex-grow: 1; /* Allow search to take more space */
+    flex-direction: row; /* Keep search input and button side-by-side */
+    align-items: flex-end;
+    gap: 10px;
+}
+.search-form input[type="text"] {
+    flex-grow: 1;
 }
 
-.create-user-form button:hover {
-    background-color: #0056b3;
+.search-form button {
+     padding: 8px 15px;
+     background-color: #007bff;
+     color: white;
+     border: none;
+     border-radius: 4px;
+     cursor: pointer;
+     font-size: 1em;
+     height: 38px; /* Match input height */
 }
+.search-form button:hover { background-color: #0056b3; }
+
 
 /* Users Table */
 .users-table {
     width: 100%;
     border-collapse: collapse;
     margin-top: 20px;
+    background-color: #fff; /* Ensure table background is white */
 }
 
 .users-table th,
 .users-table td {
-    border: 1px solid #e0e0e0;
+    border: 1px solid #dee2e6; /* Lighter border color */
     padding: 12px 15px;
     text-align: left;
+    color: #333; /* Dark text color for cells */
+    vertical-align: middle; /* Align cell content vertically */
 }
 
 .users-table th {
-    background-color: #f8f8f8;
-    color: #666;
+    background-color: #f8f9fa; /* Very light grey for header */
+    color: #495057; /* Darker grey for header text */
     font-weight: bold;
+    cursor: pointer; /* Indicate sortable columns */
+    position: relative; /* For sort icons */
+    white-space: nowrap; /* Prevent header text wrapping */
 }
 
+/* Add space for sort icon */
+.users-table th .sort-icon {
+    margin-left: 5px;
+    font-size: 0.8em;
+    color: #aaa; /* Default icon color */
+    display: inline-block; /* Keep on same line */
+    width: 1em; /* Reserve space */
+}
+
+.users-table th.sort-asc .sort-icon,
+.users-table th.sort-desc .sort-icon {
+    color: #007bff; /* Active sort color */
+}
+
+
 .users-table tr:nth-child(even) {
-    background-color: #fdfdfd;
+    background-color: #f8f9fa; /* Slightly off-white for even rows */
 }
 
 .users-table tr:hover {
-    background-color: #f0f0f0;
+    background-color: #e9ecef; /* Light grey on hover */
 }
 
+/* Action Buttons in Table */
 .users-table td button {
-    padding: 8px 12px;
+    padding: 6px 10px; /* Slightly smaller buttons */
     border: none;
     border-radius: 4px;
     cursor: pointer;
-    font-size: 0.9em;
+    font-size: 0.85em; /* Smaller font for buttons */
     transition: background-color 0.3s ease;
-    margin-right: 8px; /* Adiciona espaçamento entre os botões */
+    margin-right: 5px;
+    margin-bottom: 5px; /* Add margin for wrapping */
+    white-space: nowrap;
+}
+.users-table td button:last-child { margin-right: 0; }
+.actions-cell { min-width: 220px; } /* Ensure enough space for buttons */
+
+.users-table td .deactivate-button { background-color: #ffc107; color: #333; }
+.users-table td .deactivate-button:hover { background-color: #e0a800; }
+.users-table td .activate-button { background-color: #28a745; color: white; }
+.users-table td .activate-button:hover { background-color: #218838; }
+.reset-user-button { background-color: #6c757d; color: white; }
+.reset-user-button:hover { background-color: #5a6268; }
+.delete-button { background-color: #dc3545; color: white; }
+.delete-button:hover { background-color: #c82333; }
+
+/* Pagination */
+.pagination {
+    margin-top: 20px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 15px;
+    color: #555; /* Text color for pagination info */
 }
 
-.users-table td button:last-child {
-    margin-right: 0;
+.pagination button {
+    padding: 8px 15px;
+    cursor: pointer;
+    border: 1px solid #ccc;
+    background-color: #fff;
+    border-radius: 4px;
+    color: #007bff;
 }
 
-.actions-cell {
-    white-space: nowrap; /* Impede que os botões quebrem a linha */
+.pagination button:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+    color: #6c757d;
 }
 
-.users-table td .deactivate-button {
-    background-color: #ffc107; /* Amarelo para desativar */
-    color: #333;
+.pagination button:hover:not(:disabled) {
+     background-color: #e9ecef;
 }
 
-.users-table td .deactivate-button:hover {
-    background-color: #e0a800;
+.pagination span {
+    font-weight: bold;
 }
 
-.users-table td .activate-button {
-    background-color: #28a745; /* Verde para ativar */
-    color: white;
+/* Responsividade (Ajustada para melhor visualização em tabela) */
+@media (max-width: 992px) { /* Adjust breakpoint if needed */
+    .actions-cell { min-width: auto; } /* Allow actions cell to shrink */
+    .users-table td button { margin-bottom: 5px; } /* Ensure buttons stack nicely */
 }
 
-.users-table td .activate-button:hover {
-    background-color: #218838;
-}
-
-.reset-user-button {
-    background-color: #6c757d; /* Cinza */
-    color: white;
-}
-
-.reset-user-button:hover {
-    background-color: #5a6268;
-}
-
-.delete-button {
-    background-color: #dc3545; /* Vermelho */
-    color: white;
-}
-
-.delete-button:hover {
-    background-color: #c82333;
-}
-
-/* Responsividade básica */
 @media (max-width: 768px) {
-    .create-user-form {
-        grid-template-columns: 1fr;
-    }
+    /* Stack filters vertically */
+     .filter-search-area { flex-direction: column; align-items: stretch; }
+     .search-form { flex-direction: column; align-items: stretch; }
+     .search-form input[type="text"] { width: 100%; }
+     .search-form button { width: 100%; }
+
+    /* Force table to not be like tables anymore */
     .users-table, .users-table thead, .users-table tbody, .users-table th, .users-table td, .users-table tr {
         display: block;
     }
@@ -206,20 +251,27 @@
     }
     .users-table tr {
         margin-bottom: 15px;
-        border: 1px solid #e0e0e0;
+        border: 1px solid #dee2e6;
         border-radius: 8px;
-        background-color: #fff;
+        background-color: #fff; /* Ensure white background */
     }
+     .users-table tr:nth-child(even) { background-color: #f8f9fa; } /* Keep alternating color */
+
     .users-table td {
         border: none;
         border-bottom: 1px solid #eee;
         position: relative;
         padding-left: 50%;
         text-align: right;
+        min-height: 38px; /* Ensure consistent height */
+        display: flex; /* Use flexbox for alignment */
+        align-items: center; /* Center content vertically */
+        justify-content: flex-end; /* Align content to the right */
     }
     .users-table td:before {
         position: absolute;
-        top: 12px;
+        top: 50%;
+        transform: translateY(-50%); /* Center label vertically */
         left: 15px;
         width: 45%;
         padding-right: 10px;
@@ -228,60 +280,24 @@
         font-weight: bold;
         color: #555;
     }
+    /* Define labels for columns */
     .users-table td:nth-of-type(1):before { content: "ID"; }
     .users-table td:nth-of-type(2):before { content: "E-mail"; }
-    .users-table td:nth-of-type(3):before { content: "Google ID"; }
-    .users-table td:nth-of-type(4):before { content: "Status"; }
-    .users-table td:nth-of-type(5):before { content: "Nível"; }
-    .users-table td:nth-of-type(6):before { content: "Páginas Usadas"; }
+    .users-table td:nth-of-type(3):before { content: "Status"; }
+    .users-table td:nth-of-type(4):before { content: "Nível"; }
+    .users-table td:nth-of-type(5):before { content: "Plano"; }
+    .users-table td:nth-of-type(6):before { content: "Páginas"; }
     .users-table td:nth-of-type(7):before { content: "Ações"; }
-    .users-table td:last-child {
-        border-bottom: none;
-    }
-}
 
-.admin-header div {
-    display: flex;
-    gap: 15px;
-}
+     .users-table td:last-child { border-bottom: 0; }
 
-.access-system-button {
-    background-color: #007bff;
-    color: white;
-    padding: 10px 20px;
-    border: none;
-    border-radius: 5px;
-    cursor: pointer;
-    font-size: 1em;
-    transition: background-color 0.3s ease;
-}
+     .actions-cell {
+        padding-top: 10px; /* Add some padding above buttons */
+        padding-bottom: 10px; /* Add some padding below buttons */
+        min-height: 50px; /* Ensure enough height for buttons */
+        flex-wrap: wrap; /* Allow buttons to wrap */
+        justify-content: flex-end; /* Align buttons to the right */
+        gap: 5px; /* Add gap between wrapped buttons */
+     }
 
-.access-system-button:hover {
-    background-color: #0056b3;
-}
-
-.user-list-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 20px;
-}
-
-.user-list-header h2 {
-    margin: 0;
-}
-
-.reset-button {
-    background-color: #6c757d;
-    color: white;
-    padding: 10px 15px;
-    border: none;
-    border-radius: 5px;
-    cursor: pointer;
-    font-size: 0.9em;
-    transition: background-color 0.3s ease;
-}
-
-.reset-button:hover {
-    background-color: #5a6268;
 }

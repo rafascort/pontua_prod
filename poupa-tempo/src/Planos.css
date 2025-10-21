@@ -1,0 +1,128 @@
+/* /opt/pontua/AutoPonto/poupa-tempo/src/Planos.css */
+
+.planos-page-wrapper {
+    min-height: 100vh;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    color: #e0e6ed;
+    display: flex;
+    flex-direction: column;
+}
+
+.planos-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 40px;
+    background-color: rgba(0, 0, 0, 0.3);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.planos-header h1 {
+    color: #ffffff;
+    font-weight: 500;
+}
+
+.planos-logout-button {
+    background: #dc3545;
+    color: white;
+    padding: 8px 15px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 500;
+    transition: background-color 0.3s ease;
+}
+
+.planos-logout-button:hover {
+    background: #c82333;
+}
+
+.planos-container {
+    flex-grow: 1;
+    padding: 40px 20px;
+}
+
+.planos-subheader {
+    text-align: center;
+    margin-bottom: 40px;
+    font-size: 1.2rem;
+    color: #a8b3c7;
+}
+
+.planos-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 30px;
+    max-width: 1100px;
+    margin: 0 auto;
+}
+
+.plano-card {
+    background: rgba(0, 0, 0, 0.3);
+    padding: 30px 25px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    text-align: center;
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.plano-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+}
+
+.plano-card-title {
+    margin-bottom: 15px;
+    color: #ffffff;
+    font-size: 1.6rem;
+    font-weight: 500;
+}
+
+.plano-card-price {
+    font-size: 2.2rem;
+    font-weight: bold;
+    margin-bottom: 25px;
+    color: #66b3ff;
+}
+
+.plano-card-price-details {
+    font-size: 0.9rem;
+    font-weight: 300;
+    color: #a8b3c7;
+    margin-left: 5px;
+}
+
+.plano-card-features {
+    list-style: none;
+    padding: 0;
+    margin-bottom: 30px;
+    color: #caced3;
+    font-size: 1rem;
+    line-height: 1.8;
+}
+
+.plano-extra-highlight {
+    color: #ffc107; /* Amarelo destaque para valor extra */
+    font-weight: bold;
+}
+
+.plano-select-button {
+    background: linear-gradient(135deg, #4a9eff 0%, #0066cc 100%);
+    color: white;
+    border: none;
+    padding: 12px 25px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-weight: bold;
+    font-size: 1rem;
+    text-transform: uppercase;
+    transition: all 0.3s ease;
+}
+
+.plano-select-button:hover {
+    background: linear-gradient(135deg, #66b3ff 0%, #0052a3 100%);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 15px rgba(74, 158, 255, 0.3);
+}
