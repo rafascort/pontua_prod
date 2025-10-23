@@ -1,41 +1,39 @@
 // /opt/pontua/AutoPonto/poupa-tempo/src/MainApp.js
-import React, { useState, useRef, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
+import { fetchWithAuth } from './apiUtils';
 import ProgressModal from './ProgressModal';
+import UserProfilePasswordModal from './UserProfilePasswordModal'; // <-- IMPORTA O MODAL CORRETO
 import PeriodConfirmationModal from './PeriodConfirmationModal';
-import './App.css';
-import './ProgressModal.css';
-import './PeriodConfirmationModal.css';
-import { fetchWithAuth } from './apiUtils'; // Importa o fetch interceptor
-import { isTokenValid } from './authUtils'; // Importa a função de verificação
+import { ToastContainer, toast } from 'react-toastify';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { 
+    faSignOutAlt, faUserShield, faKey, faFilePdf, 
+    faUpload, faTrash, faFileInvoice, faSync 
+} from '@fortawesome/free-solid-svg-icons';
+import './App.css'; // Estilos gerais
+import './ProgressModal.css'; // Estilos do modal de progresso
+import './PeriodConfirmationModal.css'; // Estilos do modal de período
+import './UserProfilePasswordModal.css'; // <-- IMPORTA O NOVO CSS
 
-const API_BASE_URL = '/api'; // Define a base da URL da API
+const API_BASE_URL = '/api';
 
-// --- ALTERAÇÃO AQUI: Manter apenas modelos 1, 6, 7 ---
+// --- Modelos Disponíveis (Seu código original) ---
 const MODEL_IMAGE_PATHS = {
     '1': process.env.PUBLIC_URL + '/Modelo1.png', // JBS
-    // '2': process.env.PUBLIC_URL + '/Modelo2.png', // Removido
-    // '3': process.env.PUBLIC_URL + '/Modelo3.png', // Removido
-    // '4': process.env.PUBLIC_URL + '/Modelo4.png', // Removido
-    // '5': process.env.PUBLIC_URL + '/Modelo5.png', // Removido
     '6': process.env.PUBLIC_URL + '/Modelo_IA_Geral.png', // IA Sem Data
     '7': process.env.PUBLIC_URL + '/Modelo_IA_Geral.png', // IA Com Data
 };
-
-// --- ALTERAÇÃO AQUI: Manter apenas nomes dos modelos 1, 6, 7 ---
 const modelNames = {
     '1': 'JBS Ponto',
-    // '2': 'BRF Ponto', // Removido
-    // '3': 'PontoMais Web', // Removido
-    // '4': 'Minuano Web', // Removido
-    // '5': 'Rudder / Planalto', // Removido
-    '6': 'IA Geral (Sem Data)', // Modelo sem DD/MM/AAAA
-    '7': 'IA Geral (Com Data)', // Modelo com DD/MM/AAAA
+    '6': 'IA Geral (Sem Data)',
+    '7': 'IA Geral (Com Data)',
 };
-// --- FIM DAS ALTERAÇÕES ---
+// --- Fim Modelos ---
 
-function MainApp({ onLogout, isAdmin }) {
-    const navigate = useNavigate();
+
+const MainApp = ({ onLogout, isAdmin }) => {
+    // --- Estados (Seu código original + novos) ---
     const [view, setView] = useState('home');
     const [modelType, setModelType] = useState(null);
     const [selectedFile, setSelectedFile] = useState(null);
@@ -47,18 +45,14 @@ function MainApp({ onLogout, isAdmin }) {
     const [showPeriodModal, setShowPeriodModal] = useState(false);
     const [pagesInfo, setPagesInfo] = useState([]);
     const [initialPdfPath, setInitialPdfPath] = useState('');
-
     const fileInputRef = useRef(null);
     const progressIntervalRef = useRef(null);
 
-    // Pré-carrega as imagens dos modelos
-    useEffect(() => {
-        Object.values(MODEL_IMAGE_PATHS).forEach(path => {
-            if (path) new Image().src = path;
-        });
-    }, []);
+    const [isManagingSubscription, setIsManagingSubscription] = useState(false);
+    const [showPasswordModal, setShowPasswordModal] = useState(false); // <-- Estado para o *novo* modal de senha
 
-    // Limpa o intervalo de progresso ao desmontar
+    // --- Funções (Seu código original + gerenciamento de assinatura) ---
+
     useEffect(() => {
         return () => {
             if (progressIntervalRef.current) {
@@ -67,38 +61,92 @@ function MainApp({ onLogout, isAdmin }) {
         };
     }, []);
 
-    // Reseta o estado do extrator
     const resetExtractorState = () => {
-        setModelType(null);
-        setSelectedFile(null);
-        setPageRange('');
-        setSearchTerm('');
-        setIsLoading(false);
-        setShowProgressModal(false);
-        setShowPeriodModal(false);
-        setPagesInfo([]);
-        setInitialPdfPath('');
-        setProgressData({ current_step: 0, total_steps: 1, message: 'Iniciando...' });
-        if (progressIntervalRef.current) {
-            clearInterval(progressIntervalRef.current);
-            progressIntervalRef.current = null;
-        }
-        if (fileInputRef.current) {
-            fileInputRef.current.value = '';
-        }
+        // ... (seu código original de reset) ...
+         setModelType(null);
+         setSelectedFile(null);
+         setPageRange('');
+         setSearchTerm('');
+         setIsLoading(false);
+         setShowProgressModal(false);
+         setShowPeriodModal(false);
+         setPagesInfo([]);
+         setInitialPdfPath('');
+         setProgressData({ current_step: 0, total_steps: 1, message: 'Iniciando...' });
+         if (progressIntervalRef.current) {
+             clearInterval(progressIntervalRef.current);
+             progressIntervalRef.current = null;
+         }
+         if (fileInputRef.current) {
+             fileInputRef.current.value = '';
+         }
     };
 
-    // --- ALTERAÇÃO AQUI: Função de verificação de token ---
-    const ensureAuthenticated = () => {
-        if (!isTokenValid()) {
-            console.warn("Ação interrompida: Token inválido ou expirado.");
-            alert('A sua sessão expirou ou é inválida. Por favor, faça login novamente.');
-            onLogout(); // Chama a função de logout do App.js
-            return false;
-        }
-        return true;
+    const checkProgress = async (taskId, isPeriodExtraction = false) => {
+        // ... (seu código original de checkProgress) ...
+         try {
+             const response = await fetchWithAuth(`${API_BASE_URL}/progress/${taskId}`);
+             if (!response.ok) {
+                 const errorData = await response.json();
+                 throw new Error(errorData.error || 'Erro ao verificar progresso.');
+             }
+             const data = await response.json();
+             setProgressData(data);
+
+             if (data.status === 'completed' || data.status === 'error') {
+                 clearInterval(progressIntervalRef.current);
+                 progressIntervalRef.current = null;
+                 setIsLoading(false);
+
+                 if (data.status === 'completed') {
+                     if (isPeriodExtraction) {
+                         setShowProgressModal(false);
+                         setPagesInfo(data.result || []);
+                         setInitialPdfPath(data.pdf_path || '');
+                         setShowPeriodModal(true);
+                     } else {
+                         if (data.file_path) {
+                             try {
+                                 const downloadResponse = await fetchWithAuth(`${API_BASE_URL}/download/${taskId}`);
+                                 if (downloadResponse.ok) {
+                                     const blob = await downloadResponse.blob();
+                                     const url = window.URL.createObjectURL(blob);
+                                     const a = document.createElement('a');
+                                     a.href = url;
+                                     a.download = data.filename || 'resultado.csv';
+                                     document.body.appendChild(a);
+                                     a.click(); a.remove(); window.URL.revokeObjectURL(url);
+                                     setProgressData(prev => ({ ...prev, message: 'Download concluído!', status: 'completed' }));
+                                     toast.success("Processamento e download concluídos!");
+                                     setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 3000);
+                                 } else { throw new Error('Falha ao iniciar o download.'); }
+                             } catch (downloadError){
+                                 setProgressData(prev => ({ ...prev, message: `Erro no download: ${downloadError.message}`, status: 'error' }));
+                                 toast.error(`Erro no download: ${downloadError.message}`);
+                                 setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
+                             }
+                         } else {
+                              console.warn("Processamento concluído sem ficheiro.");
+                              setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
+                         }
+                     }
+                 } else { // Status === 'error'
+                     console.error("Erro na tarefa:", data.error);
+                     setProgressData(prev => ({ ...prev, message: `Erro: ${data.error}`, status: 'error' }));
+                     toast.error(`Erro no processamento: ${data.error}`);
+                     setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
+                 }
+             }
+         } catch (error) {
+             if (error.message !== 'Sessão expirada ou inválida.' && error.message !== 'Não autenticado.') {
+                 console.error("Erro ao verificar progresso:", error);
+                 setProgressData(prev => ({ ...prev, message: `Erro: ${error.message}`, status: 'error' }));
+                 setIsLoading(false);
+                 if (progressIntervalRef.current) { clearInterval(progressIntervalRef.current); progressIntervalRef.current = null; }
+                 setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
+             }
+         }
     };
-    // --- FIM DA ALTERAÇÃO ---
 
     const handleFileSelect = (event) => {
         const file = event.target.files[0];
@@ -107,9 +155,13 @@ function MainApp({ onLogout, isAdmin }) {
         } else {
             setSelectedFile(null);
             if (file) {
-                alert('Por favor, selecione um ficheiro PDF.');
+                toast.warn('Por favor, selecione um ficheiro PDF.');
             }
         }
+         // Limpa o input para permitir selecionar o mesmo arquivo novamente
+         if (fileInputRef.current) {
+             fileInputRef.current.value = null;
+         }
     };
 
     const handleUploadClick = () => {
@@ -120,109 +172,33 @@ function MainApp({ onLogout, isAdmin }) {
         setModelType(modelId);
     };
 
-    // Função unificada para verificar progresso
-    const checkProgress = async (taskId, isPeriodExtraction = false) => {
-        try {
-            // --- ALTERAÇÃO AQUI: Usa fetchWithAuth ---
-            const response = await fetchWithAuth(`${API_BASE_URL}/progress/${taskId}`);
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error || 'Erro ao verificar progresso.');
-            }
-            const data = await response.json();
-            setProgressData(data);
-
-            if (data.status === 'completed' || data.status === 'error') {
-                clearInterval(progressIntervalRef.current);
-                progressIntervalRef.current = null;
-                setIsLoading(false);
-
-                if (data.status === 'completed') {
-                    if (isPeriodExtraction) {
-                        setShowProgressModal(false);
-                        setPagesInfo(data.result || []);
-                        setInitialPdfPath(data.pdf_path || '');
-                        setShowPeriodModal(true);
-                    } else {
-                        if (data.file_path) {
-                            try {
-                                // --- ALTERAÇÃO AQUI: Usa fetchWithAuth ---
-                                const downloadResponse = await fetchWithAuth(`${API_BASE_URL}/download/${taskId}`);
-                                if (downloadResponse.ok) {
-                                    const blob = await downloadResponse.blob();
-                                    const url = window.URL.createObjectURL(blob);
-                                    const a = document.createElement('a');
-                                    a.href = url;
-                                    a.download = data.filename || 'resultado.csv';
-                                    document.body.appendChild(a);
-                                    a.click(); a.remove(); window.URL.revokeObjectURL(url);
-                                    setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 3000);
-                                } else { throw new Error('Falha ao iniciar o download.'); }
-                            } catch (downloadError){
-                                setProgressData(prev => ({ ...prev, message: `Erro no download: ${downloadError.message}`, status: 'error' }));
-                                setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
-                            }
-                        } else {
-                             console.warn("Processamento concluído sem ficheiro.");
-                             setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
-                        }
-                    }
-                } else { // Status === 'error'
-                    console.error("Erro na tarefa:", data.error);
-                    setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
-                }
-            }
-        } catch (error) {
-            // --- ALTERAÇÃO AQUI: Não trata erro de sessão (apiUtils.js já tratou) ---
-            if (error.message !== 'Sessão expirada ou inválida.' && error.message !== 'Não autenticado.') {
-                console.error("Erro ao verificar progresso:", error);
-                setProgressData(prev => ({ ...prev, message: `Erro: ${error.message}`, status: 'error' }));
-                setIsLoading(false);
-                if (progressIntervalRef.current) { clearInterval(progressIntervalRef.current); progressIntervalRef.current = null; }
-                setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
-            }
-            // --- FIM DA ALTERAÇÃO ---
-        }
-    };
-
-    // Função chamada ao clicar em "Iniciar"
     const handleStartProcess = () => {
-        // --- ALTERAÇÃO AQUI: Verificação de token antes da ação ---
-        if (!ensureAuthenticated()) return;
-        // --- FIM DA ALTERAÇÃO ---
-
-        if (!modelType) { alert('Por favor, selecione um modelo.'); return; }
-        if (!selectedFile) { alert('Por favor, importe um ficheiro PDF.'); return; }
+        if (!modelType) { toast.warn('Por favor, selecione um modelo.'); return; }
+        if (!selectedFile) { toast.warn('Por favor, importe um ficheiro PDF.'); return; }
         if (!pageRange && modelType !== '7') {
-             alert('Por favor, defina as páginas a serem processadas (ex: 1-5, 8).');
+             toast.warn('Por favor, defina as páginas a serem processadas (ex: 1-5, 8).');
              return;
         }
 
         setIsLoading(true);
         setShowProgressModal(true);
 
-        if (modelType === '7') { // Processamento Direto para IA com Data
+        if (modelType === '7') {
             setProgressData({ current_step: 0, total_steps: 1, message: 'Enviando para processamento direto...' });
             handleDirectProcess();
-        } else { // Extração de Período para JBS (1) e IA sem Data (6)
+        } else {
             setProgressData({ current_step: 0, total_steps: 1, message: 'Lendo os períodos do PDF...' });
             handleInitialProcess();
         }
     };
 
-    // Função para processamento direto (Modelo 7)
     const handleDirectProcess = async () => {
-        // --- ALTERAÇÃO AQUI: Verificação de token (redundante, mas seguro) ---
-        if (!ensureAuthenticated()) return;
-        // --- FIM DA ALTERAÇÃO ---
-
         const formData = new FormData();
         formData.append('pdf_file', selectedFile);
         formData.append('pages', pageRange);
-        formData.append('model_type', modelType); // Será '7'
+        formData.append('model_type', modelType);
 
         try {
-            // --- ALTERAÇÃO AQUI: Usa fetchWithAuth ---
             const response = await fetchWithAuth(`${API_BASE_URL}/process-direct`, { method: 'POST', body: formData });
             if (!response.ok) { const d = await response.json(); throw new Error(d.error || 'Falha.'); }
             const result = await response.json();
@@ -231,28 +207,20 @@ function MainApp({ onLogout, isAdmin }) {
                  progressIntervalRef.current = setInterval(() => checkProgress(result.task_id, false), 3000);
             } else { throw new Error("API não retornou task_id."); }
         } catch (error) {
-             // --- ALTERAÇÃO AQUI: Não trata erro de sessão ---
              if (error.message !== 'Sessão expirada ou inválida.' && error.message !== 'Não autenticado.') {
                 setProgressData({ current_step: 1, total_steps: 1, message: `Erro: ${error.message}`, status: 'error' });
                 setIsLoading(false);
                 setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
             }
-            // --- FIM DA ALTERAÇÃO ---
         }
     };
 
-    // Função para iniciar extração de períodos (Modelos 1, 6)
     const handleInitialProcess = async () => {
-        // --- ALTERAÇÃO AQUI: Verificação de token (redundante, mas seguro) ---
-        if (!ensureAuthenticated()) return;
-        // --- FIM DA ALTERAÇÃO ---
-
         const formData = new FormData();
         formData.append('pdf_file', selectedFile);
         formData.append('pages', pageRange);
 
         try {
-            // --- ALTERAÇÃO AQUI: Usa fetchWithAuth ---
             const response = await fetchWithAuth(`${API_BASE_URL}/extract-periods`, { method: 'POST', body: formData });
              if (!response.ok) { const d = await response.json(); throw new Error(d.error || 'Falha.'); }
             const result = await response.json();
@@ -261,39 +229,29 @@ function MainApp({ onLogout, isAdmin }) {
                  progressIntervalRef.current = setInterval(() => checkProgress(result.task_id, true), 1500);
              } else { throw new Error("API não retornou task_id."); }
         } catch (error) {
-            // --- ALTERAÇÃO AQUI: Não trata erro de sessão ---
             if (error.message !== 'Sessão expirada ou inválida.' && error.message !== 'Não autenticado.') {
                 setProgressData({ current_step: 1, total_steps: 1, message: `Erro: ${error.message}`, status: 'error' });
                 setIsLoading(false);
                  setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
             }
-            // --- FIM DA ALTERAÇÃO ---
         }
     };
 
-    // Função chamada após confirmar os períodos no modal
     const handleConfirmAndProcess = async (confirmedPeriods) => {
-        // --- ALTERAÇÃO AQUI: Verificação de token antes da ação ---
-        if (!ensureAuthenticated()) { setShowPeriodModal(false); return; }
-        // --- FIM DA ALTERAÇÃO ---
-
         setShowPeriodModal(false);
         setIsLoading(true);
         setShowProgressModal(true);
         setProgressData({ current_step: 0, total_steps: 3, message: 'Enviando para processamento final...' });
 
         try {
-            // --- ALTERAÇÃO AQUI: Usa fetchWithAuth ---
             const response = await fetchWithAuth(`${API_BASE_URL}/process`, {
                 method: 'POST',
                 body: JSON.stringify({
                     pdf_path: initialPdfPath,
                     pages_with_periods: confirmedPeriods,
-                    model_type: modelType, // Envia o tipo de modelo (será 1 ou 6)
+                    model_type: modelType,
                 })
             });
-            // --- FIM DA ALTERAÇÃO ---
-
              if (!response.ok) { const d = await response.json(); throw new Error(d.error || 'Falha.'); }
             const result = await response.json();
             if (result.task_id) {
@@ -301,24 +259,44 @@ function MainApp({ onLogout, isAdmin }) {
                  progressIntervalRef.current = setInterval(() => checkProgress(result.task_id, false), 3000);
              } else { throw new Error("API não retornou task_id."); }
         } catch (error) {
-            // --- ALTERAÇÃO AQUI: Não trata erro de sessão ---
             if (error.message !== 'Sessão expirada ou inválida.' && error.message !== 'Não autenticado.') {
                 setProgressData({ current_step: 3, total_steps: 3, message: `Erro: ${error.message}`, status: 'error' });
                 setIsLoading(false);
                  setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
             }
-            // --- FIM DA ALTERAÇÃO ---
         }
     };
 
-    // Filtra modelos disponíveis (agora só tem 1, 6, 7 em modelNames)
     const availableModels = Object.keys(modelNames).filter(modelId => {
         return modelNames[modelId].toLowerCase().includes(searchTerm.toLowerCase());
     });
 
+    const handleManageSubscription = async () => {
+        setIsManagingSubscription(true);
+        try {
+            const response = await fetchWithAuth('/api/create-portal-session', {
+                method: 'POST',
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ msg: "Erro desconhecido" }));
+                throw new Error(errorData.msg || "Erro ao abrir portal de gerenciamento.");
+            }
+
+            const data = await response.json();
+            if (data.url) {
+                window.location.href = data.url;
+            }
+        } catch (error) {
+            console.error("Erro ao criar sessão do portal:", error);
+            toast.error(`Erro ao abrir portal: ${error.message}`);
+            setIsManagingSubscription(false);
+        }
+    };
+
     const renderHeader = () => (
         <header className="top-bar">
-            <button
+             <button
                 className="icon-button"
                 onClick={() => { setView('home'); resetExtractorState(); }}
                 title="Voltar ao início"
@@ -327,11 +305,28 @@ function MainApp({ onLogout, isAdmin }) {
             </button>
             <h1 className="title">{view === 'extractor' ? 'Extrator de Ponto' : 'Sistema Ponto'}</h1>
             <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}>
+                {!isAdmin && (
+                    <button
+                        onClick={handleManageSubscription}
+                        className="header-button" // Reutiliza estilo se houver
+                        disabled={isManagingSubscription}
+                        title="Gerenciar sua assinatura e pagamentos"
+                    >
+                        <FontAwesomeIcon icon={faFileInvoice} /> {isManagingSubscription ? "Aguarde..." : "Assinatura"}
+                    </button>
+                )}
                 {isAdmin && (
-                    <button className="icon-button" title="Painel de Administração" onClick={() => navigate('/admin')}>
+                    <button className="icon-button" title="Painel de Administração" onClick={() => (window.location.href = '/admin')}>
                         <span className="material-symbols-outlined">admin_panel_settings</span>
                     </button>
                 )}
+                <button
+                    onClick={() => setShowPasswordModal(true)} // <-- Abre o modal correto
+                    className="header-button" // Reutiliza estilo se houver
+                    title="Alterar sua senha"
+                >
+                    <FontAwesomeIcon icon={faKey} /> Alterar Senha
+                </button>
                 <button onClick={onLogout} className="icon-button" title="Sair">
                     <span className="material-symbols-outlined">logout</span>
                 </button>
@@ -339,8 +334,10 @@ function MainApp({ onLogout, isAdmin }) {
         </header>
     );
 
+    // --- JSX (Seu código original com o modal correto) ---
     return (
         <div className="sistema-ponto-container">
+            <ToastContainer position="top-right" autoClose={5000} hideProgressBar={false} />
             {renderHeader()}
             <main className="main-content">
                 {view === 'home' && (
@@ -350,8 +347,8 @@ function MainApp({ onLogout, isAdmin }) {
                     </div>
                 )}
                 {view === 'extractor' && (
-                    <div className="extractor-container">
-                        <div className="extractor-header">
+                     <div className="extractor-container">
+                         <div className="extractor-header">
                             <h2>Selecione o modelo, o ficheiro e as páginas</h2>
                             <input
                                 type="text"
@@ -395,7 +392,7 @@ function MainApp({ onLogout, isAdmin }) {
                                 style={{ display: 'none' }}
                             />
                             <button className="extractor-button" onClick={handleUploadClick} disabled={isLoading}>
-                                {selectedFile ? `Ficheiro: ${selectedFile.name}` : 'Importar Ficheiro PDF'}
+                                <FontAwesomeIcon icon={faUpload} /> {selectedFile ? `Ficheiro: ${selectedFile.name.substring(0, 20)}...` : 'Importar Ficheiro PDF'}
                             </button>
                             <input
                                 type="text"
@@ -410,12 +407,14 @@ function MainApp({ onLogout, isAdmin }) {
                                 onClick={handleStartProcess}
                                 disabled={isLoading || !modelType || !selectedFile || (!pageRange && modelType !== '7')}
                             >
-                                {isLoading ? 'Processando...' : 'Iniciar'}
+                                <FontAwesomeIcon icon={faSync} /> {isLoading ? 'Processando...' : 'Iniciar'}
                             </button>
                         </div>
                     </div>
                 )}
             </main>
+
+            {/* Modais */}
             {showProgressModal &&
                 <ProgressModal
                     {...progressData}
@@ -437,8 +436,14 @@ function MainApp({ onLogout, isAdmin }) {
                     isLoading={isLoading}
                 />
             }
+
+            {/* ** USA O NOVO MODAL DE SENHA DO USUÁRIO ** */}
+            <UserProfilePasswordModal
+                show={showPasswordModal}
+                onClose={() => setShowPasswordModal(false)}
+            />
         </div>
     );
-}
+};
 
 export default MainApp;

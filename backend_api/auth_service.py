@@ -4,35 +4,38 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_jwt_extended import create_access_token, get_jwt_identity, jwt_required, JWTManager, get_jwt
+from werkzeug.exceptions import BadRequest
 from datetime import timedelta
 import os
 from dotenv import load_dotenv
 from authlib.integrations.flask_client import OAuth
 import requests
 import re
-import traceback # Import traceback para log de erro detalhado
+import traceback
 from functools import wraps
+import stripe  # <-- Importa Stripe
 
 # Carrega variáveis de ambiente
 load_dotenv()
 
 app = Flask(__name__)
 
-# Configurações do Banco de Dados
+# --- Configurações ---
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-# Configurações do JWT
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=int(os.getenv('JWT_ACCESS_TOKEN_EXPIRES_HOURS', '24')))
-jwt = JWTManager(app)
-
-# Configurações do Google OAuth
 app.config['GOOGLE_CLIENT_ID'] = os.getenv('GOOGLE_CLIENT_ID')
 app.config['GOOGLE_CLIENT_SECRET'] = os.getenv('GOOGLE_CLIENT_SECRET')
-app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY') # Necessário para a sessão do OAuth
-oauth = OAuth(app)
+app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY')
 
+# --- Inicializações ---
+jwt = JWTManager(app)
+oauth = OAuth(app)
+db = SQLAlchemy(app)
+migrate = Migrate(app, db)
+
+# --- Configuração Google OAuth ---
 google = oauth.register(
     name='google',
     client_id=app.config['GOOGLE_CLIENT_ID'],
@@ -47,9 +50,22 @@ google = oauth.register(
     jwks_uri='https://www.googleapis.com/oauth2/v3/certs',
 )
 
-db = SQLAlchemy(app)
-migrate = Migrate(app, db)
+# --- Configuração Stripe ---
+stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
+if not stripe.api_key:
+    print("\n\n*** AVISO CRÍTICO: STRIPE_SECRET_KEY não definida no .env! Pagamentos não funcionarão. ***\n\n")
 
+# Mapeamento de IDs de Preço Fixo para nomes de plano (USAR OS SEUS IDs DO .ENV!)
+PRICE_ID_TO_PLAN_NAME = {
+    os.getenv('STRIPE_PRICE_ID_BASICO_FIXO'): 'basic',
+    os.getenv('STRIPE_PRICE_ID_PADRAO_FIXO'): 'standard',
+    os.getenv('STRIPE_PRICE_ID_PREMIUM_FIXO'): 'premium',
+}
+if not all(PRICE_ID_TO_PLAN_NAME.keys()):
+     print("\n\n*** AVISO: IDs de preço do Stripe (STRIPE_PRICE_ID_*) não encontrados no .env! ***\n\n")
+
+
+# --- Modelos do Banco de Dados ---
 class User(db.Model):
     __tablename__ = 'user'
     id = db.Column(db.Integer, primary_key=True)
@@ -58,22 +74,24 @@ class User(db.Model):
     role = db.Column(db.String(50), nullable=False, default='user')
     is_active = db.Column(db.Boolean, default=True)
     page_count = db.Column(db.Integer, default=0)
-    plan_status = db.Column(db.String(50), nullable=True, default='free')
-    # name = db.Column(db.String(100), nullable=True) # Descomente se adicionar nome
+    plan_status = db.Column(db.String(50), nullable=False, default='free') 
+    stripe_customer_id = db.Column(db.String(120), nullable=True, unique=True) # ID de Cliente Stripe
 
-# Função para adicionar claims personalizadas ao token (CORRIGIDO)
-@jwt.additional_claims_loader # <-- CORRIGIDO
+
+# --- Funções Auxiliares JWT e Decorators ---
+
+@jwt.additional_claims_loader
 def add_claims_to_access_token(identity):
     user = User.query.filter_by(email=identity).first()
     if user:
         return {
             'role': user.role,
             'is_active': user.is_active,
-            'plan_status': user.plan_status or 'free'
+            'plan_status': user.plan_status or 'free',
+            'user_id': user.id
         }
     return {}
 
-# Decorator para exigir role de admin (CORRIGIDO)
 def admin_required():
     def wrapper(fn):
         @wraps(fn)
@@ -87,80 +105,59 @@ def admin_required():
         return decorator
     return wrapper
 
-# Função para verificar se o token está na blocklist (para logout)
 @jwt.token_in_blocklist_loader
 def check_if_token_in_blocklist(jwt_header, jwt_payload):
-    # Implementação básica, pode ser substituída por Redis/DB se necessário
     return False
+
+# --- Rotas de Autenticação e Usuário (Seu código original) ---
 
 @app.route('/api/login', methods=['POST'])
 def login():
     email = request.json.get('email', None)
     password = request.json.get('password', None)
-
     if not email or not password:
         return jsonify({"msg": "Email e senha são obrigatórios"}), 400
-
     user = User.query.filter_by(email=email).first()
-
-    # Verifica se o usuário existe e se tem hash de senha (para logins via Google não quebrar)
     if user and user.password_hash:
         try:
             if check_password_hash(user.password_hash, password):
                 if not user.is_active:
                     return jsonify({"msg": "Sua conta está inativa. Entre em contato com o suporte."}), 403
-
                 access_token = create_access_token(identity=email)
                 return jsonify(access_token=access_token), 200
             else:
-                 # Senha incorreta
                  return jsonify({"msg": "Email ou senha inválidos"}), 401
         except ValueError as e:
-            # Captura erro de hash inválido, como o 'Invalid hash method'
             print(f"Erro ao verificar hash para {email}: {e}")
             return jsonify({"msg": "Erro interno ao verificar senha. Contate o suporte."}), 500
     elif user and not user.password_hash:
-        # Usuário existe mas provavelmente cadastrou via Google e não tem senha definida
         return jsonify({"msg": "Login com senha não disponível. Use o login com Google."}), 401
     else:
-        # Usuário não encontrado
         return jsonify({"msg": "Email ou senha inválidos"}), 401
 
-# --- ROTA DE CADASTRO ---
 @app.route('/api/register', methods=['POST'])
 def register():
     email = request.json.get('email', None)
     password = request.json.get('password', None)
-    name = request.json.get('name', None) # Captura o nome
-
     if not email or not password:
         return jsonify({"msg": "Email e senha são obrigatórios"}), 400
-
     if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
          return jsonify({"msg": "Formato de e-mail inválido"}), 400
-
-    if len(password) < 6:
-        return jsonify({"msg": "Senha precisa ter pelo menos 6 caracteres"}), 400
-    if not re.search(r"\d", password):
-         return jsonify({"msg": "Senha precisa ter pelo menos 1 número"}), 400
-    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", password):
-        return jsonify({"msg": "Senha precisa ter pelo menos 1 caractere especial"}), 400
-
+    if len(password) < 6: return jsonify({"msg": "Senha precisa ter pelo menos 6 caracteres"}), 400
+    if not re.search(r"\d", password): return jsonify({"msg": "Senha precisa ter pelo menos 1 número"}), 400
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", password): return jsonify({"msg": "Senha precisa ter pelo menos 1 caractere especial"}), 400
     if User.query.filter_by(email=email).first():
         return jsonify({"msg": "Email já cadastrado"}), 409
-
+    
     hashed_password = generate_password_hash(password)
-
     new_user = User(
         email=email,
         password_hash=hashed_password,
-        # name=name, # Descomente se adicionar a coluna 'name'
         is_active=True,
         role='user',
         page_count=0,
-        plan_status='free' # Começa como 'free' para forçar escolha
+        plan_status='free'
     )
-
     db.session.add(new_user)
     try:
         db.session.commit()
@@ -170,7 +167,6 @@ def register():
         print(f"Erro ao registrar usuário: {e}")
         return jsonify({"msg": "Erro interno ao criar usuário."}), 500
 
-# Rota de login do Google
 @app.route('/api/auth/google')
 def google_login():
     redirect_uri = url_for('google_authorize', _external=True)
@@ -178,46 +174,34 @@ def google_login():
     session['oauth_state'] = state
     return google.authorize_redirect(redirect_uri, state=state)
 
-# Rota de callback do Google
 @app.route('/api/auth/google/callback')
 def google_authorize():
     try:
         state = session.pop('oauth_state', None)
-        if state is None or state != request.args.get('state'):
-             print("Erro de state OAuth: state da sessão é None ou não bate.")
+        received_state = request.args.get('state')
+        if state is None or received_state is None or state != received_state:
+             print("Erro de state OAuth")
              return redirect(f"{os.getenv('FRONTEND_URL', '/')}/login?error=InvalidOAuthState")
-
         token = google.authorize_access_token()
     except Exception as e:
         print(f"Erro ao obter token do Google: {e}")
         return redirect(f"{os.getenv('FRONTEND_URL', '/')}/login?error=FailedToFetchGoogleToken")
-
     try:
         user_info = google.get('userinfo', token=token)
         user_data = user_info.json()
     except Exception as e:
         print(f"Erro ao obter userinfo do Google: {e}")
         return redirect(f"{os.getenv('FRONTEND_URL', '/')}/login?error=FailedToFetchUserInfo")
-
+    
     google_email = user_data.get('email')
-
     if not google_email:
         return redirect(f"{os.getenv('FRONTEND_URL', '/')}/login?error=NoEmailFromGoogle")
-
+    
     user = User.query.filter_by(email=google_email).first()
-
-    if not user:
-        # Usuário Google não encontrado no DB -> Redireciona com erro
-        # Poderia criar o usuário aqui, mas por segurança, redireciona
-        return redirect(f"{os.getenv('FRONTEND_URL', '/')}/login?error=UserNotFound")
-
-    if not user.is_active:
-        return redirect(f"{os.getenv('FRONTEND_URL', '/')}/login?error=AccountInactive")
-
-    # Usuário encontrado e ativo, gera o token JWT
+    if not user: return redirect(f"{os.getenv('FRONTEND_URL', '/')}/login?error=UserNotFound")
+    if not user.is_active: return redirect(f"{os.getenv('FRONTEND_URL', '/')}/login?error=AccountInactive")
+    
     access_token = create_access_token(identity=google_email)
-
-    # Redireciona para o frontend com o token
     return redirect(f"{os.getenv('FRONTEND_URL', '/')}/login?token={access_token}")
 
 @app.route('/api/user/me', methods=['GET'])
@@ -225,62 +209,43 @@ def google_authorize():
 def get_user_details():
     current_user_email = get_jwt_identity()
     user = User.query.filter_by(email=current_user_email).first()
-
     if not user:
         return jsonify({"msg": "Usuário não encontrado"}), 404
-
     claims = get_jwt()
     return jsonify(
+        id=user.id,
         email=user.email,
         role=claims.get('role', 'user'),
         is_active=claims.get('is_active', False),
         page_count=user.page_count,
-        plan_status=claims.get('plan_status', 'free') # Retorna o plano do token
+        plan_status=claims.get('plan_status', 'free'),
+        stripe_customer_id=user.stripe_customer_id
     ), 200
 
-# Rota de atualização de senha pelo próprio usuário
 @app.route('/api/user/password', methods=['PUT'])
 @jwt_required()
 def update_password():
     current_user_email = get_jwt_identity()
     user = User.query.filter_by(email=current_user_email).first()
-
-    if not user:
-        return jsonify({"msg": "Usuário não encontrado"}), 404
-
+    if not user: return jsonify({"msg": "Usuário não encontrado"}), 404
     current_password = request.json.get('currentPassword')
     new_password = request.json.get('newPassword')
-
-    if not current_password or not new_password:
-        return jsonify({"msg": "Senha atual e nova senha são obrigatórias"}), 400
-
-    # Verifica se o usuário tem hash (pode não ter se for conta Google)
-    if not user.password_hash:
-         return jsonify({"msg": "Não é possível alterar senha de contas criadas via Google."}), 400
-
+    if not current_password or not new_password: return jsonify({"msg": "Senha atual e nova senha são obrigatórias"}), 400
+    if not user.password_hash: return jsonify({"msg": "Não é possível alterar senha de contas criadas via Google."}), 400
     try:
-        if not check_password_hash(user.password_hash, current_password):
-            return jsonify({"msg": "Senha atual incorreta"}), 401
+        if not check_password_hash(user.password_hash, current_password): return jsonify({"msg": "Senha atual incorreta"}), 401
     except ValueError as e:
          print(f"Erro ao verificar hash (update_password) para {current_user_email}: {e}")
          return jsonify({"msg": "Erro interno ao verificar senha. Contate o suporte."}), 500
-
-    # Validação da nova senha
-    if len(new_password) < 6:
-        return jsonify({"msg": "Nova senha precisa ter pelo menos 6 caracteres"}), 400
-    if not re.search(r"\d", new_password):
-         return jsonify({"msg": "Nova senha precisa ter pelo menos 1 número"}), 400
-    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", new_password):
-        return jsonify({"msg": "Nova senha precisa ter pelo menos 1 caractere especial"}), 400
-
+    if len(new_password) < 6: return jsonify({"msg": "Nova senha precisa ter pelo menos 6 caracteres"}), 400
+    if not re.search(r"\d", new_password): return jsonify({"msg": "Nova senha precisa ter pelo menos 1 número"}), 400
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", new_password): return jsonify({"msg": "Nova senha precisa ter pelo menos 1 caractere especial"}), 400
+    
     user.password_hash = generate_password_hash(new_password)
     db.session.commit()
-
     return jsonify({"msg": "Senha atualizada com sucesso"}), 200
 
-# --- ROTAS DE ADMINISTRAÇÃO ---
-
-# Rota de administração para buscar usuários (ATUALIZADA com sort/filter)
+# --- ROTAS DE ADMINISTRAÇÃO (Seu código original) ---
 @app.route('/api/admin/users', methods=['GET'])
 @admin_required()
 def get_users():
@@ -291,79 +256,39 @@ def get_users():
         sort_by = request.args.get('sort_by', 'id', type=str)
         sort_order = request.args.get('sort_order', 'asc', type=str)
         filter_plan = request.args.get('filter_plan', '', type=str)
-
         query = User.query
-
         if search_email:
             query = query.filter(User.email.ilike(f"%{search_email}%"))
-
         if filter_plan and filter_plan != 'all':
             if filter_plan == 'free':
                 query = query.filter((User.plan_status == None) | (User.plan_status == 'free'))
             else:
                 query = query.filter(User.plan_status.ilike(f"%{filter_plan}%"))
-
-        valid_sort_columns = {
-            'id': User.id,
-            'email': User.email,
-            'status': User.is_active, # Sort by boolean status
-            'role': User.role,
-            'plan': User.plan_status,
-            'pages': User.page_count
-        }
-
+        valid_sort_columns = {'id': User.id, 'email': User.email, 'status': User.is_active, 'role': User.role, 'plan': User.plan_status, 'pages': User.page_count}
         sort_column = valid_sort_columns.get(sort_by, User.id)
-
         if sort_order.lower() == 'desc':
             query = query.order_by(sort_column.desc())
         else:
             query = query.order_by(sort_column.asc())
-
         pagination = query.paginate(page=page, per_page=per_page, error_out=False)
         users = pagination.items
-
-        return jsonify({
-            "users": [
-                {
-                    "id": user.id,
-                    "email": user.email,
-                    "role": user.role,
-                    "is_active": user.is_active,
-                    "page_count": user.page_count,
-                    "plan_status": user.plan_status or 'free'
-                } for user in users
-            ],
-            "total_pages": pagination.pages,
-            "current_page": page,
-            "total_users": pagination.total
-        }), 200
-
+        return jsonify({"users": [{"id": user.id, "email": user.email, "role": user.role, "is_active": user.is_active, "page_count": user.page_count, "plan_status": user.plan_status or 'free'} for user in users], "total_pages": pagination.pages, "current_page": page, "total_users": pagination.total}), 200
     except Exception as e:
         print(f"Erro ao buscar usuários: {e}")
-        traceback.print_exc() # Print full traceback
+        traceback.print_exc()
         return jsonify({"msg": "Erro interno ao buscar usuários"}), 500
 
-
-# Rota de administração para atualizar status (ATIVAR/DESATIVAR)
 @app.route('/api/admin/users/<int:user_id>/status', methods=['PUT'])
 @admin_required()
 def update_user_status(user_id):
     user = User.query.get(user_id)
-    if not user:
-        return jsonify({"msg": "Usuário não encontrado"}), 404
-
-    # Verifica se o admin está tentando desativar a si mesmo
+    if not user: return jsonify({"msg": "Usuário não encontrado"}), 404
     claims = get_jwt()
     current_admin_email = get_jwt_identity()
-    if user.email == current_admin_email:
-        return jsonify({"msg": "Não pode alterar o status da sua própria conta."}), 403
-
+    if user.email == current_admin_email: return jsonify({"msg": "Não pode alterar o status da sua própria conta."}), 403
     is_active_data = request.json.get('is_active')
-    if is_active_data is None or not isinstance(is_active_data, bool):
-        return jsonify({"msg": "Campo 'is_active' (booleano) é obrigatório."}), 400
-
+    if is_active_data is None or not isinstance(is_active_data, bool): return jsonify({"msg": "Campo 'is_active' (booleano) é obrigatório."}), 400
     user.is_active = is_active_data
-
     try:
         db.session.commit()
         return jsonify({"msg": f"Status do usuário {user.email} atualizado para {'Ativo' if user.is_active else 'Inativo'}."}), 200
@@ -372,98 +297,53 @@ def update_user_status(user_id):
         print(f"Erro ao atualizar status do usuário {user_id}: {e}")
         return jsonify({"msg": "Erro interno ao salvar alteração de status."}), 500
 
-
-# Rota de administração para atualizar dados gerais do usuário (incluindo senha)
 @app.route('/api/admin/users/<int:user_id>', methods=['PUT'])
 @admin_required()
 def update_user_details(user_id):
     user = User.query.get(user_id)
-    if not user:
-        return jsonify({"msg": "Usuário não encontrado"}), 404
-
+    if not user: return jsonify({"msg": "Usuário não encontrado"}), 404
     data = request.json
-
-    # Atualizar Email (com verificação)
     if 'email' in data and data['email'] != user.email:
         new_email = data['email']
-        if not re.match(r"[^@]+@[^@]+\.[^@]+", new_email):
-             return jsonify({"msg": "Formato de e-mail inválido"}), 400
+        if not re.match(r"[^@]+@[^@]+\.[^@]+", new_email): return jsonify({"msg": "Formato de e-mail inválido"}), 400
         existing_user = User.query.filter(User.email == new_email, User.id != user_id).first()
-        if existing_user:
-            return jsonify({"msg": "Email já está em uso por outra conta"}), 409
+        if existing_user: return jsonify({"msg": "Email já está em uso por outra conta"}), 409
         user.email = new_email
-
-    # Atualizar Role
     if 'role' in data:
-         # Impede rebaixar o próprio admin logado? (Opcional mas seguro)
          claims = get_jwt()
          current_admin_email = get_jwt_identity()
-         if user.email == current_admin_email and data['role'] != 'admin':
-              return jsonify({"msg": "Não pode alterar seu próprio nível para não-admin."}), 403
+         if user.email == current_admin_email and data['role'] != 'admin': return jsonify({"msg": "Não pode alterar seu próprio nível para não-admin."}), 403
          user.role = data['role']
-
-    # Atualizar Status (mas usa a rota /status para isso normalmente)
     if 'is_active' in data and isinstance(data['is_active'], bool):
-         if user.email == get_jwt_identity(): # Re-verifica se é o próprio admin
-              return jsonify({"msg": "Não pode alterar seu próprio status aqui. Use a interface padrão."}), 403
+         if user.email == get_jwt_identity(): return jsonify({"msg": "Não pode alterar seu próprio status aqui. Use a interface padrão."}), 403
          user.is_active = data['is_active']
-
-    # Atualizar Contagem de Páginas
     if 'page_count' in data:
         try:
             count = int(data['page_count'])
             if count < 0: raise ValueError("Contagem não pode ser negativa")
             user.page_count = count
-        except (ValueError, TypeError):
-            return jsonify({"msg": "Contagem de páginas deve ser um número inteiro não negativo."}), 400
-
-    # Atualizar Plano
-    if 'plan_status' in data:
-        user.plan_status = data['plan_status']
-
-    # Atualização de Senha pelo Admin (via modal)
+        except (ValueError, TypeError): return jsonify({"msg": "Contagem de páginas deve ser um número inteiro não negativo."}), 400
+    if 'plan_status' in data: user.plan_status = data['plan_status']
     if 'new_password' in data and data['new_password']:
         new_pass = data['new_password']
-        # Validação de senha pode ser opcional para admin, ou usar a mesma do cadastro
-        if len(new_pass) < 6:
-             return jsonify({"msg": "Nova senha precisa ter pelo menos 6 caracteres"}), 400
-        # Adicione outras validações se desejar
+        if len(new_pass) < 6: return jsonify({"msg": "Nova senha precisa ter pelo menos 6 caracteres"}), 400
         user.password_hash = generate_password_hash(new_pass)
-
     try:
         db.session.commit()
-        # Retorna os dados atualizados do usuário
-        return jsonify({
-            "msg": f"Dados do usuário {user.email} atualizados com sucesso.",
-            "user": {
-                "id": user.id,
-                "email": user.email,
-                "role": user.role,
-                "is_active": user.is_active,
-                "page_count": user.page_count,
-                "plan_status": user.plan_status or 'free'
-            }
-        }), 200
+        return jsonify({"msg": f"Dados do usuário {user.email} atualizados com sucesso.", "user": {"id": user.id, "email": user.email, "role": user.role, "is_active": user.is_active, "page_count": user.page_count, "plan_status": user.plan_status or 'free'}}), 200
     except Exception as e:
         db.session.rollback()
         print(f"Erro ao atualizar dados do usuário {user_id}: {e}")
         traceback.print_exc()
         return jsonify({"msg": "Erro interno ao salvar alterações nos dados do usuário."}), 500
 
-
-# Rota de administração para EXCLUIR um usuário
 @app.route('/api/admin/users/<int:user_id>', methods=['DELETE'])
 @admin_required()
 def delete_user(user_id):
     user = User.query.get(user_id)
-    if not user:
-        return jsonify({"msg": "Usuário não encontrado"}), 404
-
-    # Impede exclusão do próprio admin logado
+    if not user: return jsonify({"msg": "Usuário não encontrado"}), 404
     current_admin_email = get_jwt_identity()
-    if user.email == current_admin_email:
-        return jsonify({"msg": "Não pode excluir sua própria conta."}), 403
-
+    if user.email == current_admin_email: return jsonify({"msg": "Não pode excluir sua própria conta."}), 403
     try:
         db.session.delete(user)
         db.session.commit()
@@ -473,15 +353,11 @@ def delete_user(user_id):
         print(f"Erro ao excluir usuário {user_id}: {e}")
         return jsonify({"msg": "Erro interno ao excluir usuário."}), 500
 
-
-# Rota para zerar contagem de páginas de um usuário específico
 @app.route('/api/admin/users/<int:user_id>/reset-pages', methods=['POST'])
 @admin_required()
 def reset_user_page_count(user_id):
     user = User.query.get(user_id)
-    if not user:
-        return jsonify({"msg": "Usuário não encontrado"}), 404
-
+    if not user: return jsonify({"msg": "Usuário não encontrado"}), 404
     user.page_count = 0
     try:
         db.session.commit()
@@ -491,13 +367,10 @@ def reset_user_page_count(user_id):
         print(f"Erro ao zerar contagem do usuário {user_id}: {e}")
         return jsonify({"msg": "Erro interno ao zerar contagem."}), 500
 
-
-# Rota para zerar contagem de páginas de TODOS os usuários não-admin
 @app.route('/api/admin/users/reset-pages', methods=['POST'])
 @admin_required()
 def reset_all_non_admin_page_counts():
     try:
-        # Atualiza todos os usuários onde role != 'admin'
         updated_count = User.query.filter(User.role != 'admin').update({User.page_count: 0})
         db.session.commit()
         return jsonify({"msg": f"Contagem de páginas zerada para {updated_count} usuários (não-admins)."}), 200
@@ -507,4 +380,310 @@ def reset_all_non_admin_page_counts():
         return jsonify({"msg": "Erro interno ao zerar contagem geral."}), 500
 
 
-# --- FIM DAS ROTAS DE ADMINISTRAÇÃO ---
+# --- NOVAS ROTAS DE PAGAMENTO E ASSINATURA (STRIPE) ---
+
+def get_or_create_stripe_customer(user):
+    if user.stripe_customer_id:
+        try:
+            stripe.Customer.retrieve(user.stripe_customer_id)
+            return user.stripe_customer_id
+        except stripe.error.InvalidRequestError:
+            print(f"ID de cliente Stripe {user.stripe_customer_id} inválido para usuário {user.email}. Criando um novo.")
+            pass 
+
+    existing_customers = stripe.Customer.list(email=user.email, limit=1).data
+    if existing_customers:
+        stripe_customer_id = existing_customers[0].id
+        print(f"Cliente Stripe encontrado por email para {user.email}: {stripe_customer_id}")
+    else:
+        try:
+            customer = stripe.Customer.create(
+                email=user.email,
+                metadata={'app_user_id': user.id}
+            )
+            stripe_customer_id = customer.id
+            print(f"Novo cliente Stripe criado para {user.email}: {stripe_customer_id}")
+        except Exception as e:
+            print(f"Erro ao criar cliente Stripe para {user.email}: {e}")
+            raise 
+    
+    user.stripe_customer_id = stripe_customer_id
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        print(f"Erro ao salvar stripe_customer_id no DB para {user.email}: {e}")
+    
+    return stripe_customer_id
+
+@app.route('/api/create-checkout-session', methods=['POST'])
+@jwt_required()
+def create_checkout_session():
+    try:
+        data = request.get_json()
+        price_id = data.get('priceId')
+        if not price_id or price_id not in PRICE_ID_TO_PLAN_NAME:
+             raise BadRequest(f"Price ID inválido ou não fornecido: {price_id}")
+
+        current_user_email = get_jwt_identity()
+        user = User.query.filter_by(email=current_user_email).first()
+        if not user:
+            return jsonify({"msg": "Usuário não encontrado"}), 404
+
+        stripe_customer_id = get_or_create_stripe_customer(user)
+        if not stripe_customer_id:
+            return jsonify({"msg": "Erro ao obter ou criar ID de cliente Stripe."}), 500
+
+        frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000')
+        success_url = f"{frontend_url}/payment-success?session_id={{CHECKOUT_SESSION_ID}}"
+        cancel_url = f"{frontend_url}/planos?canceled=true"
+
+        checkout_session = stripe.checkout.Session.create(
+            payment_method_types=['card'],
+            line_items=[{'price': price_id, 'quantity': 1}],
+            mode='subscription',
+            customer=stripe_customer_id,
+            success_url=success_url,
+            cancel_url=cancel_url,
+            allow_promotion_codes=True,
+            metadata={ 'app_user_id': user.id }, 
+            subscription_data={
+                'metadata': {
+                    'app_user_id': user.id,
+                    'plan_name': PRICE_ID_TO_PLAN_NAME.get(price_id, 'unknown')
+                }
+            }
+        )
+        return jsonify({'url': checkout_session.url})
+
+    except BadRequest as e:
+         return jsonify({"msg": str(e)}), 400
+    except stripe.error.StripeError as e:
+        print(f"Stripe Error em create_checkout_session: {e}")
+        return jsonify({"msg": f"Erro de pagamento: {e.user_message or 'Tente novamente.'}"}), 500
+    except Exception as e:
+        print(f"Erro inesperado em create_checkout_session: {e}")
+        traceback.print_exc()
+        return jsonify({"msg": "Erro interno ao iniciar pagamento."}), 500
+
+@app.route('/api/create-portal-session', methods=['POST'])
+@jwt_required()
+def create_portal_session():
+    try:
+        current_user_email = get_jwt_identity()
+        user = User.query.filter_by(email=current_user_email).first()
+        if not user:
+            return jsonify({"msg": "Usuário não encontrado"}), 404
+        
+        stripe_customer_id = user.stripe_customer_id
+        if not stripe_customer_id:
+            stripe_customer_id = get_or_create_stripe_customer(user)
+            if not stripe_customer_id:
+                 return jsonify({"msg": "Nenhuma assinatura encontrada para gerenciar."}), 404
+
+        frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000')
+        return_url = f"{frontend_url}/app" 
+
+        portal_session = stripe.billing_portal.Session.create(
+            customer=stripe_customer_id,
+            return_url=return_url,
+        )
+        return jsonify({'url': portal_session.url})
+        
+    except stripe.error.StripeError as e:
+        print(f"Stripe Error em create_portal_session: {e}")
+        return jsonify({"msg": f"Erro ao abrir portal: {e.user_message or 'Tente novamente.'}"}), 500
+    except Exception as e:
+        print(f"Erro inesperado em create_portal_session: {e}")
+        traceback.print_exc()
+        return jsonify({"msg": "Erro interno ao abrir portal de gerenciamento."}), 500
+
+
+# --- ROTA DE WEBHOOKS DO STRIPE ---
+
+@app.route('/api/stripe-webhook', methods=['POST'])
+def stripe_webhook():
+    payload = request.data
+    sig_header = request.headers.get('Stripe-Signature')
+    endpoint_secret = os.getenv('STRIPE_WEBHOOK_SECRET')
+
+    if not endpoint_secret:
+         print("ERRO CRÍTICO WEBHOOK: STRIPE_WEBHOOK_SECRET não configurado no .env!")
+         return "Webhook secret não configurado", 500
+
+    event = None
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, endpoint_secret
+        )
+    except ValueError as e:
+        print(f"Webhook error - Invalid payload: {e}")
+        return "Invalid payload", 400
+    except stripe.error.SignatureVerificationError as e:
+        print(f"Webhook error - Invalid signature: {e}")
+        return "Invalid signature", 400
+    except Exception as e:
+        print(f"Webhook error - Other construction error: {e}")
+        return "Webhook construction error", 500
+
+    try:
+        with app.app_context():
+            event_type = event['type']
+            event_data = event['data']['object']
+            print(f"Webhook recebido: {event_type}")
+
+            if event_type == 'checkout.session.completed':
+                handle_checkout_session_completed(event_data)
+            elif event_type == 'invoice.payment_succeeded':
+                handle_invoice_payment_succeeded(event_data)
+            elif event_type == 'invoice.payment_failed':
+                handle_invoice_payment_failed(event_data)
+            elif event_type == 'customer.subscription.updated':
+                handle_customer_subscription_updated(event_data)
+            elif event_type == 'customer.subscription.deleted':
+                handle_customer_subscription_deleted(event_data)
+            else:
+                print(f"Evento webhook não manipulado: {event_type}")
+
+    except Exception as e:
+         print(f"Erro CRÍTICO ao processar webhook {event['type']}: {e}")
+         traceback.print_exc()
+         
+    return jsonify(success=True)
+
+# --- Funções Auxiliares para Manipular Eventos Webhook ---
+
+def find_user_by_stripe_customer_id(stripe_customer_id):
+    if not stripe_customer_id:
+        print("Erro Webhook Aux: ID de cliente Stripe não fornecido.")
+        return None
+    user = User.query.filter_by(stripe_customer_id=stripe_customer_id).first()
+    if not user:
+        print(f"Erro Webhook Aux: Usuário não encontrado para Stripe Customer {stripe_customer_id}")
+    return user
+
+def update_user_plan_from_subscription(user, subscription):
+    status = subscription.get('status') 
+    price_id = None
+    if subscription.get('items') and subscription['items'].get('data'):
+         price_id = subscription['items']['data'][0]['price']['id']
+
+    plan_name = PRICE_ID_TO_PLAN_NAME.get(price_id, 'unknown_plan')
+    new_plan_status = user.plan_status 
+
+    if status in ['active', 'trialing']:
+        new_plan_status = plan_name 
+    elif status in ['past_due', 'unpaid', 'incomplete']:
+        new_plan_status = 'past_due'
+    elif status in ['canceled', 'incomplete_expired']:
+        new_plan_status = 'free'
+    else:
+        print(f"Webhook Aux: Status de assinatura não mapeado '{status}' para usuário {user.email}")
+        return 
+
+    if new_plan_status != user.plan_status:
+        print(f"Webhook Aux: Atualizando plano para {user.email}: de '{user.plan_status}' para '{new_plan_status}' (Stripe Status: {status})")
+        user.plan_status = new_plan_status
+        try:
+            db.session.commit()
+            print(f"Webhook Aux: Plano de {user.email} salvo como '{new_plan_status}'.")
+        except Exception as e:
+            print(f"Erro Webhook Aux ao salvar atualização de status para {user.email}: {e}")
+            db.session.rollback()
+    else:
+        print(f"Webhook Aux: Plano para {user.email} ('{user.plan_status}') já está correto (Stripe Status: {status}).")
+
+
+def handle_checkout_session_completed(session):
+    app_user_id = session.get('metadata', {}).get('app_user_id')
+    stripe_customer_id = session.get('customer')
+    subscription_id = session.get('subscription')
+
+    user = None
+    if app_user_id:
+        user = User.query.get(app_user_id) 
+    
+    if not user:
+         print(f"ERRO Webhook checkout.completed: Usuário não encontrado pelo app_user_id {app_user_id}")
+         user = find_user_by_stripe_customer_id(stripe_customer_id)
+         if not user:
+              print(f"ERRO Webhook checkout.completed: Usuário também não encontrado pelo customer_id {stripe_customer_id}")
+              return
+
+    print(f"Webhook: Checkout completado - AppUserID: {app_user_id}, Email: {user.email}")
+
+    if stripe_customer_id and not user.stripe_customer_id:
+        user.stripe_customer_id = stripe_customer_id
+        print(f"Webhook: Associando Stripe Customer {stripe_customer_id} ao usuário {user.email}")
+        try:
+            db.session.commit()
+        except Exception as e:
+             db.session.rollback()
+             print(f"Erro Webhook ao salvar customer_id no checkout para {user.email}: {e}")
+
+    if subscription_id:
+        try:
+            subscription = stripe.Subscription.retrieve(subscription_id)
+            update_user_plan_from_subscription(user, subscription)
+        except stripe.error.StripeError as e:
+            print(f"Erro Webhook: Falha ao buscar assinatura {subscription_id} para checkout {session.id}: {e}")
+    else:
+        print(f"AVISO Webhook: checkout.session.completed {session.id} não continha um subscription_id.")
+
+def handle_invoice_payment_succeeded(invoice):
+    stripe_customer_id = invoice.get('customer')
+    subscription_id = invoice.get('subscription')
+    billing_reason = invoice.get('billing_reason')
+    
+    user = find_user_by_stripe_customer_id(stripe_customer_id)
+    if not user: return
+    
+    print(f"Webhook: Pagamento bem-sucedido - Email: {user.email}, Razão: {billing_reason}")
+
+    if subscription_id and billing_reason in ['subscription_cycle', 'subscription_create', 'subscription_update']:
+        try:
+            subscription = stripe.Subscription.retrieve(subscription_id)
+            update_user_plan_from_subscription(user, subscription)
+        except stripe.error.StripeError as e:
+            print(f"Erro Webhook: Falha ao buscar assinatura {subscription_id} em invoice.payment_succeeded: {e}")
+
+def handle_invoice_payment_failed(invoice):
+    stripe_customer_id = invoice.get('customer')
+    subscription_id = invoice.get('subscription')
+    billing_reason = invoice.get('billing_reason')
+
+    user = find_user_by_stripe_customer_id(stripe_customer_id)
+    if not user: return
+
+    print(f"Webhook: Pagamento FALHOU - Email: {user.email}, Razão: {billing_reason}")
+    
+    if subscription_id:
+         try:
+            subscription = stripe.Subscription.retrieve(subscription_id)
+            update_user_plan_from_subscription(user, subscription)
+         except stripe.error.StripeError as e:
+            print(f"Erro Webhook: Falha ao buscar assinatura {subscription_id} em invoice.payment_failed: {e}")
+
+def handle_customer_subscription_updated(subscription):
+    stripe_customer_id = subscription.get('customer')
+    user = find_user_by_stripe_customer_id(stripe_customer_id)
+    if not user: return
+
+    print(f"Webhook: Assinatura atualizada - Email: {user.email}, Novo Status Stripe: {subscription.get('status')}")
+    update_user_plan_from_subscription(user, subscription)
+
+def handle_customer_subscription_deleted(subscription):
+    stripe_customer_id = subscription.get('customer')
+    user = find_user_by_stripe_customer_id(stripe_customer_id)
+    if not user: return
+
+    print(f"Webhook: Assinatura EXCLUÍDA - Email: {user.email}. Revertendo para 'free'.")
+    
+    if user.plan_status != 'free':
+        user.plan_status = 'free'
+        try:
+            db.session.commit()
+            print(f"Webhook: Plano de {user.email} salvo como 'free'.")
+        except Exception as e:
+            print(f"Erro Webhook ao salvar status 'free' após exclusão para {user.email}: {e}")
+            db.session.rollback()

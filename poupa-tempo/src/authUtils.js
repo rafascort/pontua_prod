@@ -1,4 +1,30 @@
-// src/authUtils.js
+// /opt/pontua/AutoPonto/poupa-tempo/src/authUtils.js
+
+const TOKEN_KEY = 'jwt_token'; // Define a chave em um só lugar
+
+/**
+ * Salva o token JWT no localStorage.
+ * @param {string} token O token JWT.
+ */
+export const saveToken = (token) => {
+    localStorage.setItem(TOKEN_KEY, token);
+};
+
+/**
+ * Pega o token JWT do localStorage.
+ * @returns {string|null} O token ou null se não existir.
+ */
+export const getToken = () => {
+    return localStorage.getItem(TOKEN_KEY);
+};
+
+/**
+ * Remove o token JWT do localStorage.
+ */
+export const removeToken = () => {
+    localStorage.removeItem(TOKEN_KEY);
+};
+
 
 /**
  * Decodifica um token JWT.
@@ -28,7 +54,7 @@ export const decodeToken = (token) => {
  * @returns {boolean} True se o token for válido, False caso contrário.
  */
 export const isTokenValid = () => {
-    const token = localStorage.getItem('jwt_token');
+    const token = getToken(); // Usa a nova função
     if (!token) {
         // console.log("Verificação de token: Nenhum token encontrado.");
         return false; // Não há token
@@ -37,7 +63,7 @@ export const isTokenValid = () => {
     const decodedToken = decodeToken(token);
     if (!decodedToken) {
         console.warn("Verificação de token: Token inválido encontrado, limpando.");
-        localStorage.removeItem('jwt_token'); // Limpa token inválido
+        removeToken(); // Usa a nova função
         return false; // Token inválido
     }
 
@@ -46,14 +72,14 @@ export const isTokenValid = () => {
     // Verifica expiração
     if (decodedToken.exp < currentTime) {
          console.log(`Verificação de token: Expirado (exp: ${decodedToken.exp}, now: ${currentTime})`);
-         localStorage.removeItem('jwt_token'); // Limpa token expirado
+         removeToken(); // Usa a nova função
          return false;
     }
 
     // Verifica se a conta está ativa (se a claim 'is_active' existir)
     if (typeof decodedToken.is_active !== 'undefined' && !decodedToken.is_active) {
         console.log("Verificação de token: Conta inativa.");
-        localStorage.removeItem('jwt_token'); // Limpa token de conta inativa
+        removeToken(); // Usa a nova função
         return false;
     }
 
