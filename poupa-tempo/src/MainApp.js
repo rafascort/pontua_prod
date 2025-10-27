@@ -3,26 +3,28 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { fetchWithAuth } from './apiUtils';
 import ProgressModal from './ProgressModal';
-import UserProfilePasswordModal from './UserProfilePasswordModal'; // <-- IMPORTA O MODAL CORRETO
+import UserProfilePasswordModal from './UserProfilePasswordModal';
 import PeriodConfirmationModal from './PeriodConfirmationModal';
+import UserProfileModal from './UserProfileModal';
 import { ToastContainer, toast } from 'react-toastify';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { 
-    faSignOutAlt, faUserShield, faKey, faFilePdf, 
-    faUpload, faTrash, faFileInvoice, faSync 
+import {
+    faSignOutAlt, faUserShield, faKey, faFilePdf,
+    faUpload, faTrash, faFileInvoice, faSync, faUserCircle
 } from '@fortawesome/free-solid-svg-icons';
-import './App.css'; // Estilos gerais
-import './ProgressModal.css'; // Estilos do modal de progresso
-import './PeriodConfirmationModal.css'; // Estilos do modal de período
-import './UserProfilePasswordModal.css'; // <-- IMPORTA O NOVO CSS
+import './App.css';
+import './ProgressModal.css';
+import './PeriodConfirmationModal.css';
+import './UserProfilePasswordModal.css';
+import './UserProfileModal.css';
 
 const API_BASE_URL = '/api';
 
-// --- Modelos Disponíveis (Seu código original) ---
+// --- Modelos Disponíveis ---
 const MODEL_IMAGE_PATHS = {
-    '1': process.env.PUBLIC_URL + '/Modelo1.png', // JBS
-    '6': process.env.PUBLIC_URL + '/Modelo_IA_Geral.png', // IA Sem Data
-    '7': process.env.PUBLIC_URL + '/Modelo_IA_Geral.png', // IA Com Data
+    '1': process.env.PUBLIC_URL + '/Modelo1.png',
+    '6': process.env.PUBLIC_URL + '/Modelo_IA_Geral.png',
+    '7': process.env.PUBLIC_URL + '/Modelo_IA_Geral.png',
 };
 const modelNames = {
     '1': 'JBS Ponto',
@@ -33,7 +35,7 @@ const modelNames = {
 
 
 const MainApp = ({ onLogout, isAdmin }) => {
-    // --- Estados (Seu código original + novos) ---
+    // --- Estados ---
     const [view, setView] = useState('home');
     const [modelType, setModelType] = useState(null);
     const [selectedFile, setSelectedFile] = useState(null);
@@ -47,11 +49,11 @@ const MainApp = ({ onLogout, isAdmin }) => {
     const [initialPdfPath, setInitialPdfPath] = useState('');
     const fileInputRef = useRef(null);
     const progressIntervalRef = useRef(null);
-
     const [isManagingSubscription, setIsManagingSubscription] = useState(false);
-    const [showPasswordModal, setShowPasswordModal] = useState(false); // <-- Estado para o *novo* modal de senha
+    const [showPasswordModal, setShowPasswordModal] = useState(false);
+    const [showProfileModal, setShowProfileModal] = useState(false);
 
-    // --- Funções (Seu código original + gerenciamento de assinatura) ---
+    // --- Funções ---
 
     useEffect(() => {
         return () => {
@@ -61,8 +63,7 @@ const MainApp = ({ onLogout, isAdmin }) => {
         };
     }, []);
 
-    const resetExtractorState = () => {
-        // ... (seu código original de reset) ...
+    const resetExtractorState = useCallback(() => {
          setModelType(null);
          setSelectedFile(null);
          setPageRange('');
@@ -80,73 +81,72 @@ const MainApp = ({ onLogout, isAdmin }) => {
          if (fileInputRef.current) {
              fileInputRef.current.value = '';
          }
-    };
+    },[]);
 
-    const checkProgress = async (taskId, isPeriodExtraction = false) => {
-        // ... (seu código original de checkProgress) ...
-         try {
-             const response = await fetchWithAuth(`${API_BASE_URL}/progress/${taskId}`);
-             if (!response.ok) {
-                 const errorData = await response.json();
-                 throw new Error(errorData.error || 'Erro ao verificar progresso.');
-             }
-             const data = await response.json();
-             setProgressData(data);
+    const checkProgress = useCallback(async (taskId, isPeriodExtraction = false) => {
+        try {
+            const response = await fetchWithAuth(`${API_BASE_URL}/progress/${taskId}`);
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ error: 'Erro ao verificar progresso.'}));
+                throw new Error(errorData.error || 'Erro ao verificar progresso.');
+            }
+            const data = await response.json();
+            setProgressData(data);
 
-             if (data.status === 'completed' || data.status === 'error') {
-                 clearInterval(progressIntervalRef.current);
-                 progressIntervalRef.current = null;
-                 setIsLoading(false);
+            if (data.status === 'completed' || data.status === 'error') {
+                if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+                progressIntervalRef.current = null;
+                setIsLoading(false);
 
-                 if (data.status === 'completed') {
-                     if (isPeriodExtraction) {
-                         setShowProgressModal(false);
-                         setPagesInfo(data.result || []);
-                         setInitialPdfPath(data.pdf_path || '');
-                         setShowPeriodModal(true);
-                     } else {
-                         if (data.file_path) {
-                             try {
-                                 const downloadResponse = await fetchWithAuth(`${API_BASE_URL}/download/${taskId}`);
-                                 if (downloadResponse.ok) {
-                                     const blob = await downloadResponse.blob();
-                                     const url = window.URL.createObjectURL(blob);
-                                     const a = document.createElement('a');
-                                     a.href = url;
-                                     a.download = data.filename || 'resultado.csv';
-                                     document.body.appendChild(a);
-                                     a.click(); a.remove(); window.URL.revokeObjectURL(url);
-                                     setProgressData(prev => ({ ...prev, message: 'Download concluído!', status: 'completed' }));
-                                     toast.success("Processamento e download concluídos!");
-                                     setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 3000);
-                                 } else { throw new Error('Falha ao iniciar o download.'); }
-                             } catch (downloadError){
-                                 setProgressData(prev => ({ ...prev, message: `Erro no download: ${downloadError.message}`, status: 'error' }));
-                                 toast.error(`Erro no download: ${downloadError.message}`);
-                                 setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
-                             }
-                         } else {
-                              console.warn("Processamento concluído sem ficheiro.");
-                              setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
-                         }
-                     }
-                 } else { // Status === 'error'
-                     console.error("Erro na tarefa:", data.error);
-                     setProgressData(prev => ({ ...prev, message: `Erro: ${data.error}`, status: 'error' }));
-                     toast.error(`Erro no processamento: ${data.error}`);
-                     setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
-                 }
-             }
-         } catch (error) {
+                if (data.status === 'completed') {
+                    if (isPeriodExtraction) {
+                        setShowProgressModal(false);
+                        setPagesInfo(data.result || []);
+                        setInitialPdfPath(data.pdf_path || '');
+                        setShowPeriodModal(true);
+                    } else {
+                        if (data.file_path) {
+                            try {
+                                const downloadResponse = await fetchWithAuth(`${API_BASE_URL}/download/${taskId}`);
+                                if (downloadResponse.ok) {
+                                    const blob = await downloadResponse.blob();
+                                    const url = window.URL.createObjectURL(blob);
+                                    const a = document.createElement('a');
+                                    a.href = url;
+                                    a.download = data.filename || 'resultado.csv';
+                                    document.body.appendChild(a);
+                                    a.click(); a.remove(); window.URL.revokeObjectURL(url);
+                                    setProgressData(prev => ({ ...prev, message: 'Download concluído!', status: 'completed' }));
+                                    toast.success("Processamento e download concluídos!");
+                                    setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 3000);
+                                } else { throw new Error('Falha ao iniciar o download.'); }
+                            } catch (downloadError){
+                                setProgressData(prev => ({ ...prev, message: `Erro no download: ${downloadError.message}`, status: 'error' }));
+                                toast.error(`Erro no download: ${downloadError.message}`);
+                                setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
+                            }
+                        } else {
+                             console.warn("Processamento concluído sem ficheiro.");
+                             setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
+                        }
+                    }
+                } else { // Status === 'error'
+                    console.error("Erro na tarefa:", data.error);
+                    setProgressData(prev => ({ ...prev, message: `Erro: ${data.error}`, status: 'error' }));
+                    toast.error(`Erro no processamento: ${data.error}`);
+                    setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
+                }
+            }
+        } catch (error) {
              if (error.message !== 'Sessão expirada ou inválida.' && error.message !== 'Não autenticado.') {
-                 console.error("Erro ao verificar progresso:", error);
-                 setProgressData(prev => ({ ...prev, message: `Erro: ${error.message}`, status: 'error' }));
-                 setIsLoading(false);
-                 if (progressIntervalRef.current) { clearInterval(progressIntervalRef.current); progressIntervalRef.current = null; }
-                 setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
+                console.error("Erro ao verificar progresso:", error);
+                setProgressData(prev => ({ ...prev, message: `Erro: ${error.message}`, status: 'error' }));
+                setIsLoading(false);
+                if (progressIntervalRef.current) { clearInterval(progressIntervalRef.current); progressIntervalRef.current = null; }
+                setTimeout(() => { setShowProgressModal(false); resetExtractorState(); }, 5000);
              }
-         }
-    };
+        }
+    }, [resetExtractorState]); 
 
     const handleFileSelect = (event) => {
         const file = event.target.files[0];
@@ -158,7 +158,6 @@ const MainApp = ({ onLogout, isAdmin }) => {
                 toast.warn('Por favor, selecione um ficheiro PDF.');
             }
         }
-         // Limpa o input para permitir selecionar o mesmo arquivo novamente
          if (fileInputRef.current) {
              fileInputRef.current.value = null;
          }
@@ -200,7 +199,7 @@ const MainApp = ({ onLogout, isAdmin }) => {
 
         try {
             const response = await fetchWithAuth(`${API_BASE_URL}/process-direct`, { method: 'POST', body: formData });
-            if (!response.ok) { const d = await response.json(); throw new Error(d.error || 'Falha.'); }
+            if (!response.ok) { const d = await response.json().catch(() => ({error:'Falha'})); throw new Error(d.error || 'Falha.'); }
             const result = await response.json();
             if (result.task_id) {
                  if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
@@ -222,7 +221,7 @@ const MainApp = ({ onLogout, isAdmin }) => {
 
         try {
             const response = await fetchWithAuth(`${API_BASE_URL}/extract-periods`, { method: 'POST', body: formData });
-             if (!response.ok) { const d = await response.json(); throw new Error(d.error || 'Falha.'); }
+             if (!response.ok) { const d = await response.json().catch(() => ({error:'Falha'})); throw new Error(d.error || 'Falha.'); }
             const result = await response.json();
              if (result.task_id) {
                  if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
@@ -252,7 +251,7 @@ const MainApp = ({ onLogout, isAdmin }) => {
                     model_type: modelType,
                 })
             });
-             if (!response.ok) { const d = await response.json(); throw new Error(d.error || 'Falha.'); }
+             if (!response.ok) { const d = await response.json().catch(() => ({error:'Falha'})); throw new Error(d.error || 'Falha.'); }
             const result = await response.json();
             if (result.task_id) {
                  if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
@@ -288,8 +287,10 @@ const MainApp = ({ onLogout, isAdmin }) => {
                 window.location.href = data.url;
             }
         } catch (error) {
-            console.error("Erro ao criar sessão do portal:", error);
-            toast.error(`Erro ao abrir portal: ${error.message}`);
+             if (error.message !== 'Sessão expirada ou inválida.' && error.message !== 'Não autenticado.') {
+                console.error("Erro ao criar sessão do portal:", error);
+                toast.error(`Erro ao abrir portal: ${error.message}`);
+             }
             setIsManagingSubscription(false);
         }
     };
@@ -304,11 +305,18 @@ const MainApp = ({ onLogout, isAdmin }) => {
                 <span className="material-symbols-outlined">home</span>
             </button>
             <h1 className="title">{view === 'extractor' ? 'Extrator de Ponto' : 'Sistema Ponto'}</h1>
-            <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}>
+            <div className="user-menu" style={{display: 'flex', alignItems: 'center', gap: '10px'}}>
+                <button
+                    onClick={() => setShowProfileModal(true)}
+                    className="header-button"
+                    title="Ver Perfil e Uso"
+                >
+                    <FontAwesomeIcon icon={faUserCircle} /> Perfil
+                </button>
                 {!isAdmin && (
                     <button
                         onClick={handleManageSubscription}
-                        className="header-button" // Reutiliza estilo se houver
+                        className="header-button"
                         disabled={isManagingSubscription}
                         title="Gerenciar sua assinatura e pagamentos"
                     >
@@ -316,27 +324,26 @@ const MainApp = ({ onLogout, isAdmin }) => {
                     </button>
                 )}
                 {isAdmin && (
-                    <button className="icon-button" title="Painel de Administração" onClick={() => (window.location.href = '/admin')}>
-                        <span className="material-symbols-outlined">admin_panel_settings</span>
-                    </button>
+                    <Link to="/admin" className="header-button" title="Painel de Administração">
+                        <FontAwesomeIcon icon={faUserShield} /> Admin
+                    </Link>
                 )}
                 <button
-                    onClick={() => setShowPasswordModal(true)} // <-- Abre o modal correto
-                    className="header-button" // Reutiliza estilo se houver
+                    onClick={() => setShowPasswordModal(true)}
+                    className="header-button"
                     title="Alterar sua senha"
                 >
                     <FontAwesomeIcon icon={faKey} /> Alterar Senha
                 </button>
-                <button onClick={onLogout} className="icon-button" title="Sair">
-                    <span className="material-symbols-outlined">logout</span>
+                <button onClick={onLogout} className="header-button logout-button" title="Sair">
+                    <FontAwesomeIcon icon={faSignOutAlt} /> Sair
                 </button>
             </div>
         </header>
     );
 
-    // --- JSX (Seu código original com o modal correto) ---
     return (
-        <div className="sistema-ponto-container">
+        <div className="sistema-ponto-container"> {/* <-- CORREÇÃO AQUI */}
             <ToastContainer position="top-right" autoClose={5000} hideProgressBar={false} />
             {renderHeader()}
             <main className="main-content">
@@ -348,7 +355,7 @@ const MainApp = ({ onLogout, isAdmin }) => {
                 )}
                 {view === 'extractor' && (
                      <div className="extractor-container">
-                         <div className="extractor-header">
+                          <div className="extractor-header">
                             <h2>Selecione o modelo, o ficheiro e as páginas</h2>
                             <input
                                 type="text"
@@ -436,11 +443,13 @@ const MainApp = ({ onLogout, isAdmin }) => {
                     isLoading={isLoading}
                 />
             }
-
-            {/* ** USA O NOVO MODAL DE SENHA DO USUÁRIO ** */}
             <UserProfilePasswordModal
                 show={showPasswordModal}
                 onClose={() => setShowPasswordModal(false)}
+            />
+            <UserProfileModal
+                show={showProfileModal}
+                onClose={() => setShowProfileModal(false)}
             />
         </div>
     );

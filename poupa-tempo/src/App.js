@@ -1,7 +1,6 @@
 // /opt/pontua/AutoPonto/poupa-tempo/src/App.js
 import React, { useState, useEffect, useCallback } from 'react';
-// REMOVIDO: import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { Routes, Route, Navigate } from 'react-router-dom'; // <-- MANTÉM Routes, Route, Navigate
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { getToken, removeToken, decodeToken } from './authUtils';
 import { fetchWithAuth, setUnauthorizedCallback } from './apiUtils';
 import LandingPage from './LandingPage';
@@ -15,11 +14,26 @@ import './App.css';
 import './style.css';
 import 'react-toastify/dist/ReactToastify.css';
 
+// Adicione esta classe de CSS inline ou no seu App.css para o loading
+const loadingScreenStyles = {
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    height: '100vh',
+    width: '100vw',
+    backgroundColor: '#1a1a2e', // Fundo escuro
+    color: '#e0e6ed',
+    fontSize: '1.5rem',
+    fontFamily: 'Roboto, sans-serif'
+};
+const LoadingComponent = () => <div style={loadingScreenStyles}>Carregando...</div>;
+
+
 function App() {
     const [logado, setLogado] = useState(!!getToken());
     const [isAdmin, setIsAdmin] = useState(false);
     const [planStatus, setPlanStatus] = useState('free');
-    const [isLoadingUser, setIsLoadingUser] = useState(true);
+    const [isLoadingUser, setIsLoadingUser] = useState(true); // Começa true
 
     const handleUnauthorized = useCallback(() => {
         console.log("Sessão expirada ou inválida. Fazendo logout.");
@@ -30,12 +44,13 @@ function App() {
         setIsLoadingUser(false);
     }, []);
 
+    // Seta o callback de não autorizado UMA VEZ
     useEffect(() => {
         setUnauthorizedCallback(handleUnauthorized);
     }, [handleUnauthorized]);
 
     const fetchUserData = useCallback(async () => {
-        setIsLoadingUser(true);
+        // Não seta isLoadingUser(true) aqui para evitar re-cargas
         const token = getToken();
         if (token) {
             const claims = decodeToken(token);
@@ -58,32 +73,23 @@ function App() {
                 handleUnauthorized(); // Token inválido
             }
         } else {
-            // Se não há token ao carregar, marca como não logado e para de carregar
+            // Se não há token, marca como não logado
              setLogado(false);
              setIsAdmin(false);
              setPlanStatus('free');
         }
-        setIsLoadingUser(false);
+        setIsLoadingUser(false); // Seta como false ao final
     }, [handleUnauthorized]);
 
+    // Busca dados do usuário apenas uma vez ao carregar o App
     useEffect(() => {
-        fetchUserData(); // Busca dados ao montar o App
+        fetchUserData();
     }, [fetchUserData]); // A dependência agora é a própria função memoizada
 
-    useEffect(() => {
-        const handleFocus = () => {
-            if (getToken()) {
-                fetchUserData();
-            }
-        };
-        window.addEventListener('focus', handleFocus);
-        return () => {
-            window.removeEventListener('focus', handleFocus);
-        };
-    }, [fetchUserData]);
-
+    // ***** O useEffect que causava o problema (com 'focus') FOI REMOVIDO *****
 
     const handleLoginSuccess = () => {
+        setIsLoadingUser(true); // Mostra loading ao logar
         setLogado(true);
         fetchUserData();
     };
@@ -95,9 +101,10 @@ function App() {
         setPlanStatus('free');
     };
 
+    // Componente de Rota Protegida
     const ProtectedRoute = ({ children, adminOnly = false }) => {
         if (isLoadingUser) {
-            return <div className="loading-fullscreen">Carregando...</div>;
+            return <LoadingComponent />;
         }
 
         if (!logado) {
@@ -110,7 +117,7 @@ function App() {
         const hasActivePlan = ['basic', 'standard', 'premium'].includes(planStatus);
         
         if (isAdmin) {
-            return children;
+            return children; // Admin pode acessar tudo
         }
 
         if (!hasActivePlan) {
@@ -118,7 +125,6 @@ function App() {
             if (planStatus === 'past_due') {
                 redirectUrl += "?status=past_due";
             }
-            // Evita redirecionar para /planos se já estiver lá ou no success
             const currentPath = window.location.pathname;
             if (currentPath !== '/planos' && currentPath !== '/payment-success') {
                 return <Navigate to={redirectUrl} replace />;
@@ -128,60 +134,61 @@ function App() {
         return children;
     };
     
+    // Componente de Rota de Login/Cadastro (redireciona se já logado)
     const PublicRoute = ({ children }) => {
         if (isLoadingUser) {
-            return <div className="loading-fullscreen">Carregando...</div>;
+            return <LoadingComponent />;
         }
         return logado ? <Navigate to="/app" replace /> : children;
     };
 
+    // Loading inicial antes de saber se está logado
     if (isLoadingUser && getToken()) {
-         return <div className="loading-fullscreen">Carregando...</div>;
+         return <LoadingComponent />;
     }
 
     return (
-        // REMOVIDO: <BrowserRouter> daqui
-            <Routes>
-                {/* --- ROTAS PÚBLICAS (ou que redirecionam se logado) --- */}
-                <Route path="/" element={<PublicRoute><LandingPage /></PublicRoute>} />
-                <Route path="/login" element={<PublicRoute><Login onLogin={handleLoginSuccess} /></PublicRoute>} />
-                <Route path="/cadastro" element={<PublicRoute><Cadastro /></PublicRoute>} />
+        // O BrowserRouter está no index.js, então não é necessário aqui
+        <Routes>
+            {/* --- ROTAS PÚBLICAS (ou que redirecionam se logado) --- */}
+            <Route path="/" element={<PublicRoute><LandingPage /></PublicRoute>} />
+            <Route path="/login" element={<PublicRoute><Login onLogin={handleLoginSuccess} /></PublicRoute>} />
+            <Route path="/cadastro" element={<PublicRoute><Cadastro /></PublicRoute>} />
 
-                {/* --- ROTAS PROTEGIDAS --- */}
-                <Route
-                    path="/app"
-                    element={
-                        <ProtectedRoute>
-                            <MainApp onLogout={handleLogout} isAdmin={isAdmin} />
-                        </ProtectedRoute>
-                    }
+            {/* --- ROTAS PROTEGIDAS --- */}
+            <Route
+                path="/app"
+                element={
+                    <ProtectedRoute>
+                        <MainApp onLogout={handleLogout} isAdmin={isAdmin} />
+                    </ProtectedRoute>
+                }
+            />
+            <Route
+                path="/admin"
+                element={
+                    <ProtectedRoute adminOnly={true}>
+                        <AdminDashboard onLogout={handleLogout} />
+                    </ProtectedRoute>
+                }
+            />
+            
+            <Route
+                path="/planos"
+                element={
+                    logado ? <Planos onLogout={handleLogout} /> : <Navigate to="/login" />
+                }
+            />
+            
+            <Route
+                path="/payment-success"
+                element={
+                    logado ? <PaymentSuccess /> : <Navigate to="/login" />
+                }
                 />
-                <Route
-                    path="/admin"
-                    element={
-                        <ProtectedRoute adminOnly={true}>
-                            <AdminDashboard onLogout={handleLogout} />
-                        </ProtectedRoute>
-                    }
-                />
-                
-                <Route
-                    path="/planos"
-                    element={
-                        logado ? <Planos onLogout={handleLogout} /> : <Navigate to="/login" />
-                    }
-                />
-                
-                <Route
-                    path="/payment-success"
-                    element={
-                        logado ? <PaymentSuccess /> : <Navigate to="/login" />
-                    }
-                 />
 
-                <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-        // REMOVIDO: </BrowserRouter> daqui
+            <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
     );
 }
 
