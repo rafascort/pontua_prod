@@ -1,3 +1,5 @@
+/* /opt/pontua/AutoPonto/poupa-tempo/src/style.css */
+
 /* Reset e configuração geral */
 * {
   margin: 0;
@@ -29,6 +31,7 @@ body {
   max-width: 400px;
   box-shadow: 0 15px 35px rgba(0, 0, 0, 0.3);
   border: 1px solid rgba(255, 255, 255, 0.1);
+  position: relative; /* <-- ADICIONADO PARA POSICIONAR O BOTÃO 'HOME' */
 }
 
 /* Header do login */
@@ -208,4 +211,53 @@ body {
 
 .login-card {
   animation: fadeInUp 0.6s ease-out;
+}
+
+/* --- ESTILOS ADICIONADOS --- */
+
+/* Botão Login com Google (do seu código Login.js) */
+.google-login-button {
+  width: 100%; /* Ocupa largura total */
+  background: #ffffff; /* Fundo branco */
+  color: #444444; /* Texto escuro */
+  border: 1px solid #dddddd;
+  padding: 14px; /* Um pouco menor que o principal */
+  border-radius: 8px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  margin-top: 15px; /* Espaço do botão de autenticar */
+}
+
+.google-login-button:hover {
+  background: #f8f8f8;
+  border-color: #cccccc;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+/* Botão Voltar para Home */
+.back-to-home-link {
+  position: absolute;
+  top: 15px;
+  left: 15px;
+  color: #a8b3c7; /* Cor cinza claro */
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  transition: background-color 0.3s ease, color 0.3s ease;
+  z-index: 10; /* Garante que fique acima */
+}
+
+.back-to-home-link .material-symbols-outlined {
+  font-size: 24px; /* Tamanho do ícone */
+}
+
+.back-to-home-link:hover {
+  background-color: rgba(255, 255, 255, 0.1); /* Destaque leve */
+  color: #ffffff; /* Cor branca ao passar o mouse */
 }

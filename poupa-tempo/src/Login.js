@@ -1,6 +1,6 @@
 // /opt/pontua/AutoPonto/poupa-tempo/src/Login.js
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom'; // <-- 1. IMPORTADO O 'Link'
 import './style.css'; // Assume que os estilos estão corretos
 
 const Login = ({ onLogin }) => {
@@ -19,13 +19,13 @@ const Login = ({ onLogin }) => {
       // 1. Verificação de Ativo
       if (!decodedToken.is_active) {
         setErro('Sua conta está inativa. Entre em contato com o suporte.');
-        localStorage.removeItem('jwt_token'); 
+        localStorage.removeItem('jwt_token'); // <-- LÓGICA ORIGINAL MANTIDA
         navigate('/login', { replace: true }); 
         return;
       }
 
       // 2. Salva o token
-      localStorage.setItem('jwt_token', token);
+      localStorage.setItem('jwt_token', token); // <-- LÓGICA ORIGINAL MANTIDA
       onLogin(); // Notifica o App.js sobre o login bem-sucedido
 
       // 3. LÓGICA DE REDIRECIONAMENTO (MODIFICADA)
@@ -35,8 +35,8 @@ const Login = ({ onLogin }) => {
       if (userRole === 'admin') {
           // Se for admin, vai para /admin
           navigate('/admin', { replace: true });
-      } else if (planStatus === 'free' || planStatus === 'inactive' || !planStatus) {
-          // Se for usuário comum E o plano for 'free' ou 'inactive', vai para /planos
+      } else if (planStatus === 'free' || planStatus === 'inactive' || planStatus === 'past_due' || !planStatus) {
+          // Se for usuário comum E o plano for 'free' ou 'inactive' ou 'past_due', vai para /planos
           navigate('/planos', { replace: true });
       } else {
           // Se for usuário comum E tiver um plano pago ativo, vai para /app
@@ -46,7 +46,7 @@ const Login = ({ onLogin }) => {
     } catch (e) {
       console.error("Erro ao decodificar token JWT para navegação:", e);
       setErro('Erro ao processar token de login. Tente novamente.');
-      localStorage.removeItem('jwt_token');
+      localStorage.removeItem('jwt_token'); // <-- LÓGICA ORIGINAL MANTIDA
       navigate('/login', { replace: true });
     }
   };
@@ -117,6 +117,13 @@ const Login = ({ onLogin }) => {
   return (
     <div className="login-container">
       <div className="login-card">
+
+        {/* --- 2. BOTÃO ADICIONADO AQUI --- */}
+        <Link to="/" className="back-to-home-link" title="Voltar à página inicial">
+            <span className="material-symbols-outlined">home</span>
+        </Link>
+        {/* --- Fim do botão --- */}
+        
         <div className="login-header">
           <h2>Sistema Ponto</h2>
           <p>Automação de Cartão Ponto</p>
@@ -150,8 +157,6 @@ const Login = ({ onLogin }) => {
           {erro && <p className="error-message">{erro}</p>}
           <button type="submit">Autenticar</button>
         </form>
-        {/* Separador visual opcional */}
-        {/* <div style={{ textAlign: 'center', color: '#a8b3c7', margin: '20px 0' }}>OU</div> */}
         <button onClick={handleGoogleLogin} className="google-login-button">
           Login com Google
         </button>

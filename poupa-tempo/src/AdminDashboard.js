@@ -3,8 +3,12 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import './AdminDashboard.css';
 import { fetchWithAuth } from './apiUtils';
-import { isTokenValid, decodeToken } from './authUtils';
+// --- CORREÇÃO AQUI: Adicionado getToken e decodeToken ---
+import { isTokenValid, getToken, decodeToken } from './authUtils';
 import PasswordResetModal from './PasswordResetModal';
+import UserEditModal from './UserEditModal';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faPencilAlt } from '@fortawesome/free-solid-svg-icons';
 
 const AdminDashboard = ({ onLogout }) => {
     const [users, setUsers] = useState([]);
@@ -16,12 +20,11 @@ const AdminDashboard = ({ onLogout }) => {
     const [search, setSearch] = useState('');
     const [userToResetPassword, setUserToResetPassword] = useState(null);
     const [isResettingPassword, setIsResettingPassword] = useState(false);
-
-    // --- NOVOS ESTADOS PARA SORT/FILTER ---
-    const [sortField, setSortField] = useState('id'); // Default sort field
-    const [sortOrder, setSortOrder] = useState('asc');  // Default sort order
-    const [filterPlan, setFilterPlan] = useState('all'); // Default filter ('all', 'free', 'basic', etc.)
-    // --- FIM NOVOS ESTADOS ---
+    const [userToEdit, setUserToEdit] = useState(null);
+    const [isEditingUser, setIsEditingUser] = useState(false);
+    const [sortField, setSortField] = useState('id');
+    const [sortOrder, setSortOrder] = useState('asc');
+    const [filterPlan, setFilterPlan] = useState('all');
 
     const navigate = useNavigate();
 
@@ -35,7 +38,6 @@ const AdminDashboard = ({ onLogout }) => {
         return true;
     }, [onLogout]);
 
-    // --- fetchUsers ATUALIZADO ---
     const fetchUsers = useCallback(async (
         currentPage = 1,
         currentSearch = '',
@@ -46,7 +48,6 @@ const AdminDashboard = ({ onLogout }) => {
         if (!ensureAuthenticated()) return;
 
         setIsLoading(true);
-        setError('');
         try {
             const queryParams = new URLSearchParams({
                 page: currentPage,
@@ -54,7 +55,7 @@ const AdminDashboard = ({ onLogout }) => {
                 search: currentSearch,
                 sort_by: currentSortField,
                 sort_order: currentSortOrder,
-                filter_plan: currentFilterPlan, // Adiciona filtro de plano
+                filter_plan: currentFilterPlan,
             });
             const response = await fetchWithAuth(`/api/admin/users?${queryParams.toString()}`);
 
@@ -76,59 +77,49 @@ const AdminDashboard = ({ onLogout }) => {
         } finally {
             setIsLoading(false);
         }
-    }, [ensureAuthenticated]); // Só depende de ensureAuthenticated agora
+    }, [ensureAuthenticated]);
 
-    // Handler para clique no header da tabela (sorting)
     const handleSort = (field) => {
         const newOrder = (field === sortField && sortOrder === 'asc') ? 'desc' : 'asc';
         setSortField(field);
         setSortOrder(newOrder);
-        // Chama fetchUsers com os novos parâmetros de ordenação, resetando para a página 1
-        fetchUsers(1, search, field, newOrder, filterPlan);
     };
 
-    // Handler para mudança no filtro de plano
     const handleFilterPlanChange = (e) => {
         const newPlanFilter = e.target.value;
         setFilterPlan(newPlanFilter);
-        // Chama fetchUsers com o novo filtro, resetando para a página 1
-        fetchUsers(1, search, sortField, sortOrder, newPlanFilter);
     };
 
     const handleSearchChange = (e) => {
         setSearch(e.target.value);
     };
 
-    // Handler para submit da busca (apenas dispara o fetch com o estado atual)
     const handleSearchSubmit = (e) => {
         e.preventDefault();
-        fetchUsers(1, search, sortField, sortOrder, filterPlan); // Busca na página 1
+        setPage(1); // Reseta para a página 1 ao buscar
+        fetchUsers(1, search, sortField, sortOrder, filterPlan);
     };
 
-    // Handler para mudança de página
     const handlePageChange = (newPage) => {
         if (newPage >= 1 && newPage <= totalPages && newPage !== page) {
-             setPage(newPage); // Atualiza o estado da página
-             // FetchUsers será chamado pelo useEffect abaixo
+             setPage(newPage);
         }
     };
 
-
-    // useEffect para buscar usuários na montagem E quando filtros/ordenação/página mudam
+    // useEffect para buscar usuários
     useEffect(() => {
         fetchUsers(page, search, sortField, sortOrder, filterPlan);
-    // IMPORTANTE: Inclua todas as dependências que disparam o fetch
-    }, [fetchUsers, page, sortField, sortOrder, filterPlan, search]);
+    }, [fetchUsers, page, sortField, sortOrder, filterPlan, search]); // 'search' adicionado aqui
 
-
-    // Limpar mensagens (igual antes)
+    // Limpar mensagens
     useEffect(() => {
         let timer;
         if (message || error) { timer = setTimeout(() => { setMessage(''); setError(''); }, 5000); }
         return () => clearTimeout(timer);
     }, [message, error]);
 
-    // Funções de ação (handleToggleUserStatus, etc.) - Chamam fetchUsers com estado atual
+    // --- Ações de Botão ---
+
     const handleToggleUserStatus = async (userId, currentStatus) => {
         if (!ensureAuthenticated()) return;
         setError(''); setMessage('');
@@ -139,7 +130,7 @@ const AdminDashboard = ({ onLogout }) => {
            });
            if (response.ok) {
                setMessage(`Status atualizado!`);
-               fetchUsers(page, search, sortField, sortOrder, filterPlan); // Recarrega com filtros atuais
+               fetchUsers(page, search, sortField, sortOrder, filterPlan);
            } else { const d = await response.json(); setError(d.msg || 'Erro.'); }
         } catch (err) { if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') { setError('Erro de rede.'); } }
     };
@@ -147,13 +138,13 @@ const AdminDashboard = ({ onLogout }) => {
     const handleDeleteUser = async (userId, userEmail) => {
         if (!ensureAuthenticated()) return;
         setError(''); setMessage('');
-        if (!window.confirm(`Excluir ${userEmail}?`)) return;
+        if (!window.confirm(`Tem certeza que deseja excluir o usuário ${userEmail}? Esta ação é irreversível.`)) return;
         try {
             const response = await fetchWithAuth(`/api/admin/users/${userId}`, { method: 'DELETE' });
             if (response.ok) {
                 setMessage(`Usuário ${userEmail} excluído!`);
-                // Volta para página 1 se for a última página e só tiver 1 user nela
                 const newPage = (users.length === 1 && page > 1) ? page - 1 : page;
+                setPage(newPage); // Atualiza o estado da página antes de recarregar
                 fetchUsers(newPage, search, sortField, sortOrder, filterPlan);
             } else { const d = await response.json(); setError(d.msg || 'Erro.'); }
         } catch (err) { if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') { setError('Erro de rede.'); } }
@@ -162,7 +153,7 @@ const AdminDashboard = ({ onLogout }) => {
      const handleResetAllCounts = async () => {
          if (!ensureAuthenticated()) return;
          setError(''); setMessage('');
-         if (!window.confirm("Zerar contagem geral (não-admins)?")) return;
+         if (!window.confirm("Tem certeza que deseja zerar a contagem de páginas de TODOS os usuários não-admins?")) return;
          try {
              const response = await fetchWithAuth(`/api/admin/users/reset-pages`, { method: 'POST' });
              if (response.ok) { const d = await response.json(); setMessage(d.msg || "OK!"); fetchUsers(page, search, sortField, sortOrder, filterPlan); }
@@ -173,7 +164,7 @@ const AdminDashboard = ({ onLogout }) => {
      const handleResetUserCount = async (userId, userEmail) => {
          if (!ensureAuthenticated()) return;
          setError(''); setMessage('');
-         if (!window.confirm(`Zerar contagem para ${userEmail}?`)) return;
+         if (!window.confirm(`Tem certeza que deseja zerar a contagem de páginas para ${userEmail}?`)) return;
          try {
              const response = await fetchWithAuth(`/api/admin/users/${userId}/reset-pages`, { method: 'POST' });
              if (response.ok) { const d = await response.json(); setMessage(d.msg || "OK!"); fetchUsers(page, search, sortField, sortOrder, filterPlan); }
@@ -181,7 +172,7 @@ const AdminDashboard = ({ onLogout }) => {
          } catch (err) { if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') { setError('Erro de rede.'); } }
      };
 
-    // Funções do Modal (iguais antes)
+    // --- Funções do Modal de Senha ---
     const openPasswordResetModal = (user) => setUserToResetPassword(user);
     const closePasswordResetModal = () => { setUserToResetPassword(null); setIsResettingPassword(false); };
     const handleConfirmPasswordReset = async (newPassword) => {
@@ -196,25 +187,61 @@ const AdminDashboard = ({ onLogout }) => {
                closePasswordResetModal();
            } else {
                const errorData = await response.json();
-               alert(`Erro: ${errorData.msg || 'Erro desconhecido.'}`);
-               setError(errorData.msg || 'Erro ao resetar senha.');
+               // Mostra o erro dentro do modal de senha
+               setUserToResetPassword(prev => ({...prev, error: errorData.msg || 'Erro desconhecido.'}));
            }
        } catch (err) {
             if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') {
                setError('Erro de rede ao resetar senha.');
-           }
+            }
        } finally { setIsResettingPassword(false); }
     };
 
+    // --- Funções para o Modal de Edição ---
+    const openUserEditModal = (user) => {
+        setUserToEdit(user);
+        setIsEditingUser(false);
+    };
+    const closeUserEditModal = () => {
+        setUserToEdit(null);
+        setIsEditingUser(false);
+    };
+    const handleConfirmUserEdit = async (userId, updates) => {
+        if (!userToEdit || !ensureAuthenticated()) return;
+        setIsEditingUser(true); setError(''); setMessage('');
 
-    // Email do admin logado (igual antes)
-    const token = localStorage.getItem('jwt_token');
-    const decodedToken = decodeToken(token);
-    const loggedInAdminEmail = decodedToken?.email;
+        try {
+            const response = await fetchWithAuth(`/api/admin/users/${userId}`, {
+                method: 'PUT',
+                body: JSON.stringify(updates)
+            });
 
-    // Helper para ícone de ordenação
+            if (response.ok) {
+                 const data = await response.json();
+                 setMessage(data.msg || "Usuário atualizado!");
+                 closeUserEditModal();
+                 fetchUsers(page, search, sortField, sortOrder, filterPlan);
+            } else {
+                 const errorData = await response.json();
+                 // Mostra o erro dentro do modal de edição
+                 setUserToEdit(prev => ({...prev, error: errorData.msg || 'Erro ao salvar.'}));
+            }
+        } catch (err) {
+             if (err.message !== 'Sessão expirada ou inválida.' && err.message !== 'Não autenticado.') {
+                setError('Erro de rede ao salvar usuário.');
+             }
+        } finally {
+            setIsEditingUser(false);
+        }
+    };
+
+    // Pega o e-mail do admin logado para desabilitar botões
+    const token = getToken(); // Usa a função importada
+    const decodedToken = decodeToken(token); // Usa a função importada
+    const loggedInAdminEmail = decodedToken?.sub;
+
     const getSortIcon = (field) => {
-        if (field !== sortField) return <span className="sort-icon">↕</span>; // Ícone padrão
+        if (field !== sortField) return <span className="sort-icon">↕</span>;
         return sortOrder === 'asc' ? <span className="sort-icon">▲</span> : <span className="sort-icon">▼</span>;
     };
 
@@ -240,7 +267,6 @@ const AdminDashboard = ({ onLogout }) => {
                         </button>
                     </div>
 
-                     {/* --- ÁREA DE FILTRO E BUSCA --- */}
                     <div className="filter-search-area">
                          <div className="filter-group">
                              <label htmlFor="planFilter">Filtrar por Plano:</label>
@@ -250,7 +276,7 @@ const AdminDashboard = ({ onLogout }) => {
                                  <option value="basic">Básico</option>
                                  <option value="standard">Padrão</option>
                                  <option value="premium">Premium</option>
-                                 {/* Adicione outros status de plano se houver */}
+                                 <option value="past_due">Pagamento Pendente</option>
                              </select>
                          </div>
                         <form onSubmit={handleSearchSubmit} className="search-form">
@@ -265,13 +291,11 @@ const AdminDashboard = ({ onLogout }) => {
                              <button type="submit">Buscar</button>
                         </form>
                     </div>
-                     {/* --- FIM ÁREA DE FILTRO E BUSCA --- */}
 
                     <div className="table-responsive">
                         <table className="users-table">
                             <thead>
                                 <tr>
-                                    {/* Cabeçalhos clicáveis para ordenar */}
                                     <th onClick={() => handleSort('id')} className={sortField === 'id' ? `sort-${sortOrder}` : ''}>
                                         ID {getSortIcon('id')}
                                     </th>
@@ -300,12 +324,18 @@ const AdminDashboard = ({ onLogout }) => {
                                     users.map((user) => (
                                         <tr key={user.id}>
                                             <td data-label="ID">{user.id}</td>
-                                            <td data-label="E-mail">{user.email}</td>
+                                            <td data-label="E-mail" className="email-cell">{user.email}</td>
                                             <td data-label="Status">{user.is_active ? 'Ativo' : 'Inativo'}</td>
                                             <td data-label="Nível">{user.role}</td>
                                             <td data-label="Plano">{user.plan_status || 'free'}</td>
                                             <td data-label="Páginas">{user.page_count}</td>
                                             <td data-label="Ações" className="actions-cell">
+                                                <button
+                                                    onClick={() => openUserEditModal(user)}
+                                                    className="edit-button"
+                                                    title="Editar dados do usuário">
+                                                    <FontAwesomeIcon icon={faPencilAlt} /> Editar
+                                                </button>
                                                 <button
                                                     onClick={() => handleToggleUserStatus(user.id, user.is_active)}
                                                     className={user.is_active ? 'deactivate-button' : 'activate-button'}
@@ -343,7 +373,7 @@ const AdminDashboard = ({ onLogout }) => {
                             </tbody>
                         </table>
                     </div>
-                    {/* Paginação */}
+                    
                     {!isLoading && totalPages > 1 && (
                         <div className="pagination">
                             <button onClick={() => handlePageChange(page - 1)} disabled={page <= 1}>
@@ -364,8 +394,21 @@ const AdminDashboard = ({ onLogout }) => {
                     onConfirm={handleConfirmPasswordReset}
                     onCancel={closePasswordResetModal}
                     isLoading={isResettingPassword}
+                    // Passa o erro para o modal se houver
+                    apiError={userToResetPassword.error}
                  />
              )}
+
+            {userToEdit && (
+                <UserEditModal
+                    user={userToEdit}
+                    onConfirm={handleConfirmUserEdit}
+                    onCancel={closeUserEditModal}
+                    isLoading={isEditingUser}
+                     // Passa o erro para o modal se houver
+                    apiError={userToEdit.error}
+                />
+            )}
         </div>
     );
 };
