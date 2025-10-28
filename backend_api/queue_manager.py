@@ -8,6 +8,7 @@ import threading
 import time
 import traceback
 import stripe
+import requests
 
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
@@ -27,6 +28,7 @@ redis_conn = redis.Redis(host='localhost', port=6379, db=0)
 
 # --- Configuração Stripe ---
 stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
+STRIPE_API_KEY = os.getenv('STRIPE_SECRET_KEY')
 
 # --- LIMITES DOS PLANOS ---
 try:
@@ -67,10 +69,22 @@ EXTRACTOR_MODULES = {
 }
 
 
-# --- FUNÇÃO PARA REPORTAR USO ---
+# --- FUNÇÃO PARA REPORTAR USO (USANDO API REST DIRETA) ---
 def report_usage_to_stripe(user, pages_processed_this_job, new_total_page_count):
-    """ Reporta o uso de páginas para o Stripe se o limite do plano for excedido. """
-    if not user or not user.stripe_customer_id or not user.plan_status or user.plan_status == 'free' or user.role == 'admin':
+    """ 
+    Reporta o uso de páginas para o Stripe se o limite do plano for excedido.
+    NOTA: Stripe 13.0.0+ removeu UsageRecord.create(). Usando API REST direta.
+    """
+    print(f"[DIAGNOSTICO] Iniciando 'report_usage_to_stripe' para {user.email if user else 'N/A'}...")
+
+    # Verificação de ID do cliente
+    if not user or not user.stripe_customer_id:
+        print(f"[ERRO] Usuário {user.email if user else 'N/A'} não possui stripe_customer_id. Não é possível reportar uso.")
+        return
+        
+    # Verifica elegibilidade (plano, admin)
+    if not user.plan_status or user.plan_status == 'free' or user.role == 'admin':
+        print(f"[DIAGNOSTICO] Usuário {user.email} não é elegível para reporte (Plano: {user.plan_status}, Role: {user.role}).")
         return
 
     plan_limit = PLAN_LIMITS.get(user.plan_status)
@@ -83,12 +97,18 @@ def report_usage_to_stripe(user, pages_processed_this_job, new_total_page_count)
     if not extra_price_id:
         print(f"AVISO: Preço extra não definido para plano '{user.plan_status}' ({user.email}). Não reportando uso.")
         return
+        
+    print(f"[DIAGNOSTICO] Usuário {user.email} (Stripe ID: {user.stripe_customer_id}) é elegível para reporte.")
+
 
     previous_page_count = new_total_page_count - pages_processed_this_job
     pages_to_report = max(0, new_total_page_count - max(previous_page_count, plan_limit))
+    
+    print(f"[DIAGNOSTICO] Cálculo: Total={new_total_page_count}, Anterior={previous_page_count}, Limite={plan_limit}, A_Reportar={pages_to_report}")
+
 
     if pages_to_report > 0:
-        print(f"REPORTANDO USO: User {user.email} (Plano {user.plan_status}, Limite {plan_limit}) usou +{pages_to_report} pgs extras.")
+        print(f"REPORTANDO USO: User {user.email} usou +{pages_to_report} pgs extras.")
         try:
             subscriptions = stripe.Subscription.list(customer=user.stripe_customer_id, status='active', limit=1)
             if not subscriptions.data:
@@ -103,16 +123,30 @@ def report_usage_to_stripe(user, pages_processed_this_job, new_total_page_count)
                     break
 
             if not subscription_item_id:
-                 print(f"ERRO: Item de assinatura para preço extra '{extra_price_id}' não encontrado na assinatura {subscription.id}.")
-                 return
+                  print(f"ERRO: Item de assinatura para preço extra '{extra_price_id}' não encontrado na assinatura {subscription.id} do cliente {user.stripe_customer_id}.")
+                  return
 
-            stripe.SubscriptionItem.create_usage_record(
-                subscription_item_id,
-                quantity=pages_to_report,
-                timestamp=int(time.time()),
-                action='increment'
-            )
-            print(f"SUCESSO: Reportado {pages_to_report} pgs extras para {user.email} (item: {subscription_item_id}).")
+            # --- USANDO API REST DIRETA (Stripe 13.x removeu UsageRecord.create) ---
+            # Chamada direta para a API REST do Stripe
+            url = f"https://api.stripe.com/v1/subscription_items/{subscription_item_id}/usage_records"
+            headers = {
+                "Authorization": f"Bearer {STRIPE_API_KEY}",
+                "Content-Type": "application/x-www-form-urlencoded"
+            }
+            data = {
+                "quantity": pages_to_report,
+                "timestamp": int(time.time()),
+                "action": "increment"
+            }
+            
+            response = requests.post(url, headers=headers, data=data)
+            
+            if response.status_code == 200:
+                usage_record = response.json()
+                print(f"SUCESSO: Reportado {pages_to_report} pgs extras para {user.email} (item: {subscription_item_id}, usage_record: {usage_record.get('id')}).")
+            else:
+                print(f"ERRO STRIPE ao reportar uso para {user.email}: {response.status_code} - {response.text}")
+            # --- FIM DA CORREÇÃO ---
 
         except stripe.StripeError as e:
             print(f"ERRO STRIPE ao reportar uso para {user.email}: {getattr(e, 'user_message', str(e))}")
@@ -265,14 +299,12 @@ def get_progress(task_id):
     try:
         # Tenta buscar o job em todas as filas conhecidas
         for q_name, q in QUEUES.items():
-            # print(f"Verificando fila: {q_name}") # Log de debug
             job = q.fetch_job(task_id)
             if job:
-                # print(f"Job {task_id} encontrado na fila {q_name}") # Log de debug
-                break # <-- O break estava fora do loop, agora está dentro
+                break 
     except Exception as e:
-         print(f"Erro ao buscar job {task_id} nas filas: {e}")
-         return jsonify({'error': 'Erro interno ao buscar tarefa.'}), 500
+       print(f"Erro ao buscar job {task_id} nas filas: {e}")
+       return jsonify({'error': 'Erro interno ao buscar tarefa.'}), 500
 
     if not job:
         print(f"Job {task_id} não encontrado em nenhuma fila conhecida.")

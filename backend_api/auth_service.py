@@ -322,52 +322,65 @@ def update_user_status(user_id):
         print(f"Erro ao atualizar status do usuário {user_id}: {e}")
         return jsonify({"msg": "Erro interno ao salvar alteração de status."}), 500
 
-# --- NOVA FUNÇÃO PARA REPORTAR USO MANUAL ---
+# --- NOVA FUNÇÃO PARA REPORTAR USO MANUAL (CHAVE DO PAYLOAD CORRIGIDA + LOGS) ---
 def report_manual_usage_change(user, added_pages, new_total_page_count):
     """ Reporta ao Stripe APENAS páginas adicionadas manualmente via admin. """
-    if not user or not user.stripe_customer_id or not user.plan_status or user.plan_status == 'free' or user.role == 'admin' or added_pages <= 0:
-        return # Só reporta adição para usuários pagantes não-admin
+    print(f"[DIAGNOSTICO ADMIN] Iniciando 'report_manual_usage_change' para {user.email}...") # LOG
 
-    plan_limit = PLAN_LIMITS.get(user.plan_status)
-    extra_price_id = PLAN_NAME_TO_EXTRA_PRICE_ID.get(user.plan_status)
-
-    if plan_limit is None or not extra_price_id:
-        print(f"AVISO (Admin Edit): Limite ou Preço Extra não configurado para plano {user.plan_status}. Não reportando uso manual.")
+    if not user:
+        print("[DIAGNOSTICO ADMIN] Falha: Objeto 'user' está Nulo.") # LOG
+        return
+    if not user.stripe_customer_id:
+        print(f"[DIAGNOSTICO ADMIN] Falha: 'user.stripe_customer_id' está Nulo ou Vazio para {user.email}.") # LOG
+        return
+    if not user.plan_status or user.plan_status == 'free':
+        print(f"[DIAGNOSTICO ADMIN] Ignorando: Plano '{user.plan_status}' é 'free' ou não definido.") # LOG
+        return
+    if user.role == 'admin':
+        print(f"[DIAGNOSTICO ADMIN] Ignorando: Usuário {user.email} é admin.") # LOG
+        return
+    if added_pages <= 0:
+        print(f"[DIAGNOSTICO ADMIN] Ignorando: Nenhuma página adicionada ({added_pages}).") # LOG
         return
 
-    # Calcula quantas das páginas ADICIONADAS são extras
+    print(f"[DIAGNOSTICO ADMIN] Usuário {user.email} (Stripe ID: {user.stripe_customer_id}) é elegível para reporte manual.") # LOG
+    plan_limit = PLAN_LIMITS.get(user.plan_status)
+
+    if plan_limit is None:
+        print(f"[DIAGNOSTICO ADMIN] Falha: Limite não configurado para plano {user.plan_status}.") # LOG
+        return
+
     previous_page_count = new_total_page_count - added_pages
     pages_to_report = max(0, new_total_page_count - max(previous_page_count, plan_limit))
 
-    if pages_to_report > 0:
-        print(f"REPORTANDO USO MANUAL (Admin): Usuário {user.email} teve {pages_to_report} páginas extras adicionadas.")
-        try:
-            subscriptions = stripe.Subscription.list(customer=user.stripe_customer_id, status='active', limit=1)
-            if not subscriptions.data:
-                print(f"ERRO (Admin Edit): Nenhuma assinatura ATIVA para {user.stripe_customer_id}.")
-                return
-            subscription = subscriptions.data[0]
-            subscription_item_id = None
-            for item in subscription['items']['data']:
-                if item.get('price') and item.get('price').get('id') == extra_price_id:
-                    subscription_item_id = item.id
-                    break
-            if not subscription_item_id:
-                 print(f"ERRO (Admin Edit): Item de preço extra '{extra_price_id}' não encontrado na assinatura {subscription.id}.")
-                 return
+    print(f"[DIAGNOSTICO ADMIN] Cálculo: Total={new_total_page_count}, Anterior={previous_page_count}, Adicionadas={added_pages}, Limite={plan_limit}, A_Reportar={pages_to_report}") # LOG
 
-            stripe.SubscriptionItem.create_usage_record(
-                subscription_item_id,
-                quantity=pages_to_report,
-                timestamp=int(time.time()),
-                action='increment'
+    if pages_to_report > 0:
+        print(f"REPORTANDO USO MANUAL (Medidor): Usuário {user.email} teve {pages_to_report} páginas extras adicionadas.")
+        try:
+            event_name = "pagina_extra" # Deve corresponder EXATAMENTE ao "Nome do evento" no Stripe
+
+            stripe.billing.MeterEvent.create(
+                event_name=event_name,
+                payload={
+                    "value": pages_to_report,
+                    # --- CORREÇÃO DA CHAVE AQUI ---
+                    "stripe_customer_id": user.stripe_customer_id
+                    # --- FIM DA CORREÇÃO ---
+                },
+                # timestamp=int(time.time()) # Opcional: Stripe usa o tempo atual se omitido
             )
-            print(f"SUCESSO (Admin Edit): Reportado {pages_to_report} páginas extras para {user.email}.")
+            print(f"SUCESSO (Admin Edit): Reportado {pages_to_report} páginas extras para o medidor '{event_name}' (Cliente: {user.stripe_customer_id}).")
         except stripe.StripeError as e:
-            print(f"ERRO STRIPE (Admin Edit) ao reportar uso para {user.email}: {getattr(e, 'user_message', str(e))}")
-        except Exception as e:
-            print(f"ERRO INESPERADO (Admin Edit) ao reportar uso para {user.email}: {e}")
+            # LOG detalhado do erro Stripe
+            print(f"ERRO STRIPE (Admin Edit) ao reportar uso (Medidor) para {user.email}: {getattr(e, 'user_message', str(e))}")
             traceback.print_exc()
+        except Exception as e:
+            # LOG detalhado de erro inesperado
+            print(f"ERRO INESPERADO (Admin Edit) ao reportar uso (Medidor) para {user.email}: {e}")
+            traceback.print_exc()
+    else:
+        print(f"[DIAGNOSTICO ADMIN] Nenhuma página extra adicionada manualmente para reportar ({pages_to_report}).") # LOG
 # --- FIM NOVA FUNÇÃO ---
 
 
@@ -420,9 +433,10 @@ def update_user_details(user_id):
             count = int(data['page_count'])
             if count < 0: raise ValueError("Contagem não pode ser negativa")
             if count != old_page_count: # Verifica se realmente mudou
-                user.page_count = count
+                # O reporte é feito DEPOIS do commit do DB
                 new_page_count = count
                 page_count_changed = True
+                user.page_count = count # Atualiza o objeto user ANTES do commit
         except (ValueError, TypeError):
             return jsonify({"msg": "Contagem de páginas deve ser um número inteiro não negativo."}), 400
 
@@ -558,6 +572,8 @@ def create_checkout_session():
 
         line_items = [{'price': price_id, 'quantity': 1}]
         if extra_price_id:
+            # Importante: O 'extra_price_id' DEVE ser um preço
+            # configurado no Stripe para usar o "Medidor" 'pagina_extra'
             line_items.append({'price': extra_price_id})
             print(f"Adicionando preço extra {extra_price_id} para {plan_name}.")
         else:
@@ -658,15 +674,36 @@ def update_user_plan_from_subscription(user, subscription):
     price_id = None
     if subscription.get('items') and subscription['items'].get('data'):
          for item in subscription['items']['data']:
+             # Encontra o preço que NÃO é medido (o plano base)
              if item.get('price') and item.get('price').get('recurring', {}).get('usage_type') != 'metered':
                  price_id = item['price']['id']; break
-         if not price_id and subscription['items']['data']: price_id = subscription['items']['data'][0]['price']['id']
+         # Se não achar, pega o primeiro (fallback)
+         if not price_id and subscription['items']['data']:
+             price_id = subscription['items']['data'][0]['price']['id']
+
     plan_name = PRICE_ID_TO_PLAN_NAME.get(price_id, 'unknown_plan')
+
+    # Lógica para o caso de o preço de uso medido ser o único item
+    if plan_name == 'unknown_plan' and price_id:
+        print(f"Webhook Aux: Plano base não encontrado, verificando preço medido {price_id}...")
+        # Tenta mapear o plano pelo ID de preço EXTRA
+        for plan, extra_id in PLAN_NAME_TO_EXTRA_PRICE_ID.items():
+            if extra_id == price_id:
+                plan_name = plan
+                print(f"Webhook Aux: Plano '{plan_name}' inferido pelo preço extra.")
+                break
+
     new_plan_status = user.plan_status
-    if status in ['active', 'trialing']: new_plan_status = plan_name
-    elif status in ['past_due', 'unpaid', 'incomplete']: new_plan_status = 'past_due'
-    elif status in ['canceled', 'incomplete_expired']: new_plan_status = 'free'
-    else: print(f"Webhook Aux: Status não mapeado '{status}' para {user.email}"); return
+    if status in ['active', 'trialing']:
+        new_plan_status = plan_name
+    elif status in ['past_due', 'unpaid', 'incomplete']:
+        new_plan_status = 'past_due'
+    elif status in ['canceled', 'incomplete_expired']:
+        new_plan_status = 'free'
+    else:
+        print(f"Webhook Aux: Status não mapeado '{status}' para {user.email}");
+        return
+
     if new_plan_status != user.plan_status:
         print(f"Webhook Aux: Atualizando plano {user.email}: '{user.plan_status}' -> '{new_plan_status}' (Stripe: {status})")
         user.plan_status = new_plan_status
