@@ -28,6 +28,8 @@ yarn-error.log*
 # Pasta do ambiente virtual
 venv/
 env/
+venv_quebrada/
+.venv_quebrada/
 .venv/
 .env/
 

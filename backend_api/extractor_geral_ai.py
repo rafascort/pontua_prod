@@ -237,6 +237,37 @@ def extract_periods_task(pdf_path, pages, user_id):
         job.meta.update({'status': 'error', 'error': str(e)}); job.save()
         return None
 
+def normalize_time_format(value):
+    """
+    🔧 Normaliza horários para o formato HH:MM padrão.
+    Corrige separadores incorretos vindos do Document AI (-, ., espaços).
+    """
+    if pd.isna(value) or value == "0" or value == 0 or value == "":
+        return "0"
+    
+    value_str = str(value).strip()
+    
+    if value_str == "0" or value_str == "":
+        return "0"
+    
+    # Procura padrão: HH[separador]MM onde separador pode ser :, -, ., espaço, etc.
+    # Exemplos: 12:00, 12-00, 12.00, 12 00
+    match = re.search(r'(\d{1,2})[^\d](\d{2})', value_str)
+    if match:
+        hour = match.group(1).zfill(2)  # Garante 2 dígitos
+        minute = match.group(2)
+        return f"{hour}:{minute}"
+    
+    # Tenta 4 dígitos sem separador: 1200 → 12:00
+    if len(value_str) == 4 and value_str.isdigit():
+        return f"{value_str[:2]}:{value_str[2:]}"
+    
+    # Tenta 3 dígitos: 600 → 06:00
+    if len(value_str) == 3 and value_str.isdigit():
+        return f"0{value_str[0]}:{value_str[1:]}"
+    
+    return "0"
+
 def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
     job = get_current_job()
     if not job: return None
@@ -273,30 +304,24 @@ def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
                 
             start_date, end_date = page_info['start_date_obj'], page_info['end_date_obj']
             
-            # ✨ LÓGICA CORRIGIDA: Cria o calendário com base nas datas do usuário ✨
             full_date_range = pd.date_range(start=start_date, end=end_date, freq='D')
             calendar_df = pd.DataFrame(full_date_range, columns=['Dia_dt'])
             calendar_df['original_page'] = page_num + 1
             
             print(f"[LOG][Job {job.id}] Pág {page_num + 1}: Calendário criado com {len(calendar_df)} dias.")
 
-            # Se não houver dados da IA para a página, o calendário já serve como base
             if page_order not in pages_data or not pages_data.get(page_order, {}).get('entities'):
                 print(f"[LOG][Job {job.id}] Aviso: Nenhum dado da IA para pág {page_num + 1}. Página ficará zerada.")
                 all_page_dataframes.append(calendar_df)
                 continue
             
-            # Extrai as marcações em ordem
             ai_rows = extractor.format_ai_rows_by_order(pages_data[page_order]['entities'])
             ai_data_df = pd.DataFrame(ai_rows)
             print(f"[LOG][Job {job.id}] Pág {page_num + 1}: IA extraiu {len(ai_data_df)} linhas de marcações.")
 
-            # ✨ LÓGICA CORRIGIDA: Combina o calendário com os dados da IA sequencialmente ✨
-            # Garante que os índices estejam alinhados para uma concatenação segura
             calendar_df.reset_index(drop=True, inplace=True)
             ai_data_df.reset_index(drop=True, inplace=True)
             
-            # Concatena lado a lado. O número de linhas será o do maior DataFrame.
             period_df = pd.concat([calendar_df, ai_data_df], axis=1)
             all_page_dataframes.append(period_df)
 
@@ -307,7 +332,6 @@ def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
         
         full_final_df = pd.concat(all_page_dataframes, ignore_index=True)
         
-        # Previne erro se o dataframe estiver totalmente vazio
         if 'Dia_dt' not in full_final_df.columns or full_final_df['Dia_dt'].isnull().all():
             raise ValueError("Não foi possível determinar um intervalo de datas válido a partir dos dados processados.")
 
@@ -331,6 +355,21 @@ def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
                 final_df[col] = "0"
         
         final_df = final_df[colunas_finais].fillna("0")
+        
+        # 🔧 VALIDAÇÃO E CORREÇÃO FINAL: Normaliza todos os horários antes de salvar
+        print(f"[LOG][Job {job.id}] 🔍 Iniciando validação e correção de formato de horários...")
+        
+        time_columns = ['Entrada1', 'Saida1', 'Entrada2', 'Saida2', 'Entrada3', 'Saida3']
+        
+        for col in time_columns:
+            if col in final_df.columns:
+                final_df[col] = final_df[col].apply(normalize_time_format)
+        
+        # Log de amostra para verificação
+        print(f"[LOG][Job {job.id}] 📊 Amostra de valores após correção:")
+        for col in time_columns:
+            unique_vals = final_df[col].unique()[:5]
+            print(f"[LOG][Job {job.id}]   {col}: {list(unique_vals)}")
         
         print(f"[LOG][Job {job.id}] DataFrame final criado com {len(final_df)} linhas. Gerando CSV.")
         

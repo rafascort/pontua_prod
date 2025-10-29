@@ -8,7 +8,6 @@ import threading
 import time
 import traceback
 import stripe
-import requests
 
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
@@ -28,7 +27,6 @@ redis_conn = redis.Redis(host='localhost', port=6379, db=0)
 
 # --- Configuração Stripe ---
 stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
-STRIPE_API_KEY = os.getenv('STRIPE_SECRET_KEY')
 
 # --- LIMITES DOS PLANOS ---
 try:
@@ -69,11 +67,11 @@ EXTRACTOR_MODULES = {
 }
 
 
-# --- FUNÇÃO PARA REPORTAR USO (USANDO API REST DIRETA) ---
+# --- FUNÇÃO PARA REPORTAR USO (USANDO BILLING METERS) ---
 def report_usage_to_stripe(user, pages_processed_this_job, new_total_page_count):
     """ 
-    Reporta o uso de páginas para o Stripe se o limite do plano for excedido.
-    NOTA: Stripe 13.0.0+ removeu UsageRecord.create(). Usando API REST direta.
+    Reporta o uso de páginas para o Stripe usando Billing Meters (Stripe 13.x).
+    NOTA: Requer que o preço no Stripe esteja configurado com um Meter chamado 'pagina_extra'.
     """
     print(f"[DIAGNOSTICO] Iniciando 'report_usage_to_stripe' para {user.email if user else 'N/A'}...")
 
@@ -100,59 +98,36 @@ def report_usage_to_stripe(user, pages_processed_this_job, new_total_page_count)
         
     print(f"[DIAGNOSTICO] Usuário {user.email} (Stripe ID: {user.stripe_customer_id}) é elegível para reporte.")
 
-
     previous_page_count = new_total_page_count - pages_processed_this_job
     pages_to_report = max(0, new_total_page_count - max(previous_page_count, plan_limit))
     
     print(f"[DIAGNOSTICO] Cálculo: Total={new_total_page_count}, Anterior={previous_page_count}, Limite={plan_limit}, A_Reportar={pages_to_report}")
 
-
     if pages_to_report > 0:
-        print(f"REPORTANDO USO: User {user.email} usou +{pages_to_report} pgs extras.")
+        print(f"REPORTANDO USO (Billing Meter): User {user.email} usou +{pages_to_report} pgs extras.")
         try:
-            subscriptions = stripe.Subscription.list(customer=user.stripe_customer_id, status='active', limit=1)
-            if not subscriptions.data:
-                print(f"ERRO: Nenhuma assinatura ATIVA encontrada para {user.stripe_customer_id} para reportar uso.")
-                return
-
-            subscription = subscriptions.data[0]
-            subscription_item_id = None
-            for item in subscription['items']['data']:
-                if item.get('price') and item.get('price').get('id') == extra_price_id:
-                    subscription_item_id = item.id
-                    break
-
-            if not subscription_item_id:
-                  print(f"ERRO: Item de assinatura para preço extra '{extra_price_id}' não encontrado na assinatura {subscription.id} do cliente {user.stripe_customer_id}.")
-                  return
-
-            # --- USANDO API REST DIRETA (Stripe 13.x removeu UsageRecord.create) ---
-            # Chamada direta para a API REST do Stripe
-            url = f"https://api.stripe.com/v1/subscription_items/{subscription_item_id}/usage_records"
-            headers = {
-                "Authorization": f"Bearer {STRIPE_API_KEY}",
-                "Content-Type": "application/x-www-form-urlencoded"
-            }
-            data = {
-                "quantity": pages_to_report,
-                "timestamp": int(time.time()),
-                "action": "increment"
-            }
+            # Nome do evento do meter - deve corresponder EXATAMENTE ao configurado no Stripe
+            event_name = "pagina_extra"
             
-            response = requests.post(url, headers=headers, data=data)
+            # Usa o novo Billing Meters API
+            meter_event = stripe.billing.MeterEvent.create(
+                event_name=event_name,
+                payload={
+                    "value": str(pages_to_report),  # Valor deve ser string
+                    "stripe_customer_id": user.stripe_customer_id
+                }
+            )
             
-            if response.status_code == 200:
-                usage_record = response.json()
-                print(f"SUCESSO: Reportado {pages_to_report} pgs extras para {user.email} (item: {subscription_item_id}, usage_record: {usage_record.get('id')}).")
-            else:
-                print(f"ERRO STRIPE ao reportar uso para {user.email}: {response.status_code} - {response.text}")
-            # --- FIM DA CORREÇÃO ---
+            print(f"SUCESSO: Reportado {pages_to_report} pgs extras para {user.email} via Meter '{event_name}' (Customer: {user.stripe_customer_id}, Event ID: {meter_event.identifier}).")
 
         except stripe.StripeError as e:
-            print(f"ERRO STRIPE ao reportar uso para {user.email}: {getattr(e, 'user_message', str(e))}")
-        except Exception as e:
-            print(f"ERRO INESPERADO ao reportar uso para {user.email}: {e}")
+            print(f"ERRO STRIPE ao reportar uso (Meter) para {user.email}: {getattr(e, 'user_message', str(e))}")
             traceback.print_exc()
+        except Exception as e:
+            print(f"ERRO INESPERADO ao reportar uso (Meter) para {user.email}: {e}")
+            traceback.print_exc()
+    else:
+        print(f"[DIAGNOSTICO] Nenhuma página extra para reportar (páginas_a_reportar={pages_to_report}).")
 # --- FIM FUNÇÃO ---
 
 
