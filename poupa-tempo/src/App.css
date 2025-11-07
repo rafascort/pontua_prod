@@ -3,41 +3,42 @@
 /* --- Estilos Globais e do Container Principal --- */
 .sistema-ponto-container {
     font-family: 'Roboto', sans-serif;
-    color: #cacaca;
+    color: #cacaca; /* Cor de texto clara padrão */
     background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-    height: 100vh; /* ALTERADO: De min-height para height, trava a altura na tela */
+    height: 100vh; /* Trava a altura na tela inteira */
     display: flex;
     flex-direction: column;
-    overflow: hidden; /* ALTERADO: Impede a barra de rolagem na página inteira */
+    overflow: hidden; /* Impede a barra de rolagem na página inteira */
 }
 
 /* --- Barra Superior (Cabeçalho) --- */
-/* ATUALIZADO: .top-bar foi substituído pelo seu novo código */
 .top-bar {
     display: flex;
     align-items: center;
-    justify-content: space-between; /* Garante espaço entre logo/home e user-menu */
+    justify-content: space-between; /* Espaço entre logo/home e user-menu */
     padding: 10px 20px;
     background-color: #1a1a2e; /* Cor escura do cabeçalho */
     color: #e0e6ed;
-    border-bottom: 1px solid #2a2a4a;
-    position: relative; /* Mantido do original para o .title funcionar */
-    height: 60px; /* Mantido do original */
-    flex-shrink: 0; /* Mantido do original */
+    border-bottom: 1px solid #2a2a4a; /* Borda sutil */
+    position: relative; /* Para o .title funcionar */
+    height: 60px;
+    flex-shrink: 0; /* Impede que o header encolha */
 }
 
 .title {
     font-size: 1.9rem;
     font-weight: 500;
+    color: #e0e6ed; /* Garante a cor do título */
     position: absolute;
     left: 50%;
-    top: 50%; /* 50% de 60px de altura */
+    top: 50%;
     transform: translate(-50%, -50%);
-    pointer-events: none;
+    pointer-events: none; /* Não interfere com cliques nos botões */
+    white-space: nowrap; /* Impede quebra de linha do título */
 }
 
-/* ATUALIZADO: .icon-button foi substituído pelo seu novo código */
-.icon-button { /* Estilo para botões só com ícone */
+/* Estilo para botões só com ícone (como o Home) */
+.icon-button {
      background: none;
      border: none;
      color: #e0e6ed;
@@ -47,13 +48,14 @@
      display: flex;
      align-items: center;
      justify-content: center;
-     z-index: 1; /* Mantido do original para ficar sobre o .title */
+     z-index: 1; /* Para ficar sobre o .title */
+     transition: color 0.2s ease; /* Adiciona transição suave */
 }
 .icon-button:hover {
-    color: #fff;
+    color: #ffffff; /* Cor mais clara no hover */
 }
 
-/* NOVO: Estilos dos botões de texto no cabeçalho */
+/* Estilos dos botões de texto no cabeçalho (Perfil, Admin, Sair, etc.) */
 .header-button {
     background-color: transparent;
     border: 1px solid #4a4a6a; /* Borda sutil */
@@ -65,17 +67,22 @@
     display: inline-flex; /* Para alinhar ícone e texto */
     align-items: center;
     gap: 8px; /* Espaço entre ícone e texto */
-    transition: background-color 0.2s ease, border-color 0.2s ease;
+    transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease; /* Adiciona transição de cor */
+    white-space: nowrap; /* Impede quebra de linha nos botões */
 }
 
 .header-button:hover {
     background-color: #2a2a4a; /* Fundo levemente mais escuro no hover */
     border-color: #6a6a8a;
+    color: #ffffff; /* Texto branco no hover */
 }
 
 .header-button:disabled {
     opacity: 0.6;
     cursor: not-allowed;
+    background-color: transparent; /* Garante fundo transparente quando desabilitado */
+    border-color: #4a4a6a; /* Mantém a borda sutil */
+    color: #888; /* Cor mais apagada */
 }
 
 .logout-button {
@@ -85,10 +92,11 @@
 
 .logout-button:hover {
     background-color: rgba(255, 107, 107, 0.1); /* Fundo vermelho claro no hover */
-    color: #ff8b8b;
+    border-color: #ff8b8b; /* Borda vermelha mais clara */
+    color: #ff8b8b; /* Texto vermelho mais claro */
 }
 
-/* NOVO: Container para os botões da direita */
+/* Container para os botões da direita */
 .user-menu {
     margin-left: auto; /* Empurra o menu para a direita */
     display: flex;
@@ -97,44 +105,66 @@
     z-index: 1; /* Garante que fique acima do .title */
 }
 
-.material-symbols-outlined { font-size: 24px; }
+/* Ajuste padrão para ícones do Material Symbols */
+.material-symbols-outlined {
+    font-size: 24px;
+    vertical-align: middle; /* Ajuda no alinhamento vertical */
+}
 
 /* --- Conteúdo Principal --- */
 .main-content {
-    flex-grow: 1;
+    flex-grow: 1; /* Ocupa o espaço restante */
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
+    justify-content: center; /* Centraliza conteúdo da home */
     padding: 20px;
     width: 100%;
-    overflow: hidden; /* Impede overflow no padding */
+    overflow: hidden; /* Impede overflow interno, mas permite scroll em .model-carousel-container */
 }
 
 /* --- Estilos da Tela HOME --- */
 .button-container {
-    display: flex; flex-direction: column; gap: 20px; width: 100%; max-width: 400px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    width: 100%;
+    max-width: 400px;
 }
 .action-button {
-    background-color: rgba(40, 50, 70, 0.5); border: 1px solid rgba(255, 255, 255, 0.2);
-    color: #E0E0E0; padding: 18px; font-size: 1rem; font-weight: 500; border-radius: 12px;
-    cursor: pointer; transition: background-color 0.3s ease, border-color 0.3s ease;
+    background-color: rgba(40, 50, 70, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: #E0E0E0;
+    padding: 18px;
+    font-size: 1rem;
+    font-weight: 500;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: background-color 0.3s ease, border-color 0.3s ease;
+    text-align: center;
 }
-.action-button:hover:not(:disabled) { background-color: rgba(55, 68, 92, 0.7); border-color: rgba(255, 255, 255, 0.4); }
-.action-button:disabled { opacity: 0.5; cursor: not-allowed; }
+.action-button:hover:not(:disabled) {
+    background-color: rgba(55, 68, 92, 0.7);
+    border-color: rgba(255, 255, 255, 0.4);
+}
+.action-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
 
 /* --- Estilos da Tela EXTRATOR (Passos) --- */
 .extractor-container {
-    background: rgba(15, 23, 42, 0.5);
+    background: rgba(15, 23, 42, 0.5); /* Fundo semi-transparente */
     padding: 30px;
     border-radius: 20px;
-    width: 95vw;
-    max-width: 1600px;
+    width: 95vw; /* Usa quase toda a largura da viewport */
+    max-width: 1600px; /* Limita a largura máxima */
     border: 1px solid rgba(255, 255, 255, 0.1);
     display: flex;
     flex-direction: column;
-    height: 100%; /* ALTERADO: Ocupa a altura máxima do main-content */
-    max-height: 88vh; /* Garante que não ultrapasse a tela */
+    height: calc(100% - 40px); /* Usa altura disponível menos o padding do main-content */
+    max-height: calc(100vh - 60px - 40px - 20px); /* Altura da tela - header - padding-top - margem inferior */
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37); /* Sombra para profundidade */
 }
 
 .extractor-header {
@@ -144,37 +174,57 @@
 }
 
 .extractor-container h2 {
-    color: #fff;
+    color: #ffffff; /* Branco para contraste */
     font-size: 1.6rem;
     padding-bottom: 8px;
     font-weight: 500;
 }
 
 .search-bar {
-    padding: 12px; background: rgba(0, 0, 0, 0.6); border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 8px; font-size: 1rem; color: #ffffff; text-align: center; width: 100%;
-    max-width: 400px; margin: 10px auto 0;
+    padding: 12px 15px; /* Ajuste padding */
+    background: rgba(0, 0, 0, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    font-size: 1rem;
+    color: #ffffff;
+    text-align: center;
+    width: 100%;
+    max-width: 400px;
+    margin: 10px auto 0; /* Centraliza */
+    transition: border-color 0.3s ease; /* Transição suave */
 }
-.search-bar:focus { outline: none; border-color: #4a9eff; }
+.search-bar::placeholder {
+    color: #a0a0a0;
+}
+.search-bar:focus {
+    outline: none;
+    border-color: #4a9eff; /* Destaque azul ao focar */
+}
 
+/* Container do Carrossel/Grid de Modelos */
 .model-carousel-container {
-    flex-grow: 1;
-    display: flex;
-    justify-content: center;
-    align-items: center;
+    flex-grow: 1; /* Ocupa o espaço vertical disponível */
+    display: flex; /* Mantém flex */
+    justify-content: center; /* Centraliza o .model-carousel horizontalmente */
+    align-items: flex-start; /* Alinha o início do .model-carousel ao topo */
     width: 100%;
-    overflow-y: auto; /* ALTERADO: Apenas esta área terá scroll vertical */
-    padding-right: 10px; /* Espaço para a barra de scroll */
+    overflow-y: auto; /* Permite scroll VERTICAL apenas se necessário */
+    overflow-x: hidden; /* IMPEDE scroll horizontal */
+    padding: 10px 5px; /* Adiciona um pequeno padding interno */
 }
 
+/* Carrossel/Grid de Modelos */
 .model-carousel {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); /* AJUSTADO */
-    gap: 30px; /* AJUSTADO */
-    width: 100%;
-    padding: 20px 0;
+    display: flex; /* Usa Flexbox */
+    flex-wrap: wrap; /* Permite que os cards quebrem linha */
+    justify-content: center; /* Centraliza os cards na linha */
+    align-content: flex-start; /* Alinha as linhas ao topo */
+    gap: 25px; /* Espaçamento entre os cards */
+    width: 100%; /* Ocupa a largura do container */
+    padding: 15px 0; /* Padding vertical */
 }
 
+/* Card Individual do Modelo */
 .model-card {
     background: rgba(0, 0, 0, 0.4);
     border: 2px solid rgba(255, 255, 255, 0.1);
@@ -182,106 +232,239 @@
     cursor: pointer;
     overflow: hidden;
     transition: all 0.3s ease;
-    display: flex;
-    flex-direction: column;
+    display: flex; /* Garante alinhamento interno */
+    flex-direction: column; /* Itens (imagem, texto) empilhados */
     box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+    /* Define um tamanho base flexível e um máximo */
+    flex-basis: 260px; /* Tamanho base menor */
+    max-width: 300px; /* Limite máximo menor */
+    flex-grow: 1; /* Permite crescer um pouco se houver espaço */
+    min-height: 230px; /* Altura mínima para consistência */
 }
 
 .model-card:hover {
-    transform: scale(1.05);
+    transform: translateY(-5px) scale(1.03); /* Efeito de elevação sutil */
     border-color: #4a9eff;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
 }
 
 .model-card.selected {
-    border-color: #00bcd4;
-    box-shadow: 0 0 25px rgba(0, 188, 212, 0.7), 0 0 0 3px #00bcd4;
+    border-color: #00bcd4; /* Ciano para selecionado */
+    box-shadow: 0 0 15px rgba(0, 188, 212, 0.5), 0 0 0 3px rgba(0, 188, 212, 0.7); /* Efeito de brilho */
+    transform: scale(1.05); /* Mantém um leve destaque */
 }
 
 .model-card img {
     width: 100%;
-    height: 160px; /* AJUSTADO: Imagem um pouco menor */
-    object-fit: cover;
-    object-position: top;
+    height: 150px; /* Altura da imagem */
+    object-fit: cover; /* Cobre a área sem distorcer */
+    object-position: center top; /* Foca no topo da imagem */
+    display: block; /* Remove espaço extra abaixo da imagem */
+    flex-shrink: 0; /* Impede que a imagem encolha */
 }
 
 .model-card p {
-    font-size: 1.1rem; /* AJUSTADO: Fonte um pouco menor */
+    font-size: 1rem; /* Tamanho do texto */
     font-weight: 500;
     color: #e0e6ed;
-    padding: 15px 10px;
+    padding: 12px 10px; /* Padding interno do texto */
     background-color: rgba(0, 0, 0, 0.2);
-    margin-top: auto;
+    margin-top: auto; /* Empurra o texto para baixo */
     text-align: center;
     width: 100%;
 }
 
+/* Ações do Extrator (Botões e Input de Páginas) */
 .extractor-actions {
-    display: flex; flex-direction: column; align-items: center; gap: 15px;
-    padding-top: 20px; border-top: 1px solid rgba(255, 255, 255, 0.1);
-    flex-shrink: 0; /* Impede que a área de botões encolha */
-}
-
-.extractor-button, .start-button, .advance-button {
-    background: rgba(74, 158, 255, 0.2); border: 1px solid #4a9eff;
-    color: #e0e6ed; padding: 12px; border-radius: 8px; cursor: pointer;
-    font-size: 1rem; transition: all 0.3s ease; width: 100%; max-width: 400px;
-}
-.extractor-button:hover, .advance-button:hover:not(:disabled) { background: rgba(74, 158, 255, 0.4); }
-.start-button { background: linear-gradient(135deg, #4a9eff 0%, #0066cc 100%); color: white; font-weight: bold; }
-.start-button:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 4px 15px rgba(74, 158, 255, 0.3); }
-.start-button:disabled, .advance-button:disabled { opacity: 0.5; cursor: not-allowed; background: #555; border-color: #777; }
-.page-input {
-    padding: 12px; background: rgba(0, 0, 0, 0.6); border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 8px; font-size: 1rem; color: #ffffff; text-align: center; width: 100%;
-    max-width: 400px;
-}
-.page-input:focus { outline: none; border-color: #4a9eff; }
-.status-message { text-align: center; color: #a8b3c7; min-height: 20px; margin-top: 15px; }
-
-.zoom-overlay {
-    position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.8);
-    backdrop-filter: blur(8px); display: flex; justify-content: center; align-items: center;
-    z-index: 1000; cursor: pointer; padding: 20px;
-}
-
-.zoomed-card {
-    cursor: default; background: #1e2a47; border-radius: 10px; overflow: hidden;
-    width: auto; max-width: 90vw; max-height: 90vh; display: flex;
-    flex-direction: column; box-shadow: 0 10px 40px rgba(0,0,0,0.5);
-}
-
-.zoomed-card img {
-    width: 100%; height: auto; max-height: 80vh; object-fit: contain; display: block;
-}
-
-.zoomed-card p {
-    font-size: 1.5rem; padding: 20px; text-align: center; background-color: rgba(0, 0, 0, 0.3);
-}
-
-.settings-container {
-    flex-grow: 1;
-    width: 100%;
     display: flex;
-    justify-content: center;
+    flex-direction: column; /* Empilha os itens */
+    align-items: center; /* Centraliza horizontalmente */
+    gap: 15px; /* Espaçamento entre os itens */
+    padding-top: 20px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    flex-shrink: 0; /* Impede que esta área encolha */
+    width: 100%; /* Garante largura total */
+    max-width: 450px; /* Limita largura dos botões/input */
+    margin: 0 auto; /* Centraliza a área de ações */
+}
+
+/* Estilo Base para Botões de Ação */
+.extractor-button, .start-button {
+    background: rgba(74, 158, 255, 0.2);
+    border: 1px solid #4a9eff;
+    color: #e0e6ed;
+    padding: 12px 20px; /* Ajuste padding */
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 1rem;
+    transition: all 0.3s ease;
+    width: 100%; /* Ocupa largura máxima definida em .extractor-actions */
+    display: flex; /* Para alinhar ícone */
     align-items: center;
-    padding: 20px;
+    justify-content: center;
+    gap: 8px; /* Espaço ícone-texto */
+}
+.extractor-button:hover:not(:disabled) {
+    background: rgba(74, 158, 255, 0.4);
 }
 
-.settings-placeholder {
-    color: #a8b3c7;
-    font-size: 1.2rem;
+/* Botão Iniciar (Destaque) */
+.start-button {
+    background: linear-gradient(135deg, #4a9eff 0%, #0066cc 100%);
+    color: white;
+    font-weight: bold;
+    border: none; /* Remove borda para gradiente */
+}
+.start-button:hover:not(:disabled) {
+    background: linear-gradient(135deg, #66b3ff 0%, #0052a3 100%);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 15px rgba(74, 158, 255, 0.3);
+}
+
+/* Estado Desabilitado para Botões */
+.extractor-button:disabled, .start-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    background: #555; /* Fundo cinza escuro */
+    border-color: #777;
+    box-shadow: none;
+    transform: none;
+}
+
+/* Input de Páginas */
+.page-input {
+    padding: 12px 15px;
+    background: rgba(0, 0, 0, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    font-size: 1rem;
+    color: #ffffff;
     text-align: center;
+    width: 100%; /* Ocupa largura máxima definida em .extractor-actions */
+    transition: border-color 0.3s ease;
+}
+.page-input::placeholder {
+    color: #a0a0a0;
+}
+.page-input:focus {
+    outline: none;
+    border-color: #4a9eff;
+}
+.page-input:disabled { /* Estilo quando desabilitado */
+    opacity: 0.6;
+    background-color: rgba(0, 0, 0, 0.4);
+    cursor: not-allowed;
 }
 
-/* NOVO: Estilo para tela de loading */
+/* Mensagem de Status (não usada ativamente no código atual) */
+.status-message {
+    text-align: center;
+    color: #a8b3c7;
+    min-height: 20px;
+    margin-top: 15px;
+}
+
+/* --- Estilos para Zoom (não implementado no JS fornecido) --- */
+.zoom-overlay, .zoomed-card, .zoomed-card img, .zoomed-card p {
+    /* Mantenha seus estilos originais se for usar */
+}
+
+/* --- Placeholder de Configurações (não implementado no JS fornecido) --- */
+.settings-container, .settings-placeholder {
+    /* Mantenha seus estilos originais se for usar */
+}
+
+/* --- Estilo para Tela de Loading (usado no App.js) --- */
 .loading-fullscreen {
     display: flex;
     justify-content: center;
     align-items: center;
     height: 100vh;
     width: 100vw;
+    position: fixed; /* Garante que cubra tudo */
+    top: 0;
+    left: 0;
     background-color: #1a1a2e; /* Fundo escuro */
     color: #e0e6ed;
     font-size: 1.5rem;
     font-family: 'Roboto', sans-serif;
+    z-index: 2000; /* Acima de tudo */
+}
+
+/* --- Media Queries para Responsividade --- */
+@media (max-width: 768px) {
+    .title {
+        font-size: 1.5rem; /* Reduz título em telas menores */
+    }
+    .header-button {
+        padding: 6px 10px; /* Menos padding nos botões */
+        font-size: 0.8em;
+    }
+    .header-button .fa-icon { /* Se usar FontAwesomeIcon */
+        margin-right: 5px; /* Reduz espaço do ícone */
+    }
+    .extractor-container {
+        padding: 20px;
+        width: 90vw; /* Ajusta largura */
+        max-height: calc(100vh - 60px - 40px - 10px); /* Ajusta altura máxima */
+    }
+    .model-carousel {
+        gap: 15px; /* Menos espaço entre cards */
+    }
+    .model-card {
+        flex-basis: calc(50% - 15px); /* Tenta 2 colunas */
+        max-width: calc(50% - 15px);
+        min-height: 200px;
+    }
+    .model-card img {
+        height: 120px; /* Imagem menor */
+    }
+    .model-card p {
+        font-size: 0.9rem;
+        padding: 10px;
+    }
+    .extractor-actions {
+        max-width: 90%; /* Aumenta largura dos botões */
+    }
+}
+
+@media (max-width: 480px) {
+    .top-bar {
+        padding: 10px 15px; /* Menos padding lateral */
+    }
+    .title {
+        display: none; /* Esconde título em telas muito pequenas */
+    }
+    .user-menu {
+        gap: 5px; /* Menos espaço entre botões */
+    }
+    .header-button {
+        padding: 5px 8px;
+        font-size: 0.75em;
+    }
+    .header-button .fa-icon {
+        display: none; /* Esconde ícones nos botões em telas muito pequenas */
+    }
+     /* Opcional: Mostrar apenas ícones no mobile */
+    /* .header-button span { display: none; }
+    .header-button .fa-icon { margin-right: 0; }
+    .header-button { padding: 8px; } */
+
+    .extractor-container h2 {
+        font-size: 1.3rem;
+    }
+    .search-bar {
+        max-width: 100%;
+    }
+    .model-card {
+        flex-basis: calc(100% - 15px); /* Uma coluna */
+        max-width: calc(100% - 15px);
+    }
+    .extractor-actions {
+        max-width: 100%;
+    }
+    .extractor-button, .start-button, .page-input {
+        font-size: 0.9rem;
+        padding: 10px 15px;
+    }
 }

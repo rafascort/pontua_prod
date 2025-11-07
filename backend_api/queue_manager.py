@@ -56,6 +56,7 @@ QUEUES = {
     '1': Queue('jbs_queue', connection=redis_conn),
     '6': Queue('geral_ai_queue', connection=redis_conn),
     '7': Queue('geral_queue', connection=redis_conn),
+    '8': Queue('teste_api_queue', connection=redis_conn), # <-- 1. ADICIONADO
     'period_extraction': Queue('period_extraction_queue', connection=redis_conn),
 }
 
@@ -63,6 +64,7 @@ EXTRACTOR_MODULES = {
     '1': 'extractor_jbs',
     '6': 'extractor_geral_ai',
     '7': 'extractor_geral',
+    '8': 'testes', # <-- 2. ADICIONADO (aponta para testes.py)
     'period_extraction': 'extractor_geral_ai',
 }
 
@@ -177,7 +179,7 @@ def process_pdf():
 
         if not pages_with_periods or not pdf_path: return jsonify({'error': 'Dados incompletos.'}), 400
         if not os.path.exists(pdf_path): return jsonify({'error': f'PDF não encontrado: {pdf_path}. Inicie novamente.'}), 404
-        if model_type not in ['1', '6']: return jsonify({'error': f'Modelo inválido ({model_type}).'}), 400
+        if model_type not in ['1', '6', '8']: return jsonify({'error': f'Modelo inválido ({model_type}).'}), 400 # <-- 3. ADICIONADO '8'
         if model_type not in QUEUES or model_type not in EXTRACTOR_MODULES: return jsonify({'error': 'Modelo não configurado.'}), 400
 
         num_pages_to_process = len(pages_with_periods)

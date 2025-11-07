@@ -19,6 +19,7 @@ const Planos = ({ onLogout }) => {
             price: 'R$ 249,90',
             priceDetails: '/ mês',
             pages: '200 páginas',
+            pagePrice: 'R$ 1,25 por página', // ADICIONADO
             extra: 'R$ 1,50',
             stripePriceId: 'price_1SKgd6FKA6J77HjZDbRcv9EC' // <<< SEU ID DE PREÇO BÁSICO FIXO (TESTE)
         },
@@ -28,6 +29,7 @@ const Planos = ({ onLogout }) => {
             price: 'R$ 449,90',
             priceDetails: '/ mês',
             pages: '500 páginas',
+            pagePrice: 'R$ 0,90 por página', // ADICIONADO
             extra: 'R$ 1,10',
             stripePriceId: 'price_1SKhg6FKA6J77HjZV3x3YWzI' // <<< SEU ID DE PREÇO PADRÃO FIXO (TESTE)
         },
@@ -37,6 +39,7 @@ const Planos = ({ onLogout }) => {
             price: 'R$ 999,90',
             priceDetails: '/ mês',
             pages: '1.500 páginas',
+            pagePrice: 'R$ 0,67 por página', // ADICIONADO
             extra: 'R$ 0,75',
             stripePriceId: 'price_1SKhjBFKA6J77HjZkvvuWOB0' // <<< SEU ID DE PREÇO PREMIUM FIXO (TESTE)
         },
@@ -118,6 +121,7 @@ const Planos = ({ onLogout }) => {
                             </div>
                             <ul className="plano-card-features">
                                 <li>{plano.pages} incluídas</li>
+                                <li>{plano.pagePrice} (plano)</li> {/* MODIFICADO */}
                                 <li><span className="plano-extra-highlight">{plano.extra}</span> por página extra</li>
                             </ul>
                             <button

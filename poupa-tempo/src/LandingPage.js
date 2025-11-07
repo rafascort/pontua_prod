@@ -1,3 +1,4 @@
+// /opt/pontua/AutoPonto/poupa-tempo/src/LandingPage.js
 import React from 'react';
 import { Link } from 'react-router-dom'; // Importa o Link para navegação
 import './LandingPage.css'; // Importa os estilos que acabamos de criar
@@ -108,7 +109,7 @@ const LandingPage = () => {
                     <span className="price">R$ 249,90</span>
                     <span className="details"> / mês</span>
                   </td>
-                  <td data-label="Páginas incluídas">200 páginas</td>
+                  <td data-label="Páginas incluídas">200 páginas (R$ 1,25 por página)</td>
                   <td data-label="Página extra">
                     <span className="highlight">R$ 1,50</span> por página extra
                   </td>
@@ -119,7 +120,7 @@ const LandingPage = () => {
                     <span className="price">R$ 449,90</span>
                     <span className="details"> / mês</span>
                   </td>
-                  <td data-label="Páginas incluídas">500 páginas</td>
+                  <td data-label="Páginas incluídas">500 páginas (R$ 0,90 por página)</td>
                   <td data-label="Página extra">
                     <span className="highlight">R$ 1,10</span> por página extra
                   </td>
@@ -130,7 +131,7 @@ const LandingPage = () => {
                     <span className="price">R$ 999,90</span>
                     <span className="details"> / mês</span>
                   </td>
-                  <td data-label="Páginas incluídas">1.500 páginas</td>
+                  <td data-label="Páginas incluídas">1.500 páginas (R$ 0,67 por página)</td>
                   <td data-label="Página extra">
                     <span className="highlight">R$ 0,75</span> por página extra
                   </td>

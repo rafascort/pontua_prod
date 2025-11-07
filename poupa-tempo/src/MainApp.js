@@ -22,12 +22,10 @@ const API_BASE_URL = '/api';
 
 // --- Modelos Disponíveis ---
 const MODEL_IMAGE_PATHS = {
-    '1': process.env.PUBLIC_URL + '/Modelo1.png',
     '6': process.env.PUBLIC_URL + '/Modelo_IA_Geral.png',
     '7': process.env.PUBLIC_URL + '/Modelo_IA_Geral.png',
 };
 const modelNames = {
-    '1': 'JBS Ponto',
     '6': 'IA Geral (Sem Data)',
     '7': 'IA Geral (Com Data)',
 };
