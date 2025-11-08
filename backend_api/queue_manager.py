@@ -64,7 +64,7 @@ EXTRACTOR_MODULES = {
     '1': 'extractor_jbs',
     '6': 'extractor_geral_ai',
     '7': 'extractor_geral',
-    '8': 'testes', # <-- 2. ADICIONADO (aponta para testes.py)
+    '8': 'extractor_teste', # <-- 2. ADICIONADO (aponta para extractor_teste.py)
     'period_extraction': 'extractor_geral_ai',
 }
 
@@ -200,8 +200,11 @@ def process_pdf():
         q = QUEUES.get(model_type); extractor_module_name = EXTRACTOR_MODULES.get(model_type)
         if not q or not extractor_module_name: raise ValueError(f"Fila/Módulo não encontrado para modelo {model_type}.")
 
+        # Define timeout: 1h para modelo online (6), 2h para batch (8)
+        job_timeout = '2h' if model_type == '8' else '1h'
+
         job = q.enqueue(f'{extractor_module_name}.process_pdf_task', pdf_path, pages_with_periods, model_type, user_id=current_user_email,
-                        job_timeout='1h', meta={ 'user_id': current_user_email, 'step': 'full_processing' })
+                        job_timeout=job_timeout, meta={ 'user_id': current_user_email, 'step': 'full_processing' })
         return jsonify({'task_id': job.id, 'status': 'queued', 'step': 'full_processing'})
     except Exception as e:
         print(f"Erro /process: {e}"); traceback.print_exc()
@@ -257,7 +260,7 @@ def process_pdf_direct():
         if not q or not extractor_module_name: raise ValueError(f"Fila/Módulo não encontrado para modelo {model_type}.")
 
         job = q.enqueue(f'{extractor_module_name}.process_pdf_task', pdf_path, pages, model_type, user_id=current_user_email,
-                        job_timeout='1h', meta={ 'user_id': current_user_email, 'step': 'full_processing' })
+                        job_timeout='2h', meta={ 'user_id': current_user_email, 'step': 'full_processing' }) # Timeout aumentado para 2h (batch)
         return jsonify({'task_id': job.id, 'status': 'queued'})
     except Exception as e:
         print(f"Erro /process-direct: {e}"); traceback.print_exc()

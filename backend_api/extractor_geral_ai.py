@@ -6,7 +6,7 @@ from io import BytesIO
 from datetime import datetime
 from rq import get_current_job
 from google.cloud import documentai_v1 as documentai
-from google.cloud import storage
+from google.cloud import storage # Import mantido por segurança
 from pypdf import PdfReader, PdfWriter
 from pypdf.errors import PdfReadError
 import re
@@ -17,6 +17,9 @@ import traceback
 from pdf2image import convert_from_path
 import pytesseract
 import platform
+
+# Importa a biblioteca de Imagem (Pillow)
+from PIL import Image
 
 if platform.system() == 'Windows':
     pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
@@ -31,10 +34,20 @@ class ExtractorGeralAI:
         self.project_id = os.getenv('GOOGLE_CLOUD_PROJECT')
         self.location = os.getenv('DOCAI_PROCESSOR_LOCATION')
         self.processor_id = os.getenv('DOCAI_PROCESSOR_ID')
+        
+        # O GCS não é usado neste fluxo, mas mantemos os atributos
+        # para consistência caso sejam usados em outro lugar.
         self.gcs_bucket_name = os.getenv('GCS_BUCKET_NAME')
         self.storage_client = storage.Client()
         self.upload_counter = 0
         self.upload_lock = threading.Lock()
+        
+        # Inicializa o cliente Document AI
+        self.client = documentai.DocumentProcessorServiceClient(
+            client_options={"api_endpoint": f"{self.location}-documentai.googleapis.com"}
+        )
+        self.processor_name = self.client.processor_path(self.project_id, self.location, self.processor_id)
+
         print(f"[LOG] Instância do ExtractorGeralAI criada para o Job ID: {self.job.id if self.job else 'N/A'}")
 
     def update_progress(self, current, total, message, status='processing', extra_info=None):
@@ -118,31 +131,14 @@ class ExtractorGeralAI:
         
         return pages_info
 
-    def upload_page_to_gcs(self, reader, page_idx, idx, total_pages):
-        try:
-            if page_idx >= len(reader.pages):
-                print(f"⚠️ Erro ao processar/upload da página {page_idx + 1}: Índice de página ({page_idx}) está fora do alcance. O PDF pode ter apenas {len(reader.pages)} páginas.")
-                return None, None
-            writer = PdfWriter(); writer.add_page(reader.pages[page_idx])
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-                writer.write(tmp_file); single_page_path = tmp_file.name
-            try:
-                bucket = self.storage_client.bucket(self.gcs_bucket_name)
-                blob_name = f"{self.job.id}/input/page_{idx:05d}.pdf"
-                gcs_input_uri = f"gs://{self.gcs_bucket_name}/{blob_name}"
-                bucket.blob(blob_name).upload_from_filename(single_page_path)
-                with self.upload_lock:
-                    self.upload_counter += 1
-                    self.update_progress(0, 3, "Subindo páginas para análise...", extra_info={'upload_progress': self.upload_counter, 'upload_total': total_pages, 'upload_message': f"Upload: {self.upload_counter}/{total_pages} páginas"})
-                return idx, documentai.GcsDocument(gcs_uri=gcs_input_uri, mime_type="application/pdf")
-            finally:
-                if os.path.exists(single_page_path): os.unlink(single_page_path)
-        except Exception as e:
-            print(f"⚠️ Erro ao processar/upload da página {page_idx + 1}: {e}")
-            return None, None
-
+    # Esta função não é mais chamada no fluxo do Modelo 6, mas mantida 
+    # para não quebrar a importação do `extractor_geral`
     def cleanup_gcs_files(self):
         try:
+            if not self.gcs_bucket_name:
+                print("[LOG] Limpeza GCS pulada: Bucket não configurado.")
+                return
+
             bucket = self.storage_client.bucket(self.gcs_bucket_name)
             prefix = f"{self.job.id}/"
             blobs = list(bucket.list_blobs(prefix=prefix))
@@ -153,61 +149,97 @@ class ExtractorGeralAI:
         except Exception as e:
             print(f"⚠️ Erro ao limpar bucket: {e}")
 
-    def process_document_batch_fast(self, pdf_path, pages_with_periods):
-        if not self.gcs_bucket_name: raise ValueError("Bucket do GCS não configurado.")
+    # Processa uma PÁGINA ÚNICA (como IMAGEM) de forma síncrona
+    def process_document_page_sync(self, pdf_path, page_idx):
+        """
+        Converte uma única página de PDF em imagem e a envia 
+        diretamente para o Document AI (processamento síncrono).
+        Isso evita o bug do PdfWriter que corrompe o layout.
+        """
         try:
-            reader = PdfReader(pdf_path, strict=False)
-        except (PdfReadError, Exception) as e:
-            raise ValueError(f"PDF corrompido ou ilegível: {e}")
-        
-        page_indices = [p['page_index'] for p in pages_with_periods]
-        total_pages = len(page_indices)
-        self.upload_counter = 0
-        self.update_progress(0, 3, f"Iniciando upload de {total_pages} páginas...", extra_info={'upload_progress': 0, 'upload_total': total_pages})
-        
-        gcs_documents = []
-        for idx, page_idx in enumerate(page_indices):
-            result_idx, gcs_doc = self.upload_page_to_gcs(reader, page_idx, idx, total_pages)
-            if gcs_doc:
-                gcs_documents.append((result_idx, gcs_doc))
+            # 1. Converter a página específica do PDF para imagem
+            images = convert_from_path(pdf_path, dpi=300, first_page=page_idx + 1, last_page=page_idx + 1)
+            if not images:
+                print(f"⚠️ Erro ao converter página {page_idx + 1} para imagem.")
+                return []
+            
+            image = images[0]
+            
+            # 2. Converter a imagem (Pillow) para bytes
+            image_bytes_io = BytesIO()
+            # Usar JPEG é geralmente mais rápido e menor que PNG
+            image.save(image_bytes_io, format='JPEG', quality=95)
+            image_bytes = image_bytes_io.getvalue()
+            
+            # 3. Criar o request síncrono
+            raw_document = documentai.RawDocument(
+                content=image_bytes,
+                mime_type='image/jpeg' # Envia como imagem
+            )
+            
+            request = documentai.ProcessRequest(
+                name=self.processor_name,
+                raw_document=raw_document,
+                skip_human_review=True
+            )
 
-        if not gcs_documents: raise ValueError("Nenhuma página pôde ser carregada. Verifique o arquivo PDF.")
-        
-        gcs_documents.sort(key=lambda x: x[0])
-        gcs_documents_final = [doc for _, doc in gcs_documents]
+            # 4. Chamar a API
+            result = self.client.process_document(request=request)
+            document = result.document
+            
+            # Retorna as entidades encontradas
+            return document.entities
 
-        client = documentai.DocumentProcessorServiceClient(client_options={"api_endpoint": f"{self.location}-documentai.googleapis.com"})
-        processor_name = client.processor_path(self.project_id, self.location, self.processor_id)
+        except Exception as e:
+            print(f"⚠️ Erro ao processar página {page_idx + 1} via bytes de imagem: {e}")
+            traceback.print_exc()
+            return []
+
+    # Função adaptada para usar o processamento síncrono de imagem
+    def process_pages_sync(self, pdf_path, pages_with_periods):
         
         pages_data = {}
-        total_ai_pages = len(gcs_documents_final)
+        total_ai_pages = len(pages_with_periods)
 
-        for idx, gcs_doc in enumerate(gcs_documents_final):
+        # Atualiza o progresso para a etapa 1 (Upload/Preparação)
+        self.update_progress(1, 3, f"Iniciando processamento de {total_ai_pages} páginas...", extra_info={
+            'ai_processing': True,
+            'ai_total_pages': total_ai_pages,
+            'ai_current_page': 0,
+            'ai_message': "Iniciando IA..."
+        })
+
+        # Loop síncrono que chama a nova função
+        for idx, page_info in enumerate(pages_with_periods):
+            page_idx = page_info['page_index'] # O índice real da página no PDF
+            
+            # Atualiza a sub-etapa (progresso da IA)
             self.update_progress(1, 3, f"A processar página {idx + 1} de {total_ai_pages} pela IA...", extra_info={
                 'ai_processing': True,
                 'ai_total_pages': total_ai_pages,
                 'ai_current_page': idx + 1,
                 'ai_message': f"A processar {idx + 1}/{total_ai_pages} pela IA..."
             })
-            try:
-                request = documentai.ProcessRequest(name=processor_name, gcs_document=gcs_doc)
-                result = client.process_document(request=request)
-                document = result.document
-                pages_data[idx] = {'entities': document.entities}
-            except Exception as e:
-                print(f"⚠️ Erro ao processar página {idx} com Document AI: {e}")
-                pages_data[idx] = {'entities': []}
+            
+            # Chama a nova função que envia a IMAGEM
+            entities = self.process_document_page_sync(pdf_path, page_idx)
+            
+            # 'idx' aqui é a 'page_order' (0, 1, 2...)
+            pages_data[idx] = {'entities': entities} 
 
         self.update_progress(2, 3, "Recolhendo e consolidando resultados...", extra_info={'consolidating': True})
-        
         return pages_data
+
 
     def format_ai_rows_by_order(self, entities):
         extracted_rows = []
         for entity in entities:
             if entity.type_.lower() == 'tabela_marcacoes' and entity.properties:
                 row_data = {prop.type_.lower(): prop.mention_text.strip() for prop in entity.properties}
-                # A IA extrai apenas as marcações, sem se preocupar com o dia
+                
+                # LOG REMOVIDO A PEDIDO
+                # print(f"[LOG][Job {self.job.id if self.job else 'N/A'}] Entidade IA encontrada: {row_data}")
+
                 extracted_rows.append({
                     'Entrada1': row_data.get('entrada1', '0'), 'Saida1': row_data.get('saida1', '0'),
                     'Entrada2': row_data.get('entrada2', '0'), 'Saida2': row_data.get('saida2', '0'),
@@ -291,7 +323,8 @@ def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
 
     extractor = ExtractorGeralAI(model_type, job)
     try:
-        pages_data = extractor.process_document_batch_fast(pdf_path, pages_with_periods)
+        # Chama a função renomeada que agora usa o processamento síncrono por imagem
+        pages_data = extractor.process_pages_sync(pdf_path, pages_with_periods)
         
         extractor.update_progress(2, 3, "A consolidar dados...", extra_info={'consolidating': True})
         
@@ -365,11 +398,7 @@ def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
             if col in final_df.columns:
                 final_df[col] = final_df[col].apply(normalize_time_format)
         
-        # Log de amostra para verificação
-        print(f"[LOG][Job {job.id}] 📊 Amostra de valores após correção:")
-        for col in time_columns:
-            unique_vals = final_df[col].unique()[:5]
-            print(f"[LOG][Job {job.id}]   {col}: {list(unique_vals)}")
+        # --- LOGS DE AMOSTRA REMOVIDOS ---
         
         print(f"[LOG][Job {job.id}] DataFrame final criado com {len(final_df)} linhas. Gerando CSV.")
         
@@ -380,8 +409,10 @@ def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
         temp_file_path = os.path.join(tempfile.gettempdir(), f"{job.id}.csv")
         with open(temp_file_path, 'wb') as f: f.write(output.getvalue())
 
-        print(f"[LOG][Job {job.id}] CSV gerado. Limpando arquivos do GCS.")
-        extractor.cleanup_gcs_files()
+        print(f"[LOG][Job {job.id}] CSV gerado.")
+        
+        # Não é mais necessário limpar GCS neste fluxo
+        # extractor.cleanup_gcs_files()
         
         extractor.update_progress(3, 3, "Processamento concluído!", status='completed')
         job.meta.update({'status': 'completed', 'file_path': temp_file_path, 'filename': filename})
@@ -393,12 +424,13 @@ def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
     except Exception as e:
         error_message = f'Erro no processamento principal: {str(e)}'
         print(f"[LOG][ERRO][Job {job.id}] {error_message}\n{traceback.format_exc()}")
-        try: extractor.cleanup_gcs_files()
-        except: pass
+        # try: extractor.cleanup_gcs_files()
+        # except: pass
         job.meta.update({'status': 'error', 'error': error_message})
         job.save()
         return None
     finally:
+        # O pdf_path original (o arquivo completo) ainda precisa ser removido
         if os.path.exists(pdf_path):
             try:
                 os.unlink(pdf_path)
