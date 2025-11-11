@@ -1,4 +1,3 @@
-# /opt/pontua/AutoPonto/backend_api/extractor_geral.py
 import os
 import tempfile
 import pandas as pd
@@ -43,7 +42,6 @@ class ExtractorGeral:
                 for blob in blobs:
                     blob.delete()
         except Exception as e:
-            # Em produção, um log mais robusto (ex: logging library) seria ideal aqui
             print(f"⚠️ Erro ao limpar bucket GCS para o job {self.job.id if self.job else 'N/A'}: {e}")
 
 
@@ -167,12 +165,151 @@ class ExtractorGeral:
         return extracted_rows
 
 def parse_flexible_date(date_str):
+    if not date_str or date_str == '0':
+        return pd.NaT
+    
+    # Remove espaços e caracteres estranhos
+    date_str = str(date_str).strip()
+    
+    # Tenta formatos completos primeiro
     for fmt in ('%d/%m/%Y', '%d/%m/%y'):
         try:
             return pd.to_datetime(date_str, format=fmt)
         except (ValueError, TypeError):
             pass
+    
+    # Se a data veio sem ano (formato dd/mm), adiciona o ano atual
+    if re.match(r'^\d{1,2}/\d{1,2}$', date_str):
+        current_year = datetime.now().year
+        date_str_with_year = f"{date_str}/{current_year}"
+        try:
+            return pd.to_datetime(date_str_with_year, format='%d/%m/%Y')
+        except (ValueError, TypeError):
+            pass
+    
     return pd.NaT
+
+def consolidate_duplicate_days(df):
+    """
+    EXCEÇÃO: Consolida dias duplicados coletando todos os horários e redistribuindo.
+    Aplica apenas quando detecta fragmentação (múltiplas linhas com poucos horários).
+    """
+    # Identifica dias duplicados
+    duplicate_dates = df[df.duplicated(subset=['Dia_dt'], keep=False)]['Dia_dt'].unique()
+    
+    if len(duplicate_dates) == 0:
+        # Nenhum dia duplicado, retorna DataFrame original
+        return df
+    
+    print(f"[LOG] Detectados {len(duplicate_dates)} dias com múltiplas entradas. Verificando fragmentação...")
+    
+    time_columns = ['Entrada1', 'Saida1', 'Entrada2', 'Saida2', 
+                    'Entrada3', 'Saida3', 'Entrada4', 'Saida4']
+    
+    consolidated_rows = []
+    processed_dates = set()
+    
+    for _, row in df.iterrows():
+        date_val = row['Dia_dt']
+        
+        # Se não é duplicado ou já processamos, adiciona normalmente
+        if date_val not in duplicate_dates or date_val in processed_dates:
+            if date_val not in processed_dates:
+                consolidated_rows.append(row)
+                processed_dates.add(date_val)
+            continue
+        
+        # Pega todas as linhas desta data
+        date_rows = df[df['Dia_dt'] == date_val]
+        
+        # Verifica se é fragmentação (maioria das linhas com ≤2 horários)
+        lines_with_few_times = 0
+        for _, date_row in date_rows.iterrows():
+            valid_times = sum(1 for col in time_columns 
+                            if str(date_row[col]) not in ['0', '', 'nan', 'None'])
+            if valid_times <= 2:
+                lines_with_few_times += 1
+        
+        # Se maioria é fragmentada, consolida
+        if lines_with_few_times >= len(date_rows) * 0.5:
+            print(f"[LOG] Consolidando fragmentação para {row['Dia']}: {len(date_rows)} linhas")
+            
+            # Coleta todos os horários
+            all_times = []
+            for _, date_row in date_rows.iterrows():
+                for col in time_columns:
+                    time_val = str(date_row[col])
+                    if time_val and time_val not in ['0', '', 'nan', 'None']:
+                        all_times.append(time_val)
+            
+            # Remove duplicatas e ordena
+            all_times = list(set(all_times))
+            
+            def time_to_minutes(t):
+                try:
+                    h, m = map(int, t.split(':'))
+                    return h * 60 + m
+                except:
+                    return 9999
+            
+            all_times.sort(key=time_to_minutes)
+            
+            # Cria linha consolidada
+            consolidated_row = row.copy()
+            for col in time_columns:
+                consolidated_row[col] = '0'
+            
+            for idx, time_val in enumerate(all_times[:8]):  # Máximo 8 horários
+                consolidated_row[time_columns[idx]] = time_val
+            
+            consolidated_rows.append(consolidated_row)
+        else:
+            # Não é fragmentação, mantém apenas a primeira linha
+            consolidated_rows.append(date_rows.iloc[0])
+        
+        processed_dates.add(date_val)
+    
+    return pd.DataFrame(consolidated_rows)
+
+def fill_missing_days(df):
+    """
+    Preenche os dias que estão faltando no calendário entre a primeira e última data.
+    """
+    if df.empty or 'Dia_dt' not in df.columns:
+        return df
+    
+    # Pega a data mínima e máxima
+    min_date = df['Dia_dt'].min()
+    max_date = df['Dia_dt'].max()
+    
+    print(f"[LOG] Preenchendo dias faltantes entre {min_date.strftime('%d/%m/%Y')} e {max_date.strftime('%d/%m/%Y')}")
+    
+    # Cria um range completo de datas
+    full_date_range = pd.date_range(start=min_date, end=max_date, freq='D')
+    
+    # Cria um DataFrame com todas as datas
+    full_df = pd.DataFrame({'Dia_dt': full_date_range})
+    
+    # Faz merge com os dados existentes, mantendo todas as datas
+    result_df = full_df.merge(df, on='Dia_dt', how='left')
+    
+    # Preenche os dias faltantes com valores padrão
+    result_df['Dia'] = result_df['Dia_dt'].dt.strftime('%d/%m/%Y')
+    
+    dias_semana_map = {
+        0: 'seg', 1: 'ter', 2: 'qua', 3: 'qui', 4: 'sex', 5: 'sab', 6: 'dom'
+    }
+    result_df['Dia_Sema'] = result_df['Dia_dt'].dt.dayofweek.map(dias_semana_map)
+    
+    # Preenche horários faltantes com '0'
+    time_columns = ['Entrada1', 'Saida1', 'Entrada2', 'Saida2', 
+                    'Entrada3', 'Saida3', 'Entrada4', 'Saida4']
+    for col in time_columns:
+        result_df[col] = result_df[col].fillna('0')
+    
+    print(f"[LOG] Total de dias após preencher lacunas: {len(result_df)}")
+    
+    return result_df
 
 def process_pdf_task(pdf_path, pages, model_type, user_id):
     job = get_current_job()
@@ -186,27 +323,47 @@ def process_pdf_task(pdf_path, pages, model_type, user_id):
     try:
         all_entities = extractor.process_document_batch_async(pdf_path, pages)
         
+        print(f"[LOG][Job {job.id}] Total de entidades recebidas: {len(all_entities)}")
+        
         if not all_entities:
             raise Exception("A IA não retornou nenhuma entidade.")
             
         all_rows = extractor.format_ai_rows_by_order(all_entities)
+        
+        print(f"[LOG][Job {job.id}] Total de linhas extraídas: {len(all_rows)}")
+        if all_rows:
+            print(f"[LOG][Job {job.id}] Amostra da primeira linha: {all_rows[0]}")
 
         if not all_rows:
             raise Exception("Nenhuma linha de marcação foi extraída pela IA.")
         
         full_final_df = pd.DataFrame(all_rows)
         
+        print(f"[LOG][Job {job.id}] DataFrame criado com {len(full_final_df)} linhas")
+        print(f"[LOG][Job {job.id}] Colunas: {full_final_df.columns.tolist()}")
+        
         full_final_df['Dia_dt'] = full_final_df['Dia'].apply(parse_flexible_date)
+        
+        print(f"[LOG][Job {job.id}] Após parse de datas, linhas válidas: {full_final_df['Dia_dt'].notna().sum()}")
         
         full_final_df = full_final_df.dropna(subset=['Dia_dt'])
         full_final_df = full_final_df.sort_values(by='Dia_dt', ascending=True)
         
-        full_final_df['Dia'] = full_final_df['Dia_dt'].dt.strftime('%d/%m/%Y')
+        print(f"[LOG][Job {job.id}] Antes da consolidação: {len(full_final_df)} linhas")
         
-        dias_semana_map = {
-            0: 'seg', 1: 'ter', 2: 'qua', 3: 'qui', 4: 'sex', 5: 'sab', 6: 'dom'
-        }
-        full_final_df['Dia_Sema'] = full_final_df['Dia_dt'].dt.dayofweek.map(dias_semana_map)
+        # --- EXCEÇÃO: Consolida dias fragmentados (se houver) ---
+        full_final_df = consolidate_duplicate_days(full_final_df)
+        full_final_df = full_final_df.reset_index(drop=True)
+        # --- FIM DA EXCEÇÃO ---
+        
+        print(f"[LOG][Job {job.id}] Após consolidação: {len(full_final_df)} linhas")
+        
+        # --- PREENCHE DIAS FALTANTES ---
+        full_final_df = fill_missing_days(full_final_df)
+        # --- FIM DO PREENCHIMENTO ---
+        
+        print(f"[LOG][Job {job.id}] Amostra do resultado final:")
+        print(full_final_df.head(10).to_string())
         
         colunas_finais = ['Dia', 'Dia_Sema', 'Entrada1', 'Saida1', 'Entrada2', 'Saida2', 'Entrada3', 'Saida3', 'Entrada4', 'Saida4']
         
