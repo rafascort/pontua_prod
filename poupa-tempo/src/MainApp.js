@@ -17,6 +17,7 @@ import './ProgressModal.css';
 import './PeriodConfirmationModal.css';
 import './UserProfilePasswordModal.css';
 import './UserProfileModal.css';
+import './AlertModal.css'; // Certifique-se que este arquivo existe
 
 const API_BASE_URL = '/api';
 
@@ -31,6 +32,51 @@ const modelNames = {
 };
 // --- Fim Modelos ---
 
+// --- NOVO: Componente do Modal de Alerta (MODIFICADO COM SEU TEXTO) ---
+const PdfTypeAlertModal = ({ show, onClose, onConfirm }) => {
+    if (!show) return null;
+
+    return (
+        <div className="alert-modal-overlay">
+            <div className="alert-modal">
+                <h3>⚠️ Atenção: Modelo "IA (Com Data)"</h3>
+                
+                <p style={{fontWeight: 'bold', fontSize: '1.05rem', color: '#333'}}>
+                    Este modelo foi selecionado. Use-o SOMENTE nestas condições:
+                </p>
+                
+                <p style={{marginTop: '15px'}}>
+                    <strong>1. PDF Selecionável (Nativo Digital):</strong><br/>
+                    Você deve conseguir selecionar o texto do PDF com o mouse.
+                    (Dica: tente selecionar o texto agora no seu arquivo).
+                </p>
+                
+                <p>
+                    <strong>2. Datas no Formato Correto:</strong><br/>
+                    As datas devem estar visíveis no formato <strong>dd/mm/aaaa</strong> ou <strong>dd/mm/aa</strong>.
+                </p>
+                
+                <p style={{marginTop: '20px', backgroundColor: '#f4f4f4', padding: '10px 12px', borderRadius: '5px', borderLeft: '4px solid #6c757d', fontSize: '0.9rem', lineHeight: '1.4'}}>
+                    Se o seu PDF for uma imagem (escaneado, foto, não selecionável), manuscrito, ou se as datas não seguirem esse formato, clique em <strong>"Voltar"</strong> e escolha o modelo <strong>"IA Geral (Sem Data)"</strong>.
+                    <br/><br/>
+                    💡 <i>Essa escolha garante a maior precisão na leitura.</i>
+                    <br/>
+                    ✍ <i>(Obs: Pontos manuscritos são lidos pelo modelo "Sem Data" com precisão similar ao olho humano).</i>
+                </p>
+                
+                <p style={{marginTop: '20px', fontWeight: 'bold', color: '#333', textAlign: 'center'}}>
+                    Deseja prosseguir com o modelo "IA (Com Data)"?
+                </p>
+
+                <div className="alert-modal-actions">
+                    <button onClick={onClose} className="alert-button secondary">Voltar</button>
+                    <button onClick={onConfirm} className="alert-button primary">Prosseguir</button>
+                </div>
+            </div>
+        </div>
+    );
+};
+// --- Fim Componente Modal ---
 
 const MainApp = ({ onLogout, isAdmin }) => {
     // --- Estados ---
@@ -50,6 +96,9 @@ const MainApp = ({ onLogout, isAdmin }) => {
     const [isManagingSubscription, setIsManagingSubscription] = useState(false);
     const [showPasswordModal, setShowPasswordModal] = useState(false);
     const [showProfileModal, setShowProfileModal] = useState(false);
+    
+    // ESTADO NOVO PARA O ALERTA
+    const [showPdfTypeAlert, setShowPdfTypeAlert] = useState(false);
 
     // --- Funções ---
 
@@ -69,6 +118,7 @@ const MainApp = ({ onLogout, isAdmin }) => {
          setIsLoading(false);
          setShowProgressModal(false);
          setShowPeriodModal(false);
+         setShowPdfTypeAlert(false); // Resetar alerta
          setPagesInfo([]);
          setInitialPdfPath('');
          setProgressData({ current_step: 0, total_steps: 1, message: 'Iniciando...' });
@@ -165,8 +215,20 @@ const MainApp = ({ onLogout, isAdmin }) => {
         fileInputRef.current.click();
     };
 
+    // --- LÓGICA DO CLIQUE (ALTERADA) ---
     const handleCardClick = (modelId) => {
-        setModelType(modelId);
+        if (modelId === '7') {
+            setShowPdfTypeAlert(true); // Mostra o alerta para o modelo 7
+        } else {
+            setModelType(modelId);
+            setShowPdfTypeAlert(false);
+        }
+    };
+
+    // --- CONFIRMAÇÃO DO MODAL ---
+    const handleConfirmPdfType = () => {
+        setModelType('7'); // Seleciona o modelo
+        setShowPdfTypeAlert(false); // Fecha o modal
     };
 
     const handleStartProcess = () => {
@@ -341,7 +403,7 @@ const MainApp = ({ onLogout, isAdmin }) => {
     );
 
     return (
-        <div className="sistema-ponto-container"> {/* <-- CORREÇÃO AQUI */}
+        <div className="sistema-ponto-container">
             <ToastContainer position="top-right" autoClose={5000} hideProgressBar={false} />
             {renderHeader()}
             <main className="main-content">
@@ -420,6 +482,14 @@ const MainApp = ({ onLogout, isAdmin }) => {
             </main>
 
             {/* Modais */}
+            
+            {/* MODAL DE ALERTA AQUI */}
+            <PdfTypeAlertModal 
+                show={showPdfTypeAlert}
+                onClose={() => setShowPdfTypeAlert(false)}
+                onConfirm={handleConfirmPdfType}
+            />
+
             {showProgressModal &&
                 <ProgressModal
                     {...progressData}
