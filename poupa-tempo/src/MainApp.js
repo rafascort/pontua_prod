@@ -1,4 +1,3 @@
-// /opt/pontua/AutoPonto/poupa-tempo/src/MainApp.js
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { fetchWithAuth } from './apiUtils';
@@ -6,18 +5,21 @@ import ProgressModal from './ProgressModal';
 import UserProfilePasswordModal from './UserProfilePasswordModal';
 import PeriodConfirmationModal from './PeriodConfirmationModal';
 import UserProfileModal from './UserProfileModal';
+import TermsOfServiceModal from './TermsOfServiceModal'; // 1. IMPORTAR O MODAL DE TERMOS
 import { ToastContainer, toast } from 'react-toastify';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
     faSignOutAlt, faUserShield, faKey, faFilePdf,
-    faUpload, faTrash, faFileInvoice, faSync, faUserCircle
+    faUpload, faTrash, faFileInvoice, faSync, faUserCircle,
+    faLifeRing // <-- 1. ÍCONE DE SUPORTE ADICIONADO
 } from '@fortawesome/free-solid-svg-icons';
 import './App.css';
 import './ProgressModal.css';
 import './PeriodConfirmationModal.css';
 import './UserProfilePasswordModal.css';
 import './UserProfileModal.css';
-import './AlertModal.css'; // Certifique-se que este arquivo existe
+import './AlertModal.css';
+import './TermsOfServiceModal.css'; // 2. IMPORTAR O CSS DO MODAL
 
 const API_BASE_URL = '/api';
 
@@ -99,8 +101,22 @@ const MainApp = ({ onLogout, isAdmin }) => {
     
     // ESTADO NOVO PARA O ALERTA
     const [showPdfTypeAlert, setShowPdfTypeAlert] = useState(false);
+    
+    // 3. ADICIONAR ESTADO PARA O MODAL DE TERMOS
+    const [showTermsModalForAcceptance, setShowTermsModalForAcceptance] = useState(false);
 
     // --- Funções ---
+
+    // 4. ADICIONAR useEffect PARA VERIFICAR OS TERMOS
+    useEffect(() => {
+        const hasAccepted = localStorage.getItem('hasAcceptedTerms') === 'true';
+        
+        // Se os termos não foram aceitos E o usuário NÃO é admin, mostre o modal.
+        if (!hasAccepted && !isAdmin) {
+            setShowTermsModalForAcceptance(true);
+        }
+    }, [isAdmin]); // Depende de `isAdmin` para garantir que a prop foi recebida
+
 
     useEffect(() => {
         return () => {
@@ -355,16 +371,38 @@ const MainApp = ({ onLogout, isAdmin }) => {
         }
     };
 
+    // 5. ADICIONAR FUNÇÃO PARA LIDAR COM O ACEITE
+    const handleAcceptTerms = () => {
+        localStorage.setItem('hasAcceptedTerms', 'true');
+        setShowTermsModalForAcceptance(false);
+    };
+
     const renderHeader = () => (
         <header className="top-bar">
-             <button
-                className="icon-button"
-                onClick={() => { setView('home'); resetExtractorState(); }}
-                title="Voltar ao início"
-            >
-                <span className="material-symbols-outlined">home</span>
-            </button>
+             {/* 2. Agrupar botões da esquerda */}
+             <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}>
+                <button
+                    className="icon-button"
+                    onClick={() => { setView('home'); resetExtractorState(); }}
+                    title="Voltar ao início"
+                >
+                    <span className="material-symbols-outlined">home</span>
+                </button>
+
+                {/* 3. ADICIONAR BOTÃO DE SUPORTE AQUI */}
+                <a
+                    href="https://wa.link/iuffl7"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="header-button" // Reutiliza o estilo dos botões de usuário
+                    title="Suporte via WhatsApp"
+                >
+                    <FontAwesomeIcon icon={faLifeRing} /> Suporte
+                </a>
+             </div>
+            
             <h1 className="title">{view === 'extractor' ? 'Extrator de Ponto' : 'Sistema Ponto'}</h1>
+            
             <div className="user-menu" style={{display: 'flex', alignItems: 'center', gap: '10px'}}>
                 <button
                     onClick={() => setShowProfileModal(true)}
@@ -406,6 +444,15 @@ const MainApp = ({ onLogout, isAdmin }) => {
         <div className="sistema-ponto-container">
             <ToastContainer position="top-right" autoClose={5000} hideProgressBar={false} />
             {renderHeader()}
+
+            {/* 6. ADICIONAR O MODAL DE TERMOS PARA ACEITAÇÃO */}
+            {/* Ele ficará sobre toda a aplicação se showTermsModalForAcceptance for true */}
+            <TermsOfServiceModal
+                show={showTermsModalForAcceptance}
+                onAccept={handleAcceptTerms}
+                // Não passamos onClose, forçando o usuário a aceitar
+            />
+
             <main className="main-content">
                 {view === 'home' && (
                     <div className="button-container">
@@ -422,7 +469,7 @@ const MainApp = ({ onLogout, isAdmin }) => {
                                 className="search-bar"
                                 placeholder="Pesquisar modelo..."
                                 value={searchTerm}
-                                onChange={(e) => setSearchTerm(e.target.value)}
+                                onChange={(e) => setSearchTerm(e.g.value)}
                             />
                         </div>
                         <div className="model-carousel-container">

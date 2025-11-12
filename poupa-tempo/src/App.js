@@ -13,6 +13,7 @@ import PaymentSuccess from './PaymentSuccess';
 import './App.css';
 import './style.css';
 import 'react-toastify/dist/ReactToastify.css';
+import './TermsOfServiceModal.css'; // <-- ADICIONADO CSS DOS TERMOS AQUI
 
 // Adicione esta classe de CSS inline ou no seu App.css para o loading
 const loadingScreenStyles = {

@@ -1,9 +1,18 @@
 // /opt/pontua/AutoPonto/poupa-tempo/src/LandingPage.js
-import React from 'react';
+import React, { useState } from 'react';
 import { Link } from 'react-router-dom'; // Importa o Link para navegação
 import './LandingPage.css'; // Importa os estilos que acabamos de criar
+import TermsOfServiceModal from './TermsOfServiceModal'; // Importa o modal
 
 const LandingPage = () => {
+  const [showTermsModal, setShowTermsModal] = useState(false);
+
+  // Função para abrir o modal
+  const handleShowTerms = (e) => {
+    e.preventDefault(); // Impede que o link '#' navegue
+    setShowTermsModal(true);
+  };
+  
   return (
     <div className="landing-wrapper">
       <header className="landing-header">
@@ -12,6 +21,12 @@ const LandingPage = () => {
           <nav>
             {/* Usa o Link do React Router para navegar para a rota /login */}
             <Link to="/login">Login</Link>
+            
+            {/* Link para abrir os Termos de Uso */}
+            <a href="#" onClick={handleShowTerms}>
+              Termos de Uso
+            </a>
+
             {/* O link de cadastro aponta para /cadastro. Você precisará criar essa rota e componente */}
             <Link to="/cadastro" className="button-primary">
               Cadastro
@@ -147,6 +162,12 @@ const LandingPage = () => {
           &copy; 2025 Sistema Ponto. Todos os direitos reservados.
         </div>
       </footer>
+
+      {/* Renderiza o modal (só será visível se showTermsModal for true) */}
+      <TermsOfServiceModal 
+        show={showTermsModal} 
+        onClose={() => setShowTermsModal(false)} 
+      />
     </div>
   );
 };
