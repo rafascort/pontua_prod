@@ -282,6 +282,10 @@ def normalize_time_format(value):
     if value_str == "0" or value_str == "":
         return "0"
     
+    # 🆕 Remove dois pontos finais duplicados ou isolados
+    # Ex: "1817:" → "1817", "18::" → "18"
+    value_str = re.sub(r':+$', '', value_str)
+    
     # Procura padrão: HH[separador]MM onde separador pode ser :, -, ., espaço, etc.
     # Exemplos: 12:00, 12-00, 12.00, 12 00
     match = re.search(r'(\d{1,2})[^\d](\d{2})', value_str)
@@ -290,7 +294,7 @@ def normalize_time_format(value):
         minute = match.group(2)
         return f"{hour}:{minute}"
     
-    # Tenta 4 dígitos sem separador: 1200 → 12:00
+    # Tenta 4 dígitos sem separador: 1200 → 12:00, 1817 → 18:17
     if len(value_str) == 4 and value_str.isdigit():
         return f"{value_str[:2]}:{value_str[2:]}"
     
@@ -298,6 +302,16 @@ def normalize_time_format(value):
     if len(value_str) == 3 and value_str.isdigit():
         return f"0{value_str[0]}:{value_str[1:]}"
     
+    # 🆕 Trata 2 dígitos como hora cheia: 18 → 18:00
+    if len(value_str) == 2 and value_str.isdigit():
+        return f"{value_str}:00"
+    
+    # 🆕 Trata 1 dígito como hora cheia: 8 → 08:00
+    if len(value_str) == 1 and value_str.isdigit():
+        return f"0{value_str}:00"
+    
+    # ⚠️ Se nada funcionar, retorna 0 ao invés de valor inválido
+    print(f"⚠️ [AVISO] Valor de horário não reconhecido: '{value}' → convertido para '0'")
     return "0"
 
 def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
@@ -398,8 +412,6 @@ def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
             if col in final_df.columns:
                 final_df[col] = final_df[col].apply(normalize_time_format)
         
-        # --- LOGS DE AMOSTRA REMOVIDOS ---
-        
         print(f"[LOG][Job {job.id}] DataFrame final criado com {len(final_df)} linhas. Gerando CSV.")
         
         output = BytesIO()
@@ -411,9 +423,6 @@ def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
 
         print(f"[LOG][Job {job.id}] CSV gerado.")
         
-        # Não é mais necessário limpar GCS neste fluxo
-        # extractor.cleanup_gcs_files()
-        
         extractor.update_progress(3, 3, "Processamento concluído!", status='completed')
         job.meta.update({'status': 'completed', 'file_path': temp_file_path, 'filename': filename})
         job.save()
@@ -424,8 +433,6 @@ def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
     except Exception as e:
         error_message = f'Erro no processamento principal: {str(e)}'
         print(f"[LOG][ERRO][Job {job.id}] {error_message}\n{traceback.format_exc()}")
-        # try: extractor.cleanup_gcs_files()
-        # except: pass
         job.meta.update({'status': 'error', 'error': error_message})
         job.save()
         return None
