@@ -272,7 +272,7 @@ def extract_periods_task(pdf_path, pages, user_id):
 def normalize_time_format(value):
     """
     🔧 Normaliza horários para o formato HH:MM padrão.
-    Corrige separadores incorretos vindos do Document AI (-, ., espaços).
+    Corrige separadores incorretos, espaços e quebras de linha vindos do Document AI.
     """
     if pd.isna(value) or value == "0" or value == 0 or value == "":
         return "0"
@@ -282,12 +282,16 @@ def normalize_time_format(value):
     if value_str == "0" or value_str == "":
         return "0"
     
-    # 🆕 Remove dois pontos finais duplicados ou isolados
+    # 🔧 CRÍTICO: Remove TODOS os espaços em branco (espaços, tabs, quebras de linha)
+    # Ex: "07 :48" → "07:48", "06:\n58" → "06:58", "18: 07" → "18:07"
+    value_str = value_str.replace(' ', '').replace('\n', '').replace('\r', '').replace('\t', '')
+    
+    # Remove dois pontos finais duplicados ou isolados
     # Ex: "1817:" → "1817", "18::" → "18"
     value_str = re.sub(r':+$', '', value_str)
     
-    # Procura padrão: HH[separador]MM onde separador pode ser :, -, ., espaço, etc.
-    # Exemplos: 12:00, 12-00, 12.00, 12 00
+    # Procura padrão: HH:MM (agora sem espaços)
+    # Exemplos: 12:00, 12-00, 12.00
     match = re.search(r'(\d{1,2})[^\d](\d{2})', value_str)
     if match:
         hour = match.group(1).zfill(2)  # Garante 2 dígitos
@@ -302,15 +306,15 @@ def normalize_time_format(value):
     if len(value_str) == 3 and value_str.isdigit():
         return f"0{value_str[0]}:{value_str[1:]}"
     
-    # 🆕 Trata 2 dígitos como hora cheia: 18 → 18:00
+    # Trata 2 dígitos como hora cheia: 18 → 18:00
     if len(value_str) == 2 and value_str.isdigit():
         return f"{value_str}:00"
     
-    # 🆕 Trata 1 dígito como hora cheia: 8 → 08:00
+    # Trata 1 dígito como hora cheia: 8 → 08:00
     if len(value_str) == 1 and value_str.isdigit():
         return f"0{value_str}:00"
     
-    # ⚠️ Se nada funcionar, retorna 0 ao invés de valor inválido
+    # ⚠️ Se nada funcionar, loga e retorna 0
     print(f"⚠️ [AVISO] Valor de horário não reconhecido: '{value}' → convertido para '0'")
     return "0"
 
