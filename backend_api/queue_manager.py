@@ -52,21 +52,19 @@ if not all(k for k in PLAN_NAME_TO_EXTRA_PRICE_ID.values() if k):
 # --- Fim Configuração Stripe ---
 
 
+# --- FILAS ATUALIZADAS (Removidos JBS e TESTE) ---
 QUEUES = {
-    '1': Queue('jbs_queue', connection=redis_conn),
-    '6': Queue('geral_ai_queue', connection=redis_conn),
-    '7': Queue('geral_queue', connection=redis_conn),
-    '8': Queue('teste_api_queue', connection=redis_conn), # <-- 1. ADICIONADO
+    '6': Queue('geral_ai_queue', connection=redis_conn),  # Modelo "Com Data"
+    '7': Queue('geral_queue', connection=redis_conn),     # Modelo "Sem Data"
     'period_extraction': Queue('period_extraction_queue', connection=redis_conn),
 }
 
 EXTRACTOR_MODULES = {
-    '1': 'extractor_jbs',
     '6': 'extractor_geral_ai',
     '7': 'extractor_geral',
-    '8': 'extractor_teste', # <-- 2. ADICIONADO (aponta para extractor_teste.py)
     'period_extraction': 'extractor_geral_ai',
 }
+# --- FIM DA ATUALIZAÇÃO ---
 
 
 # --- FUNÇÃO PARA REPORTAR USO (USANDO BILLING METERS) ---
@@ -162,7 +160,7 @@ def extract_periods():
         return jsonify({'error': 'Erro interno análise.'}), 500
 
 
-# --- ROTA ATUALIZADA ---
+# --- ROTA ATUALIZADA (Modelo "Com Data") ---
 @app.route('/api/process', methods=['POST'])
 @jwt_required()
 def process_pdf():
@@ -170,47 +168,44 @@ def process_pdf():
     claims = get_jwt()
     if not claims.get('is_active'): return jsonify({"error": "Conta inativa."}), 403
 
-    user = None; num_pages_to_process = 0; pdf_path = None
+    num_pages_to_process = 0; pdf_path = None
     try:
         data = request.get_json()
         pages_with_periods = data.get('pages_with_periods')
         pdf_path = data.get('pdf_path')
-        model_type = data.get('model_type', '6')
+        model_type = data.get('model_type', '6') # Padrão para modelo 6
 
         if not pages_with_periods or not pdf_path: return jsonify({'error': 'Dados incompletos.'}), 400
         if not os.path.exists(pdf_path): return jsonify({'error': f'PDF não encontrado: {pdf_path}. Inicie novamente.'}), 404
-        if model_type not in ['1', '6', '8']: return jsonify({'error': f'Modelo inválido ({model_type}).'}), 400 # <-- 3. ADICIONADO '8'
+        
+        # Validação de modelo (só aceita 6)
+        if model_type != '6': return jsonify({'error': f'Modelo inválido ({model_type}).'}), 400
         if model_type not in QUEUES or model_type not in EXTRACTOR_MODULES: return jsonify({'error': 'Modelo não configurado.'}), 400
 
+        # --- LÓGICA DE CONTAGEM REMOVIDA DESTE LOCAL ---
+        # Apenas calculamos o N de páginas para salvar no meta
         num_pages_to_process = len(pages_with_periods)
-        if num_pages_to_process > 0:
-            try:
-                user = User.query.filter_by(email=current_user_email).first()
-                if user and user.role != 'admin':
-                    user.page_count += num_pages_to_process
-                    db.session.commit()
-                    print(f"Páginas OK para {current_user_email}: +{num_pages_to_process} (Total: {user.page_count})")
-                    # --- CHAMA REPORTE ---
-                    report_usage_to_stripe(user, num_pages_to_process, user.page_count)
-                elif user: print(f"User {current_user_email} é admin.")
-                else: print(f"ERRO: User {current_user_email} não encontrado."); user = None
-            except Exception as e:
-                db.session.rollback(); print(f"[ERROR] Contagem/Reporte {current_user_email}: {e}"); traceback.print_exc(); user = None
-
+        
         q = QUEUES.get(model_type); extractor_module_name = EXTRACTOR_MODULES.get(model_type)
         if not q or not extractor_module_name: raise ValueError(f"Fila/Módulo não encontrado para modelo {model_type}.")
 
-        # Define timeout: 1h para modelo online (6), 2h para batch (8)
-        job_timeout = '2h' if model_type == '8' else '1h'
+        job_timeout = '1h' # Timeout padrão para modelo online (6)
 
         job = q.enqueue(f'{extractor_module_name}.process_pdf_task', pdf_path, pages_with_periods, model_type, user_id=current_user_email,
-                        job_timeout=job_timeout, meta={ 'user_id': current_user_email, 'step': 'full_processing' })
+                        job_timeout=job_timeout, 
+                        # --- META ATUALIZADO ---
+                        meta={ 
+                            'user_id': current_user_email, 
+                            'step': 'full_processing',
+                            'pages_to_process': num_pages_to_process, # <-- ADICIONADO (N de páginas)
+                            'usage_counted': False                   # <-- ADICIONADO (Flag de contagem)
+                        })
         return jsonify({'task_id': job.id, 'status': 'queued', 'step': 'full_processing'})
     except Exception as e:
         print(f"Erro /process: {e}"); traceback.print_exc()
         return jsonify({'error': 'Erro interno ao processar.'}), 500
 
-# --- ROTA ATUALIZADA ---
+# --- ROTA ATUALIZADA (Modelo "Sem Data") ---
 @app.route('/api/process-direct', methods=['POST'])
 @jwt_required()
 def process_pdf_direct():
@@ -218,10 +213,12 @@ def process_pdf_direct():
     claims = get_jwt()
     if not claims.get('is_active'): return jsonify({"error": "Conta inativa."}), 403
 
-    user = None; num_pages_to_process = 0; pdf_path = None
+    num_pages_to_process = 0; pdf_path = None
     try:
         if 'pdf_file' not in request.files: return jsonify({'error': 'PDF não enviado.'}), 400
-        file = request.files['pdf_file']; pages = request.form.get('pages', ''); model_type = '7'
+        file = request.files['pdf_file']; pages = request.form.get('pages', ''); 
+        model_type = '7' # Fixo para modelo 7
+        
         if file.filename == '': return jsonify({'error': 'Nenhum ficheiro selecionado.'}), 400
 
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
@@ -230,6 +227,8 @@ def process_pdf_direct():
         if model_type not in QUEUES or model_type not in EXTRACTOR_MODULES:
              raise ValueError(f'Modelo {model_type} não configurado.')
 
+        # --- LÓGICA DE CONTAGEM REMOVIDA DESTE LOCAL ---
+        # Apenas calculamos o N de páginas (se fornecido)
         if pages:
             page_list = []
             parts = pages.split(',')
@@ -240,27 +239,21 @@ def process_pdf_direct():
                     except ValueError: pass
                 elif part.isdigit(): page_list.append(int(part))
             num_pages_to_process = len(set(p for p in page_list if p > 0)) # Conta páginas válidas (>0)
-        else: num_pages_to_process = 0 # Worker precisa calcular
-
-        if num_pages_to_process > 0:
-            try:
-                user = User.query.filter_by(email=current_user_email).first()
-                if user and user.role != 'admin':
-                    user.page_count += num_pages_to_process
-                    db.session.commit()
-                    print(f"Páginas OK para {current_user_email}: +{num_pages_to_process} (Total: {user.page_count})")
-                    # --- CHAMA REPORTE ---
-                    report_usage_to_stripe(user, num_pages_to_process, user.page_count)
-                elif user: print(f"User {current_user_email} é admin.")
-                else: print(f"ERRO: User {current_user_email} não encontrado."); user = None
-            except Exception as e:
-                db.session.rollback(); print(f"[ERROR] Contagem/Reporte {current_user_email}: {e}"); traceback.print_exc(); user = None
+        else: 
+            num_pages_to_process = 0 # 0 significa "todas as páginas", o worker (modelo 7) DEVE calcular e salvar no meta
 
         q = QUEUES.get(model_type); extractor_module_name = EXTRACTOR_MODULES.get(model_type)
         if not q or not extractor_module_name: raise ValueError(f"Fila/Módulo não encontrado para modelo {model_type}.")
 
         job = q.enqueue(f'{extractor_module_name}.process_pdf_task', pdf_path, pages, model_type, user_id=current_user_email,
-                        job_timeout='2h', meta={ 'user_id': current_user_email, 'step': 'full_processing' }) # Timeout aumentado para 2h (batch)
+                        job_timeout='2h', 
+                        # --- META ATUALIZADO ---
+                        meta={ 
+                            'user_id': current_user_email, 
+                            'step': 'full_processing',
+                            'pages_to_process': num_pages_to_process, # <-- ADICIONADO (pode ser 0)
+                            'usage_counted': False                   # <-- ADICIONADO (Flag de contagem)
+                        })
         return jsonify({'task_id': job.id, 'status': 'queued'})
     except Exception as e:
         print(f"Erro /process-direct: {e}"); traceback.print_exc()
@@ -313,6 +306,7 @@ def get_progress(task_id):
     return jsonify(progress_data)
 # --- FIM CORREÇÃO ---
 
+# --- ROTA ATUALIZADA (Lógica de contagem movida para cá) ---
 @app.route('/api/download/<task_id>', methods=['GET'])
 @jwt_required()
 def download_result(task_id):
@@ -326,8 +320,51 @@ def download_result(task_id):
     claims = get_jwt(); job_user_id = job.meta.get('user_id')
     if str(job_user_id) != str(current_user_email) and claims.get('role') != 'admin': return jsonify({"error": "Sem permissão."}), 403
     if job.get_status() != 'finished' or job.meta.get('status') != 'completed': return jsonify({'error': 'Tarefa não concluiu com sucesso.'}), 400
+    
     file_path = job.meta.get('file_path'); filename = job.meta.get('filename')
     if not file_path or not os.path.exists(file_path): return jsonify({'error': 'Ficheiro resultado não encontrado.'}), 404
+    
+    # --- NOVA LÓGICA DE CONTAGEM E REPORTE ---
+    # Só executa se o job NUNCA foi contado
+    if not job.meta.get('usage_counted', False): 
+        print(f"[LOG] Job {task_id} será contabilizado agora (antes do download)...")
+        try:
+            # Pega o N de páginas do meta (definido na API ou atualizado pelo worker)
+            num_pages_processed = int(job.meta.get('pages_to_process', 0))
+            
+            # Precisamos do 'user' real do banco de dados para atualizar
+            user = User.query.filter_by(email=current_user_email).first()
+            
+            if user and user.role != 'admin' and num_pages_processed > 0:
+                user.page_count += num_pages_processed
+                new_total_page_count = user.page_count
+                db.session.commit() # Salva a nova contagem
+                
+                print(f"[LOG] Páginas CONTADAS (no download) para {current_user_email}: +{num_pages_processed} (Total: {new_total_page_count})")
+                
+                # Chama o reporte para o Stripe
+                report_usage_to_stripe(user, num_pages_processed, new_total_page_count)
+                
+                # Marca como contado para não repetir
+                job.meta['usage_counted'] = True
+                job.save_meta()
+                
+            elif user:
+                print(f"[LOG] Usuário {current_user_email} é admin ou 0 páginas, contagem não aplicada.")
+                job.meta['usage_counted'] = True # Marca mesmo se for admin/0, para não checar de novo
+                job.save_meta()
+            else:
+                print(f"[ERRO] Usuário {current_user_email} não encontrado no DB para contagem.")
+                
+        except Exception as e:
+            db.session.rollback()
+            print(f"[ERRO FATAL] Contagem/Reporte falhou para {current_user_email} no /download: {e}")
+            traceback.print_exc()
+            # Não impede o download, mas loga o erro
+    else:
+        print(f"[LOG] Job {task_id} já teve uso contabilizado. Apenas enviando arquivo.")
+    # --- FIM DA NOVA LÓGICA ---
+    
     mimetype = 'text/csv'
     def remove_file_after_download(path_to_remove):
         time.sleep(10)
@@ -345,3 +382,5 @@ def health_check():
     try: db.session.execute(db.text('SELECT 1')); db_status = "OK"
     except Exception as e: db_status = f"ERROR: {str(e)}"
     return jsonify({ 'status': 'OK', 'redis_status': redis_status, 'db_status': db_status })
+
+# (O resto do arquivo auth_service.py continua abaixo, se houver mais rotas)

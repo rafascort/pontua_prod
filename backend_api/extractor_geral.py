@@ -1,3 +1,4 @@
+# /opt/pontua/AutoPonto/backend_api/extractor_geral.py
 import os
 import tempfile
 import pandas as pd
@@ -82,6 +83,19 @@ class ExtractorGeral:
             raise ValueError("Nenhuma página válida para processar.")
 
         page_indices = sorted(list(page_indices_set))
+
+        # --- NOVA LÓGICA DE ATUALIZAÇÃO DO META ---
+        # Se a API não sabia o N de páginas (pages_to_process=0), atualizamos o meta agora.
+        # Isso garante que a contagem no /download seja correta.
+        if self.job and self.job.meta.get('pages_to_process', 0) == 0 and page_indices:
+            try:
+                num_pages_to_process = len(page_indices)
+                self.job.meta['pages_to_process'] = num_pages_to_process
+                self.job.save_meta()
+                print(f"[LOG][Job {self.job.id}] Meta atualizado com 'pages_to_process': {num_pages_to_process}")
+            except Exception as meta_e:
+                print(f"[AVISO][Job {self.job.id}] Falha ao salvar meta 'pages_to_process': {meta_e}")
+        # --- FIM DA NOVA LÓGICA ---
 
         self.update_progress(0, 3, "Preparando o ficheiro para análise...", status='processing')
         writer = PdfWriter()
