@@ -5,13 +5,13 @@ import ProgressModal from './ProgressModal';
 import UserProfilePasswordModal from './UserProfilePasswordModal';
 import PeriodConfirmationModal from './PeriodConfirmationModal';
 import UserProfileModal from './UserProfileModal';
-import TermsOfServiceModal from './TermsOfServiceModal'; // 1. IMPORTAR O MODAL DE TERMOS
+import TermsOfServiceModal from './TermsOfServiceModal';
 import { ToastContainer, toast } from 'react-toastify';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
     faSignOutAlt, faUserShield, faKey, faFilePdf,
     faUpload, faTrash, faFileInvoice, faSync, faUserCircle,
-    faLifeRing // <-- 1. ÍCONE DE SUPORTE ADICIONADO
+    faLifeRing
 } from '@fortawesome/free-solid-svg-icons';
 import './App.css';
 import './ProgressModal.css';
@@ -19,7 +19,7 @@ import './PeriodConfirmationModal.css';
 import './UserProfilePasswordModal.css';
 import './UserProfileModal.css';
 import './AlertModal.css';
-import './TermsOfServiceModal.css'; // 2. IMPORTAR O CSS DO MODAL
+import './TermsOfServiceModal.css';
 
 const API_BASE_URL = '/api';
 
@@ -34,7 +34,7 @@ const modelNames = {
 };
 // --- Fim Modelos ---
 
-// --- NOVO: Componente do Modal de Alerta (MODIFICADO COM SEU TEXTO) ---
+// --- NOVO: Componente do Modal de Alerta ---
 const PdfTypeAlertModal = ({ show, onClose, onConfirm }) => {
     if (!show) return null;
 
@@ -115,8 +115,7 @@ const MainApp = ({ onLogout, isAdmin }) => {
         if (!hasAccepted && !isAdmin) {
             setShowTermsModalForAcceptance(true);
         }
-    }, [isAdmin]); // Depende de `isAdmin` para garantir que a prop foi recebida
-
+    }, [isAdmin]);
 
     useEffect(() => {
         return () => {
@@ -134,7 +133,7 @@ const MainApp = ({ onLogout, isAdmin }) => {
          setIsLoading(false);
          setShowProgressModal(false);
          setShowPeriodModal(false);
-         setShowPdfTypeAlert(false); // Resetar alerta
+         setShowPdfTypeAlert(false);
          setPagesInfo([]);
          setInitialPdfPath('');
          setProgressData({ current_step: 0, total_steps: 1, message: 'Iniciando...' });
@@ -231,29 +230,69 @@ const MainApp = ({ onLogout, isAdmin }) => {
         fileInputRef.current.click();
     };
 
-    // --- LÓGICA DO CLIQUE (ALTERADA) ---
     const handleCardClick = (modelId) => {
         if (modelId === '7') {
-            setShowPdfTypeAlert(true); // Mostra o alerta para o modelo 7
+            setShowPdfTypeAlert(true);
         } else {
             setModelType(modelId);
             setShowPdfTypeAlert(false);
         }
     };
 
-    // --- CONFIRMAÇÃO DO MODAL ---
     const handleConfirmPdfType = () => {
-        setModelType('7'); // Seleciona o modelo
-        setShowPdfTypeAlert(false); // Fecha o modal
+        setModelType('7');
+        setShowPdfTypeAlert(false);
     };
+
+    // --- NOVA FUNÇÃO PARA CALCULAR TOTAL DE PÁGINAS DO RANGE ---
+    const calculateTotalPagesFromRange = (rangeString) => {
+        if (!rangeString) return 0;
+        
+        let count = 0;
+        // Divide por vírgula (ex: "1-5, 8, 10-12")
+        const parts = rangeString.split(',');
+        
+        for (let part of parts) {
+            part = part.trim();
+            if (!part) continue;
+
+            if (part.includes('-')) {
+                // É um intervalo (ex: "1-5")
+                const [startStr, endStr] = part.split('-');
+                const start = parseInt(startStr, 10);
+                const end = parseInt(endStr, 10);
+
+                if (!isNaN(start) && !isNaN(end) && end >= start) {
+                    count += (end - start + 1);
+                }
+            } else {
+                // É um número único (ex: "8")
+                if (!isNaN(parseInt(part, 10))) {
+                    count += 1;
+                }
+            }
+        }
+        return count;
+    };
+    // ------------------------------------------------------------
 
     const handleStartProcess = () => {
         if (!modelType) { toast.warn('Por favor, selecione um modelo.'); return; }
         if (!selectedFile) { toast.warn('Por favor, importe um ficheiro PDF.'); return; }
-        if (!pageRange && modelType !== '7') {
+        
+        // 1. Validação de Obrigatoriedade (Agora para TODOS os modelos)
+        if (!pageRange) {
              toast.warn('Por favor, defina as páginas a serem processadas (ex: 1-5, 8).');
              return;
         }
+
+        // 2. Validação de Limite Máximo de Páginas (130)
+        const totalPagesRequested = calculateTotalPagesFromRange(pageRange);
+        if (totalPagesRequested > 130) {
+             toast.error(`O limite máximo é de 130 páginas por vez. Você selecionou ${totalPagesRequested} páginas.`);
+             return;
+        }
+        // --------------------------------------------------------
 
         setIsLoading(true);
         setShowProgressModal(true);
@@ -371,7 +410,6 @@ const MainApp = ({ onLogout, isAdmin }) => {
         }
     };
 
-    // 5. ADICIONAR FUNÇÃO PARA LIDAR COM O ACEITE
     const handleAcceptTerms = () => {
         localStorage.setItem('hasAcceptedTerms', 'true');
         setShowTermsModalForAcceptance(false);
@@ -379,7 +417,6 @@ const MainApp = ({ onLogout, isAdmin }) => {
 
     const renderHeader = () => (
         <header className="top-bar">
-             {/* 2. Agrupar botões da esquerda */}
              <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}>
                 <button
                     className="icon-button"
@@ -389,12 +426,11 @@ const MainApp = ({ onLogout, isAdmin }) => {
                     <span className="material-symbols-outlined">home</span>
                 </button>
 
-                {/* 3. ADICIONAR BOTÃO DE SUPORTE AQUI */}
                 <a
                     href="https://wa.link/iuffl7"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="header-button" // Reutiliza o estilo dos botões de usuário
+                    className="header-button"
                     title="Suporte via WhatsApp"
                 >
                     <FontAwesomeIcon icon={faLifeRing} /> Suporte
@@ -445,12 +481,9 @@ const MainApp = ({ onLogout, isAdmin }) => {
             <ToastContainer position="top-right" autoClose={5000} hideProgressBar={false} />
             {renderHeader()}
 
-            {/* 6. ADICIONAR O MODAL DE TERMOS PARA ACEITAÇÃO */}
-            {/* Ele ficará sobre toda a aplicação se showTermsModalForAcceptance for true */}
             <TermsOfServiceModal
                 show={showTermsModalForAcceptance}
                 onAccept={handleAcceptTerms}
-                // Não passamos onClose, forçando o usuário a aceitar
             />
 
             <main className="main-content">
@@ -469,7 +502,7 @@ const MainApp = ({ onLogout, isAdmin }) => {
                                 className="search-bar"
                                 placeholder="Pesquisar modelo..."
                                 value={searchTerm}
-                                onChange={(e) => setSearchTerm(e.g.value)}
+                                onChange={(e) => setSearchTerm(e.target.value)}
                             />
                         </div>
                         <div className="model-carousel-container">
@@ -511,7 +544,8 @@ const MainApp = ({ onLogout, isAdmin }) => {
                             <input
                                 type="text"
                                 className="page-input"
-                                placeholder={modelType === '7' ? "Páginas (Opcional, ex: 1-5, 8)" : "Páginas (Obrigatório, ex: 1-5, 8)"}
+                                // Alterado: Placeholder genérico para obrigatório
+                                placeholder="Páginas (Obrigatório, ex: 1-5, 8)"
                                 value={pageRange}
                                 onChange={(e) => setPageRange(e.target.value)}
                                 disabled={isLoading || !selectedFile}
@@ -519,7 +553,8 @@ const MainApp = ({ onLogout, isAdmin }) => {
                             <button
                                 className="start-button"
                                 onClick={handleStartProcess}
-                                disabled={isLoading || !modelType || !selectedFile || (!pageRange && modelType !== '7')}
+                                // Alterado: A verificação !pageRange agora se aplica a ambos os modelos
+                                disabled={isLoading || !modelType || !selectedFile || !pageRange}
                             >
                                 <FontAwesomeIcon icon={faSync} /> {isLoading ? 'Processando...' : 'Iniciar'}
                             </button>
@@ -530,7 +565,6 @@ const MainApp = ({ onLogout, isAdmin }) => {
 
             {/* Modais */}
             
-            {/* MODAL DE ALERTA AQUI */}
             <PdfTypeAlertModal 
                 show={showPdfTypeAlert}
                 onClose={() => setShowPdfTypeAlert(false)}
