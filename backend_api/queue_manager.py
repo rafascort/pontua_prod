@@ -149,8 +149,10 @@ def extract_periods():
         q = QUEUES.get('period_extraction')
         if not q: raise ValueError("Fila 'period_extraction' não encontrada.")
 
+        # ALTERAÇÃO AQUI: Adicionado result_ttl=1800 (30 minutos)
         job = q.enqueue('extractor_geral_ai.extract_periods_task', pdf_path, pages, user_id=current_user_email,
-                        job_timeout='2m', meta={'user_id': current_user_email, 'pdf_path': pdf_path, 'step': 'period_extraction'})
+                        job_timeout='2m', result_ttl=1800, 
+                        meta={'user_id': current_user_email, 'pdf_path': pdf_path, 'step': 'period_extraction'})
         return jsonify({'task_id': job.id, 'status': 'queued', 'step': 'period_extraction'})
     except Exception as e:
         print(f"Erro /extract-periods: {e}"); traceback.print_exc()
@@ -191,8 +193,9 @@ def process_pdf():
 
         job_timeout = '1h' # Timeout padrão para modelo online (6)
 
+        # ALTERAÇÃO AQUI: Adicionado result_ttl=1800 (30 minutos)
         job = q.enqueue(f'{extractor_module_name}.process_pdf_task', pdf_path, pages_with_periods, model_type, user_id=current_user_email,
-                        job_timeout=job_timeout, 
+                        job_timeout=job_timeout, result_ttl=1800,
                         # --- META ATUALIZADO ---
                         meta={ 
                             'user_id': current_user_email, 
@@ -245,8 +248,9 @@ def process_pdf_direct():
         q = QUEUES.get(model_type); extractor_module_name = EXTRACTOR_MODULES.get(model_type)
         if not q or not extractor_module_name: raise ValueError(f"Fila/Módulo não encontrado para modelo {model_type}.")
 
+        # ALTERAÇÃO AQUI: Adicionado result_ttl=1800 (30 minutos)
         job = q.enqueue(f'{extractor_module_name}.process_pdf_task', pdf_path, pages, model_type, user_id=current_user_email,
-                        job_timeout='2h', 
+                        job_timeout='2h', result_ttl=1800,
                         # --- META ATUALIZADO ---
                         meta={ 
                             'user_id': current_user_email, 
