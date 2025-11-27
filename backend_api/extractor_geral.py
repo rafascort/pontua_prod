@@ -174,6 +174,20 @@ class ExtractorGeral:
                     'Saida3': clean_time(row_data.get('saida3', '0')),
                     'Entrada4': clean_time(row_data.get('entrada4', '0')),
                     'Saida4': clean_time(row_data.get('saida4', '0')),
+                    'Entrada5': clean_time(row_data.get('entrada5', '0')),
+                    'Saida5': clean_time(row_data.get('saida5', '0')),
+                    'Entrada6': clean_time(row_data.get('entrada6', '0')),
+                    'Saida6': clean_time(row_data.get('saida6', '0')),
+                    'Entrada7': clean_time(row_data.get('entrada7', '0')),
+                    'Saida7': clean_time(row_data.get('saida7', '0')),
+                    'Entrada8': clean_time(row_data.get('entrada8', '0')),
+                    'Saida8': clean_time(row_data.get('saida8', '0')),
+                    'Entrada9': clean_time(row_data.get('entrada9', '0')),
+                    'Saida9': clean_time(row_data.get('saida9', '0')),
+                    'Entrada10': clean_time(row_data.get('entrada10', '0')),
+                    'Saida10': clean_time(row_data.get('saida10', '0')),
+                    'Entrada11': clean_time(row_data.get('entrada11', '0')),
+                    'Saida11': clean_time(row_data.get('saida11', '0')),
                 })
         
         return extracted_rows
@@ -217,8 +231,11 @@ def consolidate_duplicate_days(df):
     
     print(f"[LOG] Detectados {len(duplicate_dates)} dias com múltiplas entradas. Verificando fragmentação...")
     
-    time_columns = ['Entrada1', 'Saida1', 'Entrada2', 'Saida2', 
-                    'Entrada3', 'Saida3', 'Entrada4', 'Saida4']
+    time_columns = [
+        'Entrada1', 'Saida1', 'Entrada2', 'Saida2', 'Entrada3', 'Saida3', 'Entrada4', 'Saida4',
+        'Entrada5', 'Saida5', 'Entrada6', 'Saida6', 'Entrada7', 'Saida7', 'Entrada8', 'Saida8',
+        'Entrada9', 'Saida9', 'Entrada10', 'Saida10', 'Entrada11', 'Saida11'
+    ]
     
     consolidated_rows = []
     processed_dates = set()
@@ -273,7 +290,7 @@ def consolidate_duplicate_days(df):
             for col in time_columns:
                 consolidated_row[col] = '0'
             
-            for idx, time_val in enumerate(all_times[:8]):  # Máximo 8 horários
+            for idx, time_val in enumerate(all_times[:22]):  # Máximo 22 horários (11 pares)
                 consolidated_row[time_columns[idx]] = time_val
             
             consolidated_rows.append(consolidated_row)
@@ -316,8 +333,11 @@ def fill_missing_days(df):
     result_df['Dia_Sema'] = result_df['Dia_dt'].dt.dayofweek.map(dias_semana_map)
     
     # Preenche horários faltantes com '0'
-    time_columns = ['Entrada1', 'Saida1', 'Entrada2', 'Saida2', 
-                    'Entrada3', 'Saida3', 'Entrada4', 'Saida4']
+    time_columns = [
+        'Entrada1', 'Saida1', 'Entrada2', 'Saida2', 'Entrada3', 'Saida3', 'Entrada4', 'Saida4',
+        'Entrada5', 'Saida5', 'Entrada6', 'Saida6', 'Entrada7', 'Saida7', 'Entrada8', 'Saida8',
+        'Entrada9', 'Saida9', 'Entrada10', 'Saida10', 'Entrada11', 'Saida11'
+    ]
     for col in time_columns:
         result_df[col] = result_df[col].fillna('0')
     
@@ -379,7 +399,12 @@ def process_pdf_task(pdf_path, pages, model_type, user_id):
         print(f"[LOG][Job {job.id}] Amostra do resultado final:")
         print(full_final_df.head(10).to_string())
         
-        colunas_finais = ['Dia', 'Dia_Sema', 'Entrada1', 'Saida1', 'Entrada2', 'Saida2', 'Entrada3', 'Saida3', 'Entrada4', 'Saida4']
+        colunas_finais = [
+            'Dia', 'Dia_Sema', 
+            'Entrada1', 'Saida1', 'Entrada2', 'Saida2', 'Entrada3', 'Saida3', 'Entrada4', 'Saida4',
+            'Entrada5', 'Saida5', 'Entrada6', 'Saida6', 'Entrada7', 'Saida7', 'Entrada8', 'Saida8',
+            'Entrada9', 'Saida9', 'Entrada10', 'Saida10', 'Entrada11', 'Saida11'
+        ]
         
         for col in colunas_finais:
             if col not in full_final_df.columns:
