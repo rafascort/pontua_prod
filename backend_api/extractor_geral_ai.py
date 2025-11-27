@@ -135,9 +135,17 @@ class ExtractorGeralAI:
 
     def format_ai_rows_by_order(self, entities):
         extracted_rows = []
-        for entity in entities:
+        # Mantive o log de diagnóstico para monitoramento futuro
+        for idx, entity in enumerate(entities):
             if entity.type_.lower() == 'tabela_marcacoes' and entity.properties:
+                # --- LOG DE DIAGNÓSTICO ---
+                texto_ocr = entity.mention_text.replace('\n', ' [QUEBRA] ')
+                print(f"\n[DEBUG ANALISE IA] Entidade Row #{idx}:")
+                print(f"   -> Texto OCR Bruto: {texto_ocr}")
+                # --------------------------
+
                 row_data = {prop.type_.lower(): prop.mention_text.strip() for prop in entity.properties}
+                
                 extracted_rows.append({
                     'Dia_Str': row_data.get('data', '0'), 
                     'Dia_Semana_Str': row_data.get('dia_semana', ''),
@@ -160,7 +168,6 @@ def extract_periods_task(pdf_path, pages, user_id):
     if not job: return None
     job.meta['user_id'] = user_id; job.save_meta()
     
-    # Log solicitado
     print(f"[LOG] Usuário: {user_id} | A extrair períodos")
 
     extractor = ExtractorGeralAI(job=job)
@@ -202,6 +209,13 @@ def match_rows_to_calendar(calendar_df, ai_rows):
     time_cols = [f'Entrada{i}' for i in range(1,12)] + [f'Saida{i}' for i in range(1,12)]
     for col in time_cols: final_df[col] = '0'
     
+    # --- CORREÇÃO 1: Detectar o ano de referência do calendário do usuário ---
+    reference_year = datetime.now().year
+    if not final_df['Dia_dt'].empty:
+        # Pega o ano da primeira data do período definido pelo usuário
+        reference_year = final_df['Dia_dt'].iloc[0].year
+    # ------------------------------------------------------------
+
     date_to_idx = {d.strftime('%Y-%m-%d'): i for i, d in enumerate(final_df['Dia_dt'])}
     weekday_indices = {i: [] for i in range(7)}
     for idx, dt in enumerate(final_df['Dia_dt']):
@@ -215,15 +229,31 @@ def match_rows_to_calendar(calendar_df, ai_rows):
     last_valid_idx = -1
 
     for row in ai_rows:
-        dt_obj = parse_flexible_date(row.get('Dia_Str'))
+        # --- CORREÇÃO 2: Forçar o ano correto na string antes de processar ---
+        dia_str = row.get('Dia_Str', '')
+        # Se a data for algo como "09/06" ou "9/6" (sem ano), forçamos o ano do calendário
+        if re.match(r'^\d{1,2}[/.-]\d{1,2}$', str(dia_str).strip()):
+             dia_str = f"{dia_str}/{reference_year}"
+        
+        dt_obj = parse_flexible_date(dia_str)
+        
         target_idx = -1
         
         if pd.notna(dt_obj):
+            # Se o ano ainda estiver diferente (ex: parseou 2025 mas calendário é 2023), forçamos novamente
+            if dt_obj.year != reference_year:
+                try:
+                    dt_obj = dt_obj.replace(year=reference_year)
+                except ValueError:
+                    pass # Ignora erro de dia bissexto se acontecer
+            
             dt_str = dt_obj.strftime('%Y-%m-%d')
             if dt_str in date_to_idx:
                 target_idx = date_to_idx[dt_str]
+                # Se encontrou a data exata, atualizamos o cursor com segurança
                 last_valid_idx = target_idx 
         
+        # Tenta achar pelo dia da semana se a data falhou
         if target_idx == -1 and row.get('Dia_Semana_Str'):
             dia_str_clean = row.get('Dia_Semana_Str').lower().split('-')[0].strip()
             dia_str_clean = re.sub(r'[^a-z]', '', dia_str_clean)
@@ -236,21 +266,32 @@ def match_rows_to_calendar(calendar_df, ai_rows):
             if target_weekday != -1:
                 candidates = weekday_indices[target_weekday]
                 if candidates:
+                    # Procura o dia da semana compatível mais próximo após o último dia processado
                     anchor = max(0, last_valid_idx)
                     closest_candidate = min(candidates, key=lambda x: abs(x - anchor))
-                    target_idx = closest_candidate
-                    if target_idx >= last_valid_idx:
+                    
+                    # Só aceita se for para frente ou a mesma linha (evita voltar no tempo incorretamente)
+                    if closest_candidate >= last_valid_idx:
+                        target_idx = closest_candidate
                         last_valid_idx = target_idx
 
+        # Se ainda assim não achou, joga na próxima linha disponível (Fallback)
         if target_idx == -1:
             target_idx = last_valid_idx + 1
         
         if target_idx >= len(final_df): continue
+        
+        # --- CORREÇÃO 3: Atualizar o cursor SEMPRE ---
+        # Isso garante que o próximo dia (dia 10) vá para a próxima linha (target_idx + 1)
+        # e não sofra "merge" com a linha atual (dia 09).
+        last_valid_idx = max(last_valid_idx, target_idx)
             
+        # Preenche os dados
         current_data_in_row = final_df.iloc[target_idx][time_cols].values
         has_data = any(str(x) != '0' for x in current_data_in_row)
         
         if has_data:
+            # Se já tem dados (ex: dia duplicado real), mescla e ordena
             existing_times = [str(x) for x in current_data_in_row if str(x) != '0']
             new_times = []
             for col in time_cols:
@@ -264,6 +305,7 @@ def match_rows_to_calendar(calendar_df, ai_rows):
             for i, t_val in enumerate(all_times[:22]):
                 final_df.at[target_idx, ordered_cols[i]] = t_val
         else:
+            # Se a linha está vazia, preenche normalmente
             for col in time_cols:
                 val = row.get(col, '0')
                 if val: final_df.at[target_idx, col] = val
