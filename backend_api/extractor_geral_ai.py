@@ -74,6 +74,7 @@ class ExtractorGeralAI:
                         continue
             return None
         except Exception as e:
+            print(f"[LOG][ERRO] Erro ao extrair período da página {page_idx + 1}: {e}")
             return None
 
     def split_pdf_and_extract_periods(self, pdf_path, page_range):
@@ -134,10 +135,9 @@ class ExtractorGeralAI:
 
     def format_ai_rows_by_order(self, entities):
         extracted_rows = []
-        for idx, entity in enumerate(entities):
+        for entity in entities:
             if entity.type_.lower() == 'tabela_marcacoes' and entity.properties:
                 row_data = {prop.type_.lower(): prop.mention_text.strip() for prop in entity.properties}
-                
                 extracted_rows.append({
                     'Dia_Str': row_data.get('data', '0'), 
                     'Dia_Semana_Str': row_data.get('dia_semana', ''),
@@ -160,6 +160,7 @@ def extract_periods_task(pdf_path, pages, user_id):
     if not job: return None
     job.meta['user_id'] = user_id; job.save_meta()
     
+    # Log solicitado
     print(f"[LOG] Usuário: {user_id} | A extrair períodos")
 
     extractor = ExtractorGeralAI(job=job)
@@ -201,10 +202,6 @@ def match_rows_to_calendar(calendar_df, ai_rows):
     time_cols = [f'Entrada{i}' for i in range(1,12)] + [f'Saida{i}' for i in range(1,12)]
     for col in time_cols: final_df[col] = '0'
     
-    reference_year = datetime.now().year
-    if not final_df['Dia_dt'].empty:
-        reference_year = final_df['Dia_dt'].iloc[0].year
-    
     date_to_idx = {d.strftime('%Y-%m-%d'): i for i, d in enumerate(final_df['Dia_dt'])}
     weekday_indices = {i: [] for i in range(7)}
     for idx, dt in enumerate(final_df['Dia_dt']):
@@ -217,26 +214,16 @@ def match_rows_to_calendar(calendar_df, ai_rows):
 
     last_valid_idx = -1
 
-    for i, row in enumerate(ai_rows):
-        dia_str = row.get('Dia_Str', '0')
-        if re.match(r'^\d{1,2}[/.-]\d{1,2}$', str(dia_str).strip()):
-             dia_str = f"{dia_str}/{reference_year}"
-        
-        dt_obj = parse_flexible_date(dia_str)
+    for row in ai_rows:
+        dt_obj = parse_flexible_date(row.get('Dia_Str'))
         target_idx = -1
         
-        # 1. Match por Data Exata
         if pd.notna(dt_obj):
-            if dt_obj.year != reference_year:
-                try: dt_obj = dt_obj.replace(year=reference_year)
-                except: pass
-            
             dt_str = dt_obj.strftime('%Y-%m-%d')
             if dt_str in date_to_idx:
                 target_idx = date_to_idx[dt_str]
-                last_valid_idx = target_idx
+                last_valid_idx = target_idx 
         
-        # 2. Match por Dia da Semana
         if target_idx == -1 and row.get('Dia_Semana_Str'):
             dia_str_clean = row.get('Dia_Semana_Str').lower().split('-')[0].strip()
             dia_str_clean = re.sub(r'[^a-z]', '', dia_str_clean)
@@ -251,36 +238,14 @@ def match_rows_to_calendar(calendar_df, ai_rows):
                 if candidates:
                     anchor = max(0, last_valid_idx)
                     closest_candidate = min(candidates, key=lambda x: abs(x - anchor))
-                    if closest_candidate >= last_valid_idx:
-                        target_idx = closest_candidate
+                    target_idx = closest_candidate
+                    if target_idx >= last_valid_idx:
                         last_valid_idx = target_idx
 
-        # 3. Lógica de Fallback / Continuação
         if target_idx == -1:
-            raw_dia = str(row.get('Dia_Str', '')).strip()
-            raw_sem = str(row.get('Dia_Semana_Str', '')).strip()
-            is_empty_date = raw_dia in ['', '0', 'nan', 'None']
-            is_empty_week = raw_sem in ['', '0', 'nan', 'None']
-            
-            is_date_suspicious = False
-            if last_valid_idx > 20 and pd.notna(dt_obj):
-                target_temp_idx = -1
-                temp_dt_str = dt_obj.strftime('%Y-%m-%d')
-                if temp_dt_str in date_to_idx:
-                    target_temp_idx = date_to_idx[temp_dt_str]
-                
-                if target_temp_idx < (last_valid_idx - 5): 
-                    is_date_suspicious = True
-
-            if (is_empty_date and is_empty_week and last_valid_idx != -1) or is_date_suspicious:
-                target_idx = last_valid_idx
-            else:
-                target_idx = last_valid_idx + 1
+            target_idx = last_valid_idx + 1
         
-        if target_idx >= len(final_df): 
-            continue
-        
-        last_valid_idx = max(last_valid_idx, target_idx)
+        if target_idx >= len(final_df): continue
             
         current_data_in_row = final_df.iloc[target_idx][time_cols].values
         has_data = any(str(x) != '0' for x in current_data_in_row)
@@ -310,65 +275,52 @@ def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
     if not job: return None
     job.meta['user_id'] = user_id; job.save_meta()
 
+    # Log solicitado
     total_pages = len(pages_with_periods_json)
-    # LOG MANTIDO: Usuário e páginas
     print(f"[LOG] Usuário: {user_id} | Paginas: {total_pages}")
 
-    # 1. Validar e ordenar páginas
-    valid_pages = []
+    pages_with_periods = []
     for p in pages_with_periods_json:
         if p.get('period') and p['period'].get('start_date') and p['period'].get('end_date'):
             try:
                 p['start_date_obj'] = datetime.strptime(p['period']['start_date'], '%d/%m/%Y')
                 p['end_date_obj'] = datetime.strptime(p['period']['end_date'], '%d/%m/%Y')
-                valid_pages.append(p)
+                pages_with_periods.append(p)
             except: pass
 
-    if not valid_pages:
+    if not pages_with_periods:
         job.meta.update({'status': 'error', 'error': 'Nenhuma página com período válido.'}); job.save()
         return None
 
-    # 2. Definir o calendário Global (mínimo início até máximo fim)
-    global_start = min(p['start_date_obj'] for p in valid_pages)
-    global_end = max(p['end_date_obj'] for p in valid_pages)
-    
-    full_date_range = pd.date_range(start=global_start, end=global_end, freq='D')
-    master_calendar_df = pd.DataFrame(full_date_range, columns=['Dia_dt'])
-    master_calendar_df['Dia'] = master_calendar_df['Dia_dt'].dt.strftime('%d/%m/%Y')
-
     extractor = ExtractorGeralAI(model_type, job)
     try:
-        # 3. Processar IA
-        pages_data = extractor.process_pages_sync(pdf_path, valid_pages)
+        pages_data = extractor.process_pages_sync(pdf_path, pages_with_periods)
         extractor.update_progress(2, 3, "Consolidando dados...", extra_info={'consolidating': True})
         
-        # 4. CONSOLIDAR TODAS AS LINHAS DE TODAS AS PÁGINAS EM UM ÚNICO FLUXO
-        all_ai_rows_stream = []
-        
-        for idx in range(len(valid_pages)):
-            if idx in pages_data and pages_data.get(idx, {}).get('entities'):
-                page_rows = extractor.format_ai_rows_by_order(pages_data[idx]['entities'])
-                all_ai_rows_stream.extend(page_rows)
+        all_dfs = []
+        for idx, page_info in enumerate(pages_with_periods):
+            page_order = idx
+            start_date, end_date = page_info['start_date_obj'], page_info['end_date_obj']
+            
+            full_date_range = pd.date_range(start=start_date, end=end_date, freq='D')
+            calendar_df = pd.DataFrame(full_date_range, columns=['Dia_dt'])
+            calendar_df['Dia'] = calendar_df['Dia_dt'].dt.strftime('%d/%m/%Y')
+            
+            if page_order in pages_data and pages_data.get(page_order, {}).get('entities'):
+                ai_rows = extractor.format_ai_rows_by_order(pages_data[page_order]['entities'])
+                merged_df = match_rows_to_calendar(calendar_df, ai_rows)
+                all_dfs.append(merged_df)
+            else:
+                all_dfs.append(calendar_df)
 
-        # 5. Processar o fluxo único contra o calendário mestre
-        if not all_ai_rows_stream:
-             raise Exception("Nenhum dado extraído da IA.")
-
-        final_df = match_rows_to_calendar(master_calendar_df, all_ai_rows_stream)
+        if not all_dfs: raise Exception("Nenhum dado gerado.")
         
-        # --- ETAPA DE GARANTIA DE COMPLETUDE (Preencher buracos nas datas) ---
-        final_df = final_df.set_index('Dia_dt')
-        final_df = final_df.reindex(full_date_range)
-        final_df = final_df.fillna('0')
-        
-        final_df['Dia_dt'] = final_df.index
-        final_df['Dia'] = final_df['Dia_dt'].dt.strftime('%d/%m/%Y')
+        final_df = pd.concat(all_dfs, ignore_index=True)
+        final_df = final_df.drop_duplicates(subset=['Dia_dt'], keep='last')
         
         day_map_pt = {0: "seg", 1: "ter", 2: "qua", 3: "qui", 4: "sex", 5: "sab", 6: "dom"}
         final_df['Dia_Sema'] = final_df['Dia_dt'].dt.dayofweek.map(day_map_pt)
-        final_df = final_df.reset_index(drop=True)
-        # ---------------------------------------------------------------------
-
+        
         colunas_finais = ['Dia', 'Dia_Sema']
         for i in range(1, 12):
             colunas_finais.extend([f'Entrada{i}', f'Saida{i}'])
