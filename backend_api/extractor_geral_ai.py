@@ -1,9 +1,10 @@
 # /opt/pontua/AutoPonto/backend_api/extractor_geral_ai.py
+
 import os
 import tempfile
 import pandas as pd
 from io import BytesIO
-from datetime import datetime
+from datetime import datetime, timedelta
 from rq import get_current_job
 from google.cloud import documentai_v1 as documentai
 from google.cloud import storage
@@ -16,6 +17,7 @@ import pytesseract
 import platform
 from PIL import Image
 
+# Configuração do Tesseract
 if platform.system() == 'Windows':
     pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 else:
@@ -135,6 +137,7 @@ class ExtractorGeralAI:
 
     def format_ai_rows_by_order(self, entities):
         extracted_rows = []
+        # A API DocumentAI já retorna entities geralmente na ordem de leitura (top-down)
         for entity in entities:
             if entity.type_.lower() == 'tabela_marcacoes' and entity.properties:
                 row_data = {prop.type_.lower(): prop.mention_text.strip() for prop in entity.properties}
@@ -155,12 +158,49 @@ class ExtractorGeralAI:
                 })
         return extracted_rows
 
+def assign_dates_sequentially_strict(ai_rows, page_start_date):
+    """
+    Atribui datas estritamente pela ordem das linhas.
+    Linha 0 = page_start_date
+    Linha 1 = page_start_date + 1 dia
+    ...
+    Ignora completamente o conteúdo da coluna 'Dia' para fins de ordenação.
+    """
+    processed_rows = []
+    
+    day_map_pt = {0: "seg", 1: "ter", 2: "qua", 3: "qui", 4: "sex", 5: "sab", 6: "dom"}
+
+    for i, row in enumerate(ai_rows):
+        # Cálculo simples: Data inicial + indice da linha
+        current_date = page_start_date + timedelta(days=i)
+        
+        # Sobrescreve a data e o dia da semana com o calculado
+        row['Sort_Date'] = current_date
+        row['Dia'] = current_date.strftime('%d/%m/%Y')
+        row['Dia_Sema'] = day_map_pt.get(current_date.weekday(), "")
+        
+        processed_rows.append(row)
+
+    return processed_rows
+
+def normalize_time_format(value):
+    if pd.isna(value) or str(value).strip() in ["0", "", "nan"]: return "0"
+    value_str = str(value).strip().replace(' ', '').replace('\n', '').replace('\r', '').replace('\t', '')
+    value_str = re.sub(r':+$', '', value_str)
+    
+    match = re.search(r'(\d{1,2})[^\d](\d{2})', value_str)
+    if match: return f"{match.group(1).zfill(2)}:{match.group(2)}"
+    if len(value_str) == 4 and value_str.isdigit(): return f"{value_str[:2]}:{value_str[2:]}"
+    if len(value_str) == 3 and value_str.isdigit(): return f"0{value_str[0]}:{value_str[1:]}"
+    if len(value_str) == 2 and value_str.isdigit(): return f"{value_str}:00"
+    
+    return "0"
+
 def extract_periods_task(pdf_path, pages, user_id):
     job = get_current_job()
     if not job: return None
     job.meta['user_id'] = user_id; job.save_meta()
     
-    # Log solicitado
     print(f"[LOG] Usuário: {user_id} | A extrair períodos")
 
     extractor = ExtractorGeralAI(job=job)
@@ -173,109 +213,11 @@ def extract_periods_task(pdf_path, pages, user_id):
         job.meta.update({'status': 'error', 'error': str(e)}); job.save()
         return None
 
-def normalize_time_format(value):
-    if pd.isna(value) or str(value).strip() in ["0", "", "nan"]: return "0"
-    value_str = str(value).strip().replace(' ', '').replace('\n', '').replace('\r', '').replace('\t', '')
-    value_str = re.sub(r':+$', '', value_str)
-    match = re.search(r'(\d{1,2})[^\d](\d{2})', value_str)
-    if match: return f"{match.group(1).zfill(2)}:{match.group(2)}"
-    if len(value_str) == 4 and value_str.isdigit(): return f"{value_str[:2]}:{value_str[2:]}"
-    if len(value_str) == 3 and value_str.isdigit(): return f"0{value_str[0]}:{value_str[1:]}"
-    if len(value_str) == 2 and value_str.isdigit(): return f"{value_str}:00"
-    if len(value_str) == 1 and value_str.isdigit(): return f"0{value_str}:00"
-    return "0"
-
-def parse_flexible_date(date_str):
-    if not date_str or str(date_str).strip() in ['0', '', 'nan', 'None']: return pd.NaT
-    date_str = str(date_str).strip().replace('\n', '').replace(' ', '')
-    for fmt in ('%d/%m/%Y', '%d-%m-%Y', '%d.%m.%Y', '%d/%m/%y', '%d%m%Y', '%d%m%y'):
-        try: return pd.to_datetime(date_str, format=fmt)
-        except: pass
-    try:
-        clean_str = re.sub(r'[^\d/]', '', date_str)
-        if '/' in clean_str: return pd.to_datetime(clean_str, dayfirst=True)
-    except: pass
-    return pd.NaT
-
-def match_rows_to_calendar(calendar_df, ai_rows):
-    final_df = calendar_df.copy()
-    time_cols = [f'Entrada{i}' for i in range(1,12)] + [f'Saida{i}' for i in range(1,12)]
-    for col in time_cols: final_df[col] = '0'
-    
-    date_to_idx = {d.strftime('%Y-%m-%d'): i for i, d in enumerate(final_df['Dia_dt'])}
-    weekday_indices = {i: [] for i in range(7)}
-    for idx, dt in enumerate(final_df['Dia_dt']):
-        weekday_indices[dt.dayofweek].append(idx)
-        
-    dia_semana_map = {
-        'seg': 0, 'ter': 1, 'qua': 2, 'qui': 3, 'sex': 4, 'sab': 5, 'dom': 6,
-        'sábado': 5, 'sabado': 5, 'domingo': 6, 'segunda': 0, 'terça': 1, 'quarta': 2, 'quinta': 3, 'sexta': 4
-    }
-
-    last_valid_idx = -1
-
-    for row in ai_rows:
-        dt_obj = parse_flexible_date(row.get('Dia_Str'))
-        target_idx = -1
-        
-        if pd.notna(dt_obj):
-            dt_str = dt_obj.strftime('%Y-%m-%d')
-            if dt_str in date_to_idx:
-                target_idx = date_to_idx[dt_str]
-                last_valid_idx = target_idx 
-        
-        if target_idx == -1 and row.get('Dia_Semana_Str'):
-            dia_str_clean = row.get('Dia_Semana_Str').lower().split('-')[0].strip()
-            dia_str_clean = re.sub(r'[^a-z]', '', dia_str_clean)
-            target_weekday = -1
-            for k, v in dia_semana_map.items():
-                if k in dia_str_clean:
-                    target_weekday = v
-                    break
-            
-            if target_weekday != -1:
-                candidates = weekday_indices[target_weekday]
-                if candidates:
-                    anchor = max(0, last_valid_idx)
-                    closest_candidate = min(candidates, key=lambda x: abs(x - anchor))
-                    target_idx = closest_candidate
-                    if target_idx >= last_valid_idx:
-                        last_valid_idx = target_idx
-
-        if target_idx == -1:
-            target_idx = last_valid_idx + 1
-        
-        if target_idx >= len(final_df): continue
-            
-        current_data_in_row = final_df.iloc[target_idx][time_cols].values
-        has_data = any(str(x) != '0' for x in current_data_in_row)
-        
-        if has_data:
-            existing_times = [str(x) for x in current_data_in_row if str(x) != '0']
-            new_times = []
-            for col in time_cols:
-                val = row.get(col, '0')
-                if val and str(val) != '0': new_times.append(str(val))
-            all_times = sorted(list(set(existing_times + new_times)), key=lambda x: x.replace(':',''))
-            
-            for col in time_cols: final_df.at[target_idx, col] = '0'
-            ordered_cols = []
-            for i in range(1,12): ordered_cols.extend([f'Entrada{i}', f'Saida{i}'])
-            for i, t_val in enumerate(all_times[:22]):
-                final_df.at[target_idx, ordered_cols[i]] = t_val
-        else:
-            for col in time_cols:
-                val = row.get(col, '0')
-                if val: final_df.at[target_idx, col] = val
-        
-    return final_df
-
 def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
     job = get_current_job()
     if not job: return None
     job.meta['user_id'] = user_id; job.save_meta()
 
-    # Log solicitado
     total_pages = len(pages_with_periods_json)
     print(f"[LOG] Usuário: {user_id} | Paginas: {total_pages}")
 
@@ -295,32 +237,28 @@ def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
     extractor = ExtractorGeralAI(model_type, job)
     try:
         pages_data = extractor.process_pages_sync(pdf_path, pages_with_periods)
-        extractor.update_progress(2, 3, "Consolidando dados...", extra_info={'consolidating': True})
+        extractor.update_progress(2, 3, "Organizando dados sequencialmente...", extra_info={'consolidating': True})
         
-        all_dfs = []
+        all_rows_data = []
+
         for idx, page_info in enumerate(pages_with_periods):
             page_order = idx
-            start_date, end_date = page_info['start_date_obj'], page_info['end_date_obj']
-            
-            full_date_range = pd.date_range(start=start_date, end=end_date, freq='D')
-            calendar_df = pd.DataFrame(full_date_range, columns=['Dia_dt'])
-            calendar_df['Dia'] = calendar_df['Dia_dt'].dt.strftime('%d/%m/%Y')
+            start_date = page_info['start_date_obj']
             
             if page_order in pages_data and pages_data.get(page_order, {}).get('entities'):
-                ai_rows = extractor.format_ai_rows_by_order(pages_data[page_order]['entities'])
-                merged_df = match_rows_to_calendar(calendar_df, ai_rows)
-                all_dfs.append(merged_df)
-            else:
-                all_dfs.append(calendar_df)
+                raw_rows = extractor.format_ai_rows_by_order(pages_data[page_order]['entities'])
+                
+                if raw_rows:
+                    # Chamada para a função estrita (sem logs de debug)
+                    processed_rows = assign_dates_sequentially_strict(raw_rows, start_date)
+                    all_rows_data.extend(processed_rows)
 
-        if not all_dfs: raise Exception("Nenhum dado gerado.")
+        if not all_rows_data:
+             raise Exception("A IA não retornou dados de marcação.")
+
+        final_df = pd.DataFrame(all_rows_data)
         
-        final_df = pd.concat(all_dfs, ignore_index=True)
-        final_df = final_df.drop_duplicates(subset=['Dia_dt'], keep='last')
-        
-        day_map_pt = {0: "seg", 1: "ter", 2: "qua", 3: "qui", 4: "sex", 5: "sab", 6: "dom"}
-        final_df['Dia_Sema'] = final_df['Dia_dt'].dt.dayofweek.map(day_map_pt)
-        
+        # Mantém a ordem exata da lista processada
         colunas_finais = ['Dia', 'Dia_Sema']
         for i in range(1, 12):
             colunas_finais.extend([f'Entrada{i}', f'Saida{i}'])
