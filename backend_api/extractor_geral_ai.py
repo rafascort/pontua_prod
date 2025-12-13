@@ -137,7 +137,6 @@ class ExtractorGeralAI:
 
     def format_ai_rows_by_order(self, entities):
         extracted_rows = []
-        # A API DocumentAI já retorna entities geralmente na ordem de leitura (top-down)
         for entity in entities:
             if entity.type_.lower() == 'tabela_marcacoes' and entity.properties:
                 row_data = {prop.type_.lower(): prop.mention_text.strip() for prop in entity.properties}
@@ -158,30 +157,80 @@ class ExtractorGeralAI:
                 })
         return extracted_rows
 
-def assign_dates_sequentially_strict(ai_rows, page_start_date):
+def process_rows_to_day_map(ai_rows):
     """
-    Atribui datas estritamente pela ordem das linhas.
-    Linha 0 = page_start_date
-    Linha 1 = page_start_date + 1 dia
-    ...
-    Ignora completamente o conteúdo da coluna 'Dia' para fins de ordenação.
+    Cria um mapa {NumeroDia: DadosLinha} baseado no que foi lido.
+    Isso vincula inseparavelmente os horários ao dia lido naquela linha.
     """
-    processed_rows = []
+    day_map = {}
+    last_valid_day = 0
     
-    day_map_pt = {0: "seg", 1: "ter", 2: "qua", 3: "qui", 4: "sex", 5: "sab", 6: "dom"}
-
     for i, row in enumerate(ai_rows):
-        # Cálculo simples: Data inicial + indice da linha
-        current_date = page_start_date + timedelta(days=i)
+        day_str = row.get('Dia_Str', '')
         
-        # Sobrescreve a data e o dia da semana com o calculado
-        row['Sort_Date'] = current_date
-        row['Dia'] = current_date.strftime('%d/%m/%Y')
-        row['Dia_Sema'] = day_map_pt.get(current_date.weekday(), "")
+        # Tenta extrair o dia (1-31)
+        match = re.search(r'(\d{1,2})', str(day_str))
         
-        processed_rows.append(row)
+        day_int = None
+        if match:
+            try:
+                val = int(match.group(1))
+                if 1 <= val <= 31:
+                    day_int = val
+            except: pass
+            
+        # Fallback sequencial se o dia for ilegível
+        if day_int is None:
+             day_int = last_valid_day + 1
 
-    return processed_rows
+        # Salva no mapa (sobrescreve se houver duplicata, assumindo que a leitura posterior corrige a anterior)
+        day_map[day_int] = row
+        last_valid_day = day_int
+        
+    return day_map
+
+def rebuild_calendar_from_map(day_map, page_start_date):
+    """
+    Reconstrói o mês inteiro iterando de 1 a 31 e buscando os dados no mapa.
+    """
+    final_rows = []
+    day_map_pt = {0: "seg", 1: "ter", 2: "qua", 3: "qui", 4: "sex", 5: "sab", 6: "dom"}
+    
+    try:
+        next_month = page_start_date.replace(day=28) + timedelta(days=4)
+        last_day = (next_month - timedelta(days=next_month.day)).day
+    except:
+        last_day = 31
+
+    for d in range(1, last_day + 1):
+        try:
+            curr_dt = page_start_date.replace(day=d)
+        except ValueError:
+            break
+            
+        original_data = day_map.get(d)
+        
+        row_final = {}
+        row_final['Sort_Date'] = curr_dt
+        row_final['Dia'] = curr_dt.strftime('%d/%m/%Y')
+        row_final['Dia_Sema'] = day_map_pt.get(curr_dt.weekday(), "")
+        
+        if original_data:
+            # Copia horários
+            for k in range(1, 12):
+                ent_key = f'Entrada{k}'
+                sai_key = f'Saida{k}'
+                row_final[ent_key] = original_data.get(ent_key, '0')
+                row_final[sai_key] = original_data.get(sai_key, '0')
+        else:
+            # Dia vazio (lacuna)
+            for k in range(1, 12):
+                row_final[f'Entrada{k}'] = '0'
+                row_final[f'Saida{k}'] = '0'
+                
+        final_rows.append(row_final)
+        
+    return final_rows
 
 def normalize_time_format(value):
     if pd.isna(value) or str(value).strip() in ["0", "", "nan"]: return "0"
@@ -249,16 +298,21 @@ def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
                 raw_rows = extractor.format_ai_rows_by_order(pages_data[page_order]['entities'])
                 
                 if raw_rows:
-                    # Chamada para a função estrita (sem logs de debug)
-                    processed_rows = assign_dates_sequentially_strict(raw_rows, start_date)
-                    all_rows_data.extend(processed_rows)
+                    # 1. Cria Mapa Rígido {Dia: Dados}
+                    day_map = process_rows_to_day_map(raw_rows)
+                    
+                    # 2. Reconstrói calendário buscando no mapa
+                    final_page_rows = rebuild_calendar_from_map(day_map, start_date)
+                    
+                    all_rows_data.extend(final_page_rows)
 
         if not all_rows_data:
              raise Exception("A IA não retornou dados de marcação.")
 
         final_df = pd.DataFrame(all_rows_data)
         
-        # Mantém a ordem exata da lista processada
+        final_df = final_df.sort_values(by='Sort_Date')
+        
         colunas_finais = ['Dia', 'Dia_Sema']
         for i in range(1, 12):
             colunas_finais.extend([f'Entrada{i}', f'Saida{i}'])
