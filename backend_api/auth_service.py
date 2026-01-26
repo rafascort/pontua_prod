@@ -619,7 +619,7 @@ def create_portal_session():
         return_url = f"{frontend_url}/app"
 
         portal_session = stripe.billing_portal.Session.create(
-            customer=stripe_customer_id, return_url=return_url
+            customer=stripe_customer_id, return_url=return_url, configuration='bpc_1SrNUmF0lzUQm2PeHMTC46vC'
         )
         return jsonify({'url': portal_session.url})
 

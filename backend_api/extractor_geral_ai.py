@@ -19,7 +19,7 @@ from pdf2image import convert_from_path
 import pytesseract
 import platform
 
-# Configuração de Logging para Journalctl
+# Configuração de Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ExtractorAI")
 
@@ -118,6 +118,18 @@ def normalize_time(val):
     if len(d) == 3: return f"0{d[0]}:{d[1:3]}"
     return "0"
 
+def normalize_date(date_str, default_year):
+    if not date_str: return None
+    date_str = re.sub(r'[^\d/.-]', '', date_str).replace('.', '/').replace('-', '/')
+    parts = date_str.split('/')
+    if len(parts) >= 2:
+        day = parts[0].zfill(2)
+        month = parts[1].zfill(2)
+        year = parts[2] if len(parts) == 3 else default_year
+        if len(str(year)) == 2: year = f"20{year}"
+        return f"{day}/{month}/{year}"
+    return None
+
 def extract_periods_task(pdf_path, pages, user_id):
     job = get_current_job()
     if not job: return None
@@ -156,40 +168,74 @@ def process_pdf_task(pdf_path, pages_with_periods_json, model_type, user_id):
             master_df[f'Entrada{i}'] = "0"; master_df[f'Saida{i}'] = "0"
 
         pages_data = extractor.process_pages_sync(pdf_path, valid_pages)
-        all_extracted_rows = []
+        default_year = global_start.year
+        
+        # Rastreador de linha física para prever a data correta
+        current_physical_row = 0
 
         for idx, page in enumerate(valid_pages):
             entities = pages_data.get(idx, {}).get('entities', [])
             sorted_entities = extractor.spatial_sort_entities(entities)
+            
             for entity in sorted_entities:
-                row_data = {p.type_.lower(): p.mention_text.strip() for p in entity.properties}
-                all_extracted_rows.append(row_data)
+                data = {p.type_.lower(): p.mention_text.strip() for p in entity.properties}
+                
+                data_ia = data.get('dia', data.get('data', None))
+                data_normalizada = normalize_date(data_ia, default_year)
+                
+                target_idx = None
+                
+                # --- LÓGICA DE CORREÇÃO PARA O "BORRADO" DO FICHÁRIO ---
+                if current_physical_row < len(master_df):
+                    expected_date = master_df.at[current_physical_row, 'Dia']
+                    
+                    if data_normalizada:
+                        ai_day = data_normalizada.split('/')[0].lstrip('0')
+                        exp_day = expected_date.split('/')[0]
+                        
+                        # Se a IA leu só o final do dia (ex: leu '7' mas o esperado é '17')
+                        # e o mês/ano são iguais aos esperados para essa linha física
+                        if len(ai_day) == 1 and exp_day.endswith(ai_day) and data_normalizada[2:] == expected_date[2:]:
+                            data_normalizada = expected_date
+                    else:
+                        # Se a IA não conseguiu ler data nenhuma, assume a data da linha física
+                        data_normalizada = expected_date
 
-        for i in range(len(master_df)):
-            if i < len(all_extracted_rows):
-                data = all_extracted_rows[i]
-                for k in range(1, 12):
-                    e_val = data.get(f'entrada{k}', data.get(f'entrada_{k}', "0"))
-                    s_val = data.get(f'saida{k}', data.get(f'saída{k}', "0"))
-                    master_df.at[i, f'Entrada{k}'] = normalize_time(e_val)
-                    master_df.at[i, f'Saida{k}'] = normalize_time(s_val)
+                # Localiza a posição exata no calendário
+                if data_normalizada:
+                    idx_match = master_df.index[master_df['Dia'] == data_normalizada]
+                    if not idx_match.empty:
+                        target_idx = idx_match[0]
 
-        # Geração do nome do arquivo com números aleatórios
-        random_suffix = ''.join(random.choices(string.digits, k=10))
-        final_filename = f"Ponto_Extraido_{random_suffix}.csv"
+                # Se achou uma posição válida no calendário
+                if target_idx is not None:
+                    for k in range(1, 12):
+                        e_val = normalize_time(data.get(f'entrada{k}', data.get(f'entrada_{k}', "0")))
+                        s_val = normalize_time(data.get(f'saida{k}', data.get(f'saída{k}', "0")))
+                        
+                        # Preenche Entrada
+                        if e_val != "0":
+                            for col_k in range(1, 12):
+                                if master_df.at[target_idx, f'Entrada{col_k}'] == "0":
+                                    master_df.at[target_idx, f'Entrada{col_k}'] = e_val
+                                    break
+                        
+                        # Preenche Saída
+                        if s_val != "0":
+                            for col_k in range(1, 12):
+                                if master_df.at[target_idx, f'Saida{col_k}'] == "0":
+                                    master_df.at[target_idx, f'Saida{col_k}'] = s_val
+                                    break
+                
+                # Avança para a próxima expectativa de linha física
+                current_physical_row += 1
 
+        # Geração do nome do arquivo e salvamento
+        final_filename = f"Ponto_IA_extraido_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         out_path = os.path.join(tempfile.gettempdir(), f"{job.id}.csv")
         master_df.to_csv(out_path, index=False, sep=';', encoding='utf-8-sig')
         
-        # Log de finalização
-        log_time = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
-        logger.info(f"Processo finalizado: {log_time} | Usuário: {user_id} | Páginas: {len(pages_with_periods_json)}")
-
-        job.meta.update({
-            'status': 'completed', 
-            'file_path': out_path, 
-            'filename': final_filename
-        })
+        job.meta.update({'status': 'completed', 'file_path': out_path, 'filename': final_filename})
         job.save()
         return out_path
 
