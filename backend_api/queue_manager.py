@@ -8,6 +8,7 @@ import threading
 import time
 import traceback
 import stripe
+import payroll_extractor_ai
 
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
@@ -56,12 +57,14 @@ if not all(k for k in PLAN_NAME_TO_EXTRA_PRICE_ID.values() if k):
 QUEUES = {
     '6': Queue('geral_ai_queue', connection=redis_conn),  # Modelo "Com Data"
     '7': Queue('geral_queue', connection=redis_conn),     # Modelo "Sem Data"
+    'payroll': Queue('payroll_queue', connection=redis_conn), # ADICIONADO
     'period_extraction': Queue('period_extraction_queue', connection=redis_conn),
 }
 
 EXTRACTOR_MODULES = {
     '6': 'extractor_geral_ai',
     '7': 'extractor_geral',
+    'payroll': 'payroll_extractor_ai', # ADICIONADO
     'period_extraction': 'extractor_geral_ai',
 }
 # --- FIM DA ATUALIZAÇÃO ---
@@ -130,6 +133,35 @@ def report_usage_to_stripe(user, pages_processed_this_job, new_total_page_count)
         print(f"[DIAGNOSTICO] Nenhuma página extra para reportar (páginas_a_reportar={pages_to_report}).")
 # --- FIM FUNÇÃO ---
 
+# --- ROTAS DE FOLHA DE PAGAMENTO (ADMIN ONLY) ---
+
+@app.route('/api/payroll/analyze', methods=['POST'])
+@jwt_required()
+@admin_required()
+def payroll_analyze():
+    current_user_email = get_jwt_identity()
+    if 'pdf_file' not in request.files: return jsonify({'error': 'PDF não enviado.'}), 400
+    file = request.files['pdf_file']; pages = request.form.get('pages', '')
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
+        file.save(tmp.name); pdf_path = tmp.name
+
+    q = QUEUES.get('payroll')
+    job = q.enqueue('payroll_extractor_ai.scan_verbas_task', pdf_path, pages, current_user_email,
+                    result_ttl=1800, meta={'user_id': current_user_email, 'step': 'payroll_analysis'})
+    return jsonify({'task_id': job.id})
+
+@app.route('/api/payroll/process', methods=['POST'])
+@jwt_required()
+@admin_required()
+def payroll_process():
+    current_user_email = get_jwt_identity(); data = request.get_json()
+    q = QUEUES.get('payroll')
+    job = q.enqueue('payroll_extractor_ai.process_payroll_final_task',
+                    data['pdf_path'], data['pages'], data['selected_verbas'], current_user_email,
+                    job_timeout='1h', result_ttl=1800,
+                    meta={'user_id': current_user_email, 'usage_counted': False})
+    return jsonify({'task_id': job.id})
 
 @app.route('/api/extract-periods', methods=['POST'])
 @jwt_required()

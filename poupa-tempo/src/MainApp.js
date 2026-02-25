@@ -20,6 +20,7 @@ import './UserProfilePasswordModal.css';
 import './UserProfileModal.css';
 import './AlertModal.css';
 import './TermsOfServiceModal.css';
+import PayrollExtractorView from './PayrollExtractorView';
 
 const API_BASE_URL = '/api';
 
@@ -487,15 +488,30 @@ const MainApp = ({ onLogout, isAdmin }) => {
             />
 
             <main className="main-content">
+                {/* TELA INICIAL (HOME) */}
                 {view === 'home' && (
                     <div className="button-container">
-                        <button className="action-button" onClick={() => setView('extractor')}>Extrator de ponto</button>
-                        <button className="action-button" disabled>Em breve...</button>
+                        <button className="action-button" onClick={() => setView('extractor')}>
+                            Extrator de ponto
+                        </button>
+
+                        {/* CORREÇÃO: Usando a prop isAdmin que já existe no seu componente */}
+                        {isAdmin ? (
+                            <button className="action-button" onClick={() => setView('payroll')}>
+                                Extrator de Holerite
+                            </button>
+                        ) : (
+                            <button className="action-button" disabled>
+                                Em breve...
+                            </button>
+                        )}
                     </div>
                 )}
+
+                {/* VIEW DO EXTRATOR DE PONTO */}
                 {view === 'extractor' && (
-                     <div className="extractor-container">
-                          <div className="extractor-header">
+                    <div className="extractor-container">
+                        <div className="extractor-header">
                             <h2>Selecione o modelo, o ficheiro e as páginas</h2>
                             <input
                                 type="text"
@@ -523,11 +539,6 @@ const MainApp = ({ onLogout, isAdmin }) => {
                                         <p>{modelNames[modelId]}</p>
                                     </div>
                                 ))}
-                                {availableModels.length === 0 && (
-                                    <p style={{ color: '#a8b3c7', textAlign: 'center', gridColumn: '1 / -1' }}>
-                                        Nenhum modelo encontrado para "{searchTerm}".
-                                    </p>
-                                )}
                             </div>
                         </div>
                         <div className="extractor-actions">
@@ -544,7 +555,6 @@ const MainApp = ({ onLogout, isAdmin }) => {
                             <input
                                 type="text"
                                 className="page-input"
-                                // Alterado: Placeholder genérico para obrigatório
                                 placeholder="Páginas (Obrigatório, ex: 1-5, 8)"
                                 value={pageRange}
                                 onChange={(e) => setPageRange(e.target.value)}
@@ -553,7 +563,6 @@ const MainApp = ({ onLogout, isAdmin }) => {
                             <button
                                 className="start-button"
                                 onClick={handleStartProcess}
-                                // Alterado: A verificação !pageRange agora se aplica a ambos os modelos
                                 disabled={isLoading || !modelType || !selectedFile || !pageRange}
                             >
                                 <FontAwesomeIcon icon={faSync} /> {isLoading ? 'Processando...' : 'Iniciar'}
@@ -561,8 +570,14 @@ const MainApp = ({ onLogout, isAdmin }) => {
                         </div>
                     </div>
                 )}
-            </main>
 
+                {/* VIEW DA FOLHA (HOLERITE) */}
+                {view === 'payroll' && (
+                    <PayrollExtractorView 
+                        onBack={() => setView('home')} 
+                    />
+                )}
+            </main>
             {/* Modais */}
             
             <PdfTypeAlertModal 
