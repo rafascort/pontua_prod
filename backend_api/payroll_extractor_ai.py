@@ -14,33 +14,51 @@ from pypdf import PdfReader, PdfWriter
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("PayrollAI")
 
-def normalize_text(text):
-    """Remove acentos e padroniza para evitar itens duplicados no filtro."""
-    if not text: return ""
-    text = str(text).strip().lower()
-    text = "".join(c for c in unicodedata.normalize('NFD', text) if unicodedata.category(c) != 'Mn')
-    return text
+def clean_value(val):
+    """Garante que o valor seja uma string limpa, sem chaves de dicionário."""
+    if isinstance(val, dict):
+        return str(next(iter(val.values()))) if val else "0"
+    return str(val).strip() if val is not None else "0"
+
+def is_valid_name(name):
+    """Filtra lixo de cabeçalho para não aparecer nos nomes dos funcionários."""
+    if not name or len(name) < 8: return False
+    forbidden = ["LTDA", "CNPJ", "CPF", "RUA", "AVENIDA", "ENDERECO", "EMPRESA", "S.A", "EIRELI"]
+    name_up = name.upper()
+    if any(word in name_up for word in forbidden): return False
+    if len(re.findall(r'\d', name)) > 4: return False
+    return True
 
 class PayrollExtractorAI:
     def __init__(self, job=None):
         self.job = job
         api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key: raise ValueError("Chave GEMINI_API_KEY não configurada.")
         self.client = genai.Client(api_key=api_key)
-        # Utilizando o modelo 2.5-flash da sua lista para maior inteligência visual
         self.model_id = "gemini-2.5-flash"
 
-    def _parse_range(self, pages_str):
+    def _call_ai_with_retry(self, file, prompt, retries=3):
+        for i in range(retries):
+            try:
+                return self.client.models.generate_content(model=self.model_id, contents=[file, prompt])
+            except Exception as e:
+                if i < retries - 1:
+                    time.sleep(5)
+                    continue
+                raise e
+
+    def _parse_range(self, pages_str, total_pages):
         res = []
         if not pages_str: return []
-        for part in pages_str.split(','):
+        for part in str(pages_str).split(','):
             part = part.strip()
             if '-' in part:
                 try:
                     s, e = map(int, part.split('-'))
-                    res.extend(range(s, e + 1))
+                    res.extend(range(s, min(e, total_pages) + 1))
                 except: pass
-            elif part.isdigit(): res.append(int(part))
+            elif part.isdigit():
+                p = int(part)
+                if p <= total_pages: res.append(p)
         return sorted(list(set(p for p in res if p > 0)))
 
     def _wait_for_file(self, file_name):
@@ -51,14 +69,33 @@ class PayrollExtractorAI:
         return file
 
     def scan_verbas_task(self, pdf_path, pages_range):
-        """Identifica todos os itens de holerite em todas as páginas, ignorando o ponto."""
-        pages = self._parse_range(pages_range)
+        """Passo 2: Identifica nomes e verbas (Agora com Barra de Progresso)."""
         reader = PdfReader(pdf_path)
-        global_map = {} 
+        pages = self._parse_range(pages_range, len(reader.pages))
+        
+        # Inicia Meta de Progresso na Análise
+        if self.job:
+            self.job.meta.update({
+                'total_steps': len(pages), 
+                'current_step': 0, 
+                'status': 'processing', 
+                'message': 'Iniciando análise do documento...'
+            })
+            self.job.save_meta()
+
+        unique_items_ordered = {} 
         all_nomes = set()
 
-        for p_num in pages:
+        for index, p_num in enumerate(pages):
             try:
+                # Atualiza progresso a cada página lida
+                if self.job:
+                    self.job.meta.update({
+                        'current_step': index + 1, 
+                        'message': f"Analisando verbas na página {p_num}..."
+                    })
+                    self.job.save_meta()
+
                 writer = PdfWriter()
                 writer.add_page(reader.pages[p_num - 1])
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
@@ -68,54 +105,56 @@ class PayrollExtractorAI:
                 uploaded_file = self.client.files.upload(file=tmp_path)
                 file = self._wait_for_file(uploaded_file.name)
                 
-                prompt = """Analise este documento. Ele contém um HOLERITE e um CARTÃO PONTO na mesma folha.
-                REGRA CRÍTICA: Ignore COMPLETAMENTE a parte de 'BATIDAS', horários ou cartão ponto.
-                Foque apenas no Demonstrativo de Pagamento (Holerite).
-                Extraia em JSON:
-                1. 'nomes': Lista com o nome completo do funcionário.
-                2. 'itens': Lista com os nomes das verbas, descontos e bases (ex: Salário Base, INSS, FGTS).
-                NÃO extraia valores numéricos agora."""
+                prompt = """Aja como analista de DP. No HOLERITE:
+                1. Extraia o NOME DO FUNCIONÁRIO (Ignore empresa).
+                2. Liste VERBAS na ordem exata de CIMA PARA BAIXO.
+                REGRA: Não envie objetos JSON complexos na lista de itens, apenas o nome da verba.
+                JSON: {'nomes': [], 'itens': []}"""
                 
-                response = self.client.models.generate_content(model=self.model_id, contents=[file, prompt])
+                response = self._call_ai_with_retry(file, prompt)
                 self.client.files.delete(name=file.name)
                 os.unlink(tmp_path)
 
                 data = json.loads(re.search(r'\{.*\}', response.text, re.DOTALL).group())
                 
                 for item in data.get('itens', []):
-                    val = str(item).strip()
-                    if not re.match(r'^[\d.,/-]+$', val) and len(val) > 2:
-                        key = normalize_text(val)
-                        if key not in global_map: global_map[key] = val
+                    clean = str(item).strip()
+                    # Bloqueio de JSON e lixo na lista de seleção
+                    if '{' not in clean and len(clean) > 2 and not re.match(r'^[0-9\.,\-/%\s:]+$', clean):
+                        norm = "".join(c for c in unicodedata.normalize('NFD', clean.lower()) if unicodedata.category(c) != 'Mn')
+                        if norm not in unique_items_ordered:
+                            unique_items_ordered[norm] = clean
                 
-                for nome in data.get('nomes', []):
-                    all_nomes.add(str(nome).strip().upper())
+                for n in data.get('nomes', []):
+                    if is_valid_name(n):
+                        all_nomes.add(str(n).strip().upper())
             except: continue
 
         result = {
             "nomes": sorted(list(all_nomes)),
-            "verbas": list(global_map.values()), # Ordem visual mantida
+            "verbas": list(unique_items_ordered.values()),
             "pdf_path": pdf_path, "pages": pages_range
         }
+        
         if self.job:
             self.job.meta.update({'status': 'completed', 'result': result})
             self.job.save_meta()
         return result
 
     def process_payroll_task(self, pdf_path, pages_range, selected_verbas):
-        """Gera o Excel com colunas fixas, abas por pessoa e preenchimento de 0."""
+        """Passo 4: Gera Excel MultiIndex (Sub-colunas)."""
         job = get_current_job()
-        pages = self._parse_range(pages_range)
+        reader = PdfReader(pdf_path)
+        pages = self._parse_range(pages_range, len(reader.pages))
+        
         job.meta.update({'total_steps': len(pages), 'current_step': 0, 'status': 'processing'})
         job.save_meta()
 
-        # Lista Mestra de Colunas baseada na sua seleção
         clean_targets = [str(v).strip() for v in selected_verbas]
-        master_cols = ['Mês'] + clean_targets
+        col_tuples = [(target, sub) for target in clean_targets for sub in ['Ref.', 'Valor']]
+        multi_col = pd.MultiIndex.from_tuples(col_tuples)
         
-        all_results = []
-        reader = PdfReader(pdf_path)
-
+        all_extracted = []
         for index, p_num in enumerate(pages):
             try:
                 job.meta.update({'current_step': index + 1, 'message': f"Processando página {p_num}..."})
@@ -130,50 +169,52 @@ class PayrollExtractorAI:
                 uploaded_file = self.client.files.upload(file=tmp_path)
                 file = self._wait_for_file(uploaded_file.name)
                 
-                prompt = f"""Atue como especialista em holerites. Ignore o Cartão Ponto nesta folha.
-                Extraia apenas os dados do HOLERITE.
-                JSON: {{'nome': 'Nome', 'periodo': 'MM/AAAA', 'dados': [{{'campo': 'Item', 'valor': 'Valor'}}]}}
-                Campos alvo: {clean_targets}"""
+                prompt = f"""Ignore o Cartão Ponto. No Holerite, transcreva literal:
+                JSON: {{'nome': 'Nome', 'periodo': 'MM/AAAA', 'dados': [{{'campo': 'Item', 'ref': 'Ref', 'valor': 'Valor'}}]}}
+                Extraia apenas: {clean_targets}"""
                 
-                response = self.client.models.generate_content(model=self.model_id, contents=[file, prompt])
+                response = self._call_ai_with_retry(file, prompt)
                 self.client.files.delete(name=file.name)
                 os.unlink(tmp_path)
 
                 match = re.search(r'\[.*\]|\{.*\}', response.text, re.DOTALL)
                 if match:
                     d = json.loads(match.group())
-                    all_results.extend(d if isinstance(d, list) else [d])
+                    all_extracted.extend(d if isinstance(d, list) else [d])
             except: continue
 
-        if not all_results: return False
+        if not all_extracted: return False
 
         output_path = os.path.join(tempfile.gettempdir(), f"Folha_{job.id}.xlsx")
+        temp_data = []
+        for e in all_extracted:
+            nome, mes = clean_value(e.get('nome')), clean_value(e.get('periodo'))
+            for item in e.get('dados', []):
+                temp_data.append({
+                    'Nome': nome, 'Mês': mes, 
+                    'Campo': clean_value(item.get('campo')), 
+                    'Ref': clean_value(item.get('ref')), 
+                    'Valor': clean_value(item.get('valor'))
+                })
         
-        # Consolidação plana dos dados
-        flat_rows = []
-        for entry in all_results:
-            n, m = entry.get('nome', 'N/A'), entry.get('periodo', 'N/A')
-            for item in entry.get('dados', []):
-                flat_rows.append({'Nome': n, 'Mês': m, 'Campo': item.get('campo'), 'Valor': item.get('valor')})
+        df_full = pd.DataFrame(temp_data)
+        if df_full.empty: return False
 
-        df_master = pd.DataFrame(flat_rows)
-        if df_master.empty: return False
-
-        # Criação do Excel real (.xlsx)
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            for nome, group in df_master.groupby('Nome'):
-                # Pivot: Mês como linha, Verbas como colunas
-                df_p = group.pivot_table(index='Mês', columns='Campo', values='Valor', aggfunc='first').reset_index()
+            for nome, group in df_full.groupby('Nome'):
+                meses = sorted(group['Mês'].unique(), key=lambda x: pd.to_datetime(x, format='%m/%Y', errors='coerce'))
+                df_aba = pd.DataFrame(index=meses, columns=multi_col).fillna('0')
+                df_aba.index.name = 'Mês'
                 
-                # REINDEX: Força todas as colunas selecionadas e preenche vazios com '0'
-                df_p = df_p.reindex(columns=master_cols, fill_value='0')
-                
-                # Ordenação Cronológica (MM/AAAA)
-                df_p['dt'] = pd.to_datetime(df_p['Mês'], format='%m/%Y', errors='coerce')
-                df_p = df_p.sort_values('dt').drop('dt', axis=1)
+                for _, row in group.iterrows():
+                    m, c = row['Mês'], row['Campo']
+                    target = next((t for t in clean_targets if t.lower() in c.lower()), None)
+                    if target:
+                        df_aba.at[m, (target, 'Ref.')] = row['Ref']
+                        df_aba.at[m, (target, 'Valor')] = row['Valor']
                 
                 sheet_name = re.sub(r'[^a-zA-Z0-9 ]', '', str(nome))[:31]
-                df_p.to_excel(writer, sheet_name=sheet_name, index=False)
+                df_aba.to_excel(writer, sheet_name=sheet_name, index=True)
 
         job.meta.update({'status': 'completed', 'file_path': output_path})
         job.save_meta()

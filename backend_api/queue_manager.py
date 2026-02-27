@@ -147,7 +147,7 @@ def payroll_analyze():
         file.save(tmp.name); pdf_path = tmp.name
 
     q = QUEUES.get('payroll')
-    job = q.enqueue('payroll_extractor_ai.scan_verbas_task', pdf_path, pages, current_user_email,
+    job = q.enqueue('payroll_extractor_ai.scan_verbas_task', pdf_path, pages, current_user_email, job_timeout='30m',
                     result_ttl=1800, meta={'user_id': current_user_email, 'step': 'payroll_analysis'})
     return jsonify({'task_id': job.id})
 
