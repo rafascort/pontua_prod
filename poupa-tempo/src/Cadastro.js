@@ -65,6 +65,10 @@ const Cadastro = () => {
     }
   };
 
+  // Lógica da mensagem dinâmica do WhatsApp para o cadastro
+  const mensagemWhatsapp = `Olá! Meu nome é ${name || '________'}, estou na tela de cadastro do Sistema Ponto e tenho uma dúvida.`;
+  const linkWhatsapp = `https://wa.me/5554999427282?text=${encodeURIComponent(mensagemWhatsapp)}`;
+
   return (
     <div className="login-container"> {/* Reutiliza container do login para o fundo */}
       <div className="cadastro-card"> {/* Usa a classe específica para o card */}
@@ -131,6 +135,19 @@ const Cadastro = () => {
         </form>
         <div className="login-link">
           Já tem uma conta? <Link to="/login">Faça Login</Link>
+        </div>
+
+        {/* Bloco de Suporte via WhatsApp adicionado no final do card */}
+        <div style={{ marginTop: '20px', textAlign: 'center', fontSize: '14px', borderTop: '1px solid #eee', paddingTop: '15px' }}>
+          <span style={{ color: '#666' }}>Dúvidas no cadastro?</span>
+          <a 
+            href={linkWhatsapp}
+            target="_blank" 
+            rel="noopener noreferrer"
+            style={{ color: '#25D366', fontWeight: 'bold', marginLeft: '5px', textDecoration: 'none' }}
+          >
+            Fale conosco no WhatsApp
+          </a>
         </div>
       </div>
     </div>

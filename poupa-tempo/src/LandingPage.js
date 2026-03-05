@@ -12,6 +12,9 @@ const LandingPage = () => {
     e.preventDefault(); // Impede que o link '#' navegue
     setShowTermsModal(true);
   };
+
+  // Link do WhatsApp com mensagem pronta
+  const whatsappUrl = `https://wa.me/5554999427282?text=${encodeURIComponent("Olá! Gostaria de tirar dúvidas sobre o Sistema Ponto. Meu nome é: ")}`;
   
   return (
     <div className="landing-wrapper">
@@ -25,6 +28,16 @@ const LandingPage = () => {
             {/* Link para abrir os Termos de Uso */}
             <a href="#" onClick={handleShowTerms}>
               Termos de Uso
+            </a>
+
+            {/* Link do WhatsApp adicionado no Header */}
+            <a 
+              href={whatsappUrl}
+              target="_blank" 
+              rel="noopener noreferrer"
+              style={{ color: '#25D366', fontWeight: 'bold', textDecoration: 'none' }}
+            >
+              WhatsApp
             </a>
 
             {/* O link de cadastro aponta para /cadastro. Você precisará criar essa rota e componente */}
@@ -159,7 +172,7 @@ const LandingPage = () => {
 
       <footer className="landing-footer">
         <div className="landing-container">
-          &copy; 2025 Sistema Ponto. Todos os direitos reservados.
+          &copy; 2026 Sistema Ponto. Todos os direitos reservados.
         </div>
       </footer>
 
