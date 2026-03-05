@@ -121,34 +121,34 @@ const LandingPage = () => {
                 <tr>
                   <td data-label="Plano">Básico</td>
                   <td data-label="Valor Mensal">
-                    <span className="price">R$ 249,90</span>
+                    <span className="price">R$ 179,90</span>
                     <span className="details"> / mês</span>
                   </td>
-                  <td data-label="Páginas incluídas">200 páginas (R$ 1,25 por página)</td>
+                  <td data-label="Páginas incluídas">200 páginas (R$ 0,90 por página)</td>
                   <td data-label="Página extra">
-                    <span className="highlight">R$ 1,50</span> por página extra
+                    <span className="highlight">R$ 1,00</span> por página extra
                   </td>
                 </tr>
                 <tr>
                   <td data-label="Plano">Padrão</td>
                   <td data-label="Valor Mensal">
-                    <span className="price">R$ 449,90</span>
+                    <span className="price">R$ 349,90</span>
                     <span className="details"> / mês</span>
                   </td>
-                  <td data-label="Páginas incluídas">500 páginas (R$ 0,90 por página)</td>
+                  <td data-label="Páginas incluídas">500 páginas (R$ 0,70 por página)</td>
                   <td data-label="Página extra">
-                    <span className="highlight">R$ 1,10</span> por página extra
+                    <span className="highlight">R$ 0,85</span> por página extra
                   </td>
                 </tr>
                 <tr>
                   <td data-label="Plano">Premium</td>
                   <td data-label="Valor Mensal">
-                    <span className="price">R$ 999,90</span>
+                    <span className="price">R$ 824,90</span>
                     <span className="details"> / mês</span>
                   </td>
-                  <td data-label="Páginas incluídas">1.500 páginas (R$ 0,67 por página)</td>
+                  <td data-label="Páginas incluídas">1.500 páginas (R$ 0,55 por página)</td>
                   <td data-label="Página extra">
-                    <span className="highlight">R$ 0,75</span> por página extra
+                    <span className="highlight">R$ 0,70</span> por página extra
                   </td>
                 </tr>
               </tbody>

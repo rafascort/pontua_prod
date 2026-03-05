@@ -16,32 +16,32 @@ const Planos = ({ onLogout }) => {
         {
             id: 'basic',
             name: 'Básico',
-            price: 'R$ 249,90',
+            price: 'R$ 179,90',
             priceDetails: '/ mês',
             pages: '200 páginas',
-            pagePrice: 'R$ 1,25 por página', // ADICIONADO
-            extra: 'R$ 1,50',
-            stripePriceId: 'price_1SrLpzF0lzUQm2PeALpYe3UR' // <<< SEU ID DE PREÇO BÁSICO FIXO (TESTE)
+            pagePrice: 'R$ 0,90 por página', // ADICIONADO
+            extra: 'R$ 1,00',
+            stripePriceId: 'price_1T6wx0F0lzUQm2PeNPdLJFgM' // <<< SEU ID DE PREÇO BÁSICO FIXO (TESTE)
         },
         {
             id: 'standard',
             name: 'Padrão',
-            price: 'R$ 449,90',
+            price: 'R$ 349,90',
             priceDetails: '/ mês',
             pages: '500 páginas',
-            pagePrice: 'R$ 0,90 por página', // ADICIONADO
-            extra: 'R$ 1,10',
-            stripePriceId: 'price_1SrMMpF0lzUQm2PeIV3xO1Xg' // <<< SEU ID DE PREÇO PADRÃO FIXO (TESTE)
+            pagePrice: 'R$ 0,70 por página', // ADICIONADO
+            extra: 'R$ 0,85',
+            stripePriceId: 'price_1T6wpQF0lzUQm2PeCJQDWClQ' // <<< SEU ID DE PREÇO PADRÃO FIXO (TESTE)
         },
         {
             id: 'premium',
             name: 'Premium',
-            price: 'R$ 999,90',
+            price: 'R$ 824,90',
             priceDetails: '/ mês',
             pages: '1.500 páginas',
-            pagePrice: 'R$ 0,67 por página', // ADICIONADO
-            extra: 'R$ 0,75',
-            stripePriceId: 'price_1SrMQ7F0lzUQm2Pe05d1qp6X' // <<< SEU ID DE PREÇO PREMIUM FIXO (TESTE)
+            pagePrice: 'R$ 0,55 por página', // ADICIONADO
+            extra: 'R$ 0,70',
+            stripePriceId: 'price_1T6ww4F0lzUQm2Pe6I6BR18z' // <<< SEU ID DE PREÇO PREMIUM FIXO (TESTE)
         },
     ];
 

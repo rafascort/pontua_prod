@@ -5,7 +5,7 @@ from flask_migrate import Migrate
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_jwt_extended import create_access_token, get_jwt_identity, jwt_required, JWTManager, get_jwt
 from werkzeug.exceptions import BadRequest
-from datetime import timedelta
+from datetime import datetime, timedelta, date # Adicionado datetime e date
 import os
 from dotenv import load_dotenv
 from authlib.integrations.flask_client import OAuth
@@ -100,6 +100,7 @@ class User(db.Model):
     page_count = db.Column(db.Integer, default=0)
     plan_status = db.Column(db.String(50), nullable=False, default='free')
     stripe_customer_id = db.Column(db.String(120), nullable=True, unique=True)
+    next_reset_date = db.Column(db.Date, nullable=True)
 
 
 # --- Funções Auxiliares JWT e Decorators ---
@@ -146,6 +147,9 @@ def login():
             if check_password_hash(user.password_hash, password):
                 if not user.is_active:
                     return jsonify({"msg": "Sua conta está inativa. Entre em contato com o suporte."}), 403
+                if user.stripe_customer_id and not user.next_reset_date:
+                    print(f"[LOGIN SYNC] Corrigindo data de reset para {user.email}...")
+                    sync_user_billing_cycle(user.email)
                 access_token = create_access_token(identity=email)
                 return jsonify(access_token=access_token), 200
             else:
@@ -633,6 +637,55 @@ def create_portal_session():
         print(f"Erro portal: {e}"); traceback.print_exc()
         return jsonify({"msg": "Erro interno portal."}), 500
 
+def sync_user_billing_cycle(user_email):
+    """Versão 13.0.1+ Robusta: Busca a data de renovação sem quebrar se campos forem nulos."""
+    user = User.query.filter_by(email=user_email).first()
+    if not user or not user.stripe_customer_id:
+        return False
+        
+    try:
+        # 1. Busca a assinatura ativa
+        subs = stripe.Subscription.list(
+            customer=user.stripe_customer_id, 
+            status='active', 
+            limit=1
+        )
+        
+        if not subs.data:
+            print(f"[STRIPE SYNC] Nenhuma assinatura ativa para {user_email}", flush=True)
+            return False
+            
+        sub = subs.data[0]
+        
+        # 2. SEMPRE use .get() para evitar o erro de atributo que vimos no log
+        timestamp = sub.get('current_period_end')
+        
+        # 3. Se não tiver na sub, busca na fatura (Plano B)
+        if not timestamp:
+            invoice_id = sub.get('latest_invoice')
+            if invoice_id:
+                print(f"[STRIPE SYNC] Buscando via fatura para {user.email}...", flush=True)
+                inv = stripe.Invoice.retrieve(invoice_id)
+                timestamp = inv.get('period_end')
+        
+        # 4. Se ainda não tiver, usa a âncora de faturamento (Plano C)
+        if not timestamp:
+            timestamp = sub.get('billing_cycle_anchor')
+
+        if timestamp:
+            # Converte e salva
+            user.next_reset_date = datetime.fromtimestamp(timestamp).date()
+            db.session.commit()
+            print(f"[STRIPE SYNC] SUCESSO: {user.email} atualizado para {user.next_reset_date}", flush=True)
+            return True
+        
+        print(f"[STRIPE SYNC] Falha: Nenhuma data encontrada para {user.email}", flush=True)
+        return False
+        
+    except Exception as e:
+        print(f"[STRIPE ERROR] Erro na sync de {user_email}: {str(e)}", flush=True)
+        db.session.rollback()
+        return False
 
 # --- ROTA DE WEBHOOKS DO STRIPE ---
 @app.route('/api/stripe-webhook', methods=['POST'])
@@ -726,30 +779,49 @@ def handle_checkout_session_completed(session):
         try: db.session.commit()
         except Exception as e: db.session.rollback(); print(f"Erro ao salvar customer_id: {e}")
     if subscription_id:
-        try: subscription = stripe.Subscription.retrieve(subscription_id); update_user_plan_from_subscription(user, subscription)
+        try: subscription = stripe.Subscription.retrieve(subscription_id); update_user_plan_from_subscription(user, subscription); sync_user_billing_cycle(user.email)
         except stripe.StripeError as e: print(f"Erro ao buscar sub {subscription_id}: {e}") # Correção aqui
     else: print(f"AVISO checkout.comp: Sem subscription_id.")
 
 # --- FUNÇÃO ATUALIZADA ---
+
 def handle_invoice_payment_succeeded(invoice):
     stripe_customer_id = invoice.get('customer')
     subscription_id = invoice.get('subscription')
     billing_reason = invoice.get('billing_reason')
     user = find_user_by_stripe_customer_id(stripe_customer_id)
     if not user: return
+    
     print(f"Webhook: Pagamento OK - User: {user.email}, Razão: {billing_reason}")
+    
     if subscription_id and billing_reason == 'subscription_cycle':
         try:
             print(f"Webhook: Zerando contagem para {user.email} (era {user.page_count}).")
-            user.page_count = 0 # <-- ZERA AQUI
+            user.page_count = 0
+            # --- ADIÇÃO DO RESET INDIVIDUAL ---
+            sync_user_billing_cycle(user.email)
+            # ----------------------------------
             subscription = stripe.Subscription.retrieve(subscription_id)
-            update_user_plan_from_subscription(user, subscription) # Commita tudo
-        except stripe.StripeError as e: print(f"Erro Stripe zerando contagem {subscription_id}: {e}"); db.session.rollback() # Correção aqui
-        except Exception as e: print(f"Erro zerando contagem {user.email}: {e}"); traceback.print_exc(); db.session.rollback()
+            update_user_plan_from_subscription(user, subscription)
+        except stripe.StripeError as e:
+            print(f"Erro Stripe zerando contagem {subscription_id}: {e}")
+            db.session.rollback()
+        except Exception as e:
+            print(f"Erro zerando contagem {user.email}: {e}")
+            traceback.print_exc()
+            db.session.rollback()
+            
     elif subscription_id and billing_reason in ['subscription_create', 'subscription_update']:
-         try: subscription = stripe.Subscription.retrieve(subscription_id); update_user_plan_from_subscription(user, subscription)
-         except stripe.StripeError as e: print(f"Erro Stripe buscando sub (criação) {subscription_id}: {e}") # Correção aqui
-# --- FIM ATUALIZAÇÃO ---
+        try:
+            subscription = stripe.Subscription.retrieve(subscription_id)
+            update_user_plan_from_subscription(user, subscription)
+            # --- GARANTE A DATA NO NOVO PLANO ---
+            sync_user_billing_cycle(user.email)
+            # ------------------------------------
+        except stripe.StripeError as e:
+            print(f"Erro Stripe buscando sub (criação) {subscription_id}: {e}")
+        except Exception as e:
+            print(f"Erro inesperado na criação/update sub {user.email}: {e}")
 
 def handle_invoice_payment_failed(invoice):
     stripe_customer_id = invoice.get('customer'); subscription_id = invoice.get('subscription')
