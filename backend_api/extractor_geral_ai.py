@@ -68,13 +68,28 @@ class ExtractorGeralAI:
     def split_pdf_and_extract_periods(self, pdf_path, page_range):
         reader = PdfReader(pdf_path)
         total = len(reader.pages)
-        indices = list(range(total))
+        
+        # --- LÓGICA CORRIGIDA PARA SUPORTAR MÚLTIPLOS RANGES E VÍRGULAS ---
+        indices_set = set()
         if page_range:
-            parts = str(page_range).split('-')
-            if len(parts) == 2:
-                indices = list(range(int(parts[0])-1, min(int(parts[1]), total)))
-            elif parts[0].isdigit():
-                indices = [int(parts[0])-1]
+            range_parts = str(page_range).split(',')
+            for part in range_parts:
+                part = part.strip()
+                if '-' in part:
+                    sub_parts = part.split('-')
+                    if len(sub_parts) == 2 and sub_parts[0].isdigit() and sub_parts[1].isdigit():
+                        start_page = int(sub_parts[0]) - 1
+                        end_page = int(sub_parts[1])
+                        for i in range(start_page, min(end_page, total)):
+                            indices_set.add(i)
+                elif part.isdigit():
+                    page_num = int(part) - 1
+                    if 0 <= page_num < total:
+                        indices_set.add(page_num)
+            indices = sorted(list(indices_set))
+        else:
+            indices = list(range(total))
+        # --- FIM DA CORREÇÃO ---
         
         pages_info = []
         for i in indices:
