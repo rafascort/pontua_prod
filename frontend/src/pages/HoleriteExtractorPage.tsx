@@ -1,0 +1,433 @@
+import { useState, useRef } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Link } from "react-router-dom";
+import {
+  Upload, Play, ArrowLeft, Loader2, X, Check, FileText,
+} from "lucide-react";
+import { toast } from "sonner";
+import AppHeader from "@/components/AppHeader";
+
+const API_BASE_URL = "";
+
+function getToken() {
+  return localStorage.getItem("access_token") || localStorage.getItem("jwt_token");
+}
+
+async function apiFetch(url: string, options: RequestInit = {}) {
+  const token = getToken();
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    ...(options.headers as Record<string, string>),
+  };
+  if (!(options.body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+  }
+  const res = await fetch(`${API_BASE_URL}${url}`, { ...options, headers });
+  return res;
+}
+
+// ── Modal de Seleção de Verbas ──
+interface AnalysisData {
+  nomes: string[];
+  verbas: string[];
+  pdf_path: string;
+  pages: string;
+}
+
+function VerbaSelectionModal({
+  data,
+  onClose,
+  onConfirm,
+}: {
+  data: AnalysisData;
+  onClose: () => void;
+  onConfirm: (taskId: string) => void;
+}) {
+  const [selectedVerbas, setSelectedVerbas] = useState<string[]>(data.verbas || []);
+  const [loading, setLoading] = useState(false);
+
+  const toggleVerba = (verba: string) => {
+    setSelectedVerbas((prev) =>
+      prev.includes(verba) ? prev.filter((v) => v !== verba) : [...prev, verba]
+    );
+  };
+
+  const selectAll = () => setSelectedVerbas([...data.verbas]);
+  const deselectAll = () => setSelectedVerbas([]);
+
+  const handleConfirm = async () => {
+    if (selectedVerbas.length === 0) {
+      toast.warning("Selecione pelo menos uma verba.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await apiFetch("/api/payroll/process", {
+        method: "POST",
+        body: JSON.stringify({
+          pdf_path: data.pdf_path,
+          pages: data.pages,
+          selected_verbas: selectedVerbas,
+        }),
+      });
+      const resData = await res.json();
+      if (res.ok && resData.task_id) {
+        toast.success("Processamento iniciado!");
+        onConfirm(resData.task_id);
+      } else {
+        toast.error(resData.error || "Erro ao iniciar processamento.");
+      }
+    } catch {
+      toast.error("Erro de conexão.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 backdrop-blur-sm p-4"
+      >
+        <motion.div
+          initial={{ scale: 0.95, y: 10 }}
+          animate={{ scale: 1, y: 0 }}
+          exit={{ scale: 0.95, y: 10 }}
+          className="glass-card w-full max-w-2xl relative flex flex-col max-h-[90vh]"
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between p-6 border-b border-border/50 shrink-0">
+            <div>
+              <h3 className="text-lg font-bold text-foreground">Configurar Extração</h3>
+              {data.nomes.length > 0 && (
+                <p className="text-sm text-muted-foreground mt-1">
+                  Funcionários: {data.nomes.join(", ")}
+                </p>
+              )}
+            </div>
+            <button
+              onClick={onClose}
+              className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-all"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* Verbas */}
+          <div className="p-6 flex-1 overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between mb-4">
+              <h4 className="text-sm font-semibold text-foreground">
+                Selecione as verbas/itens ({selectedVerbas.length}/{data.verbas.length})
+              </h4>
+              <div className="flex gap-2">
+                <button
+                  onClick={selectAll}
+                  className="text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-all"
+                >
+                  Todos
+                </button>
+                <button
+                  onClick={deselectAll}
+                  className="text-xs px-3 py-1.5 rounded-lg bg-secondary/60 text-muted-foreground hover:bg-secondary transition-all"
+                >
+                  Nenhum
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 overflow-y-auto pr-1">
+              {data.verbas.map((verba, i) => {
+                const selected = selectedVerbas.includes(verba);
+                return (
+                  <button
+                    key={i}
+                    onClick={() => toggleVerba(verba)}
+                    className={`flex items-center gap-3 p-3 rounded-lg border text-left transition-all text-sm ${
+                      selected
+                        ? "border-primary/50 bg-primary/10 text-foreground"
+                        : "border-border/40 bg-secondary/30 text-muted-foreground hover:border-border hover:text-foreground"
+                    }`}
+                  >
+                    <div
+                      className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-all ${
+                        selected ? "bg-primary border-primary" : "border-border/60"
+                      }`}
+                    >
+                      {selected && <Check className="w-3 h-3 text-primary-foreground" />}
+                    </div>
+                    <span className="truncate">{verba}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="flex gap-3 p-6 border-t border-border/50 shrink-0">
+            <button
+              onClick={onClose}
+              className="flex-1 py-3 rounded-lg border border-border text-foreground text-sm font-medium hover:bg-surface-hover transition-all"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={handleConfirm}
+              disabled={loading || selectedVerbas.length === 0}
+              className="flex-1 py-3 rounded-xl gradient-primary text-primary-foreground text-sm font-bold flex items-center justify-center gap-2 hover:shadow-lg hover:shadow-primary/25 transition-all disabled:opacity-50"
+            >
+              {loading ? (
+                <><Loader2 className="w-4 h-4 animate-spin" /> Iniciando...</>
+              ) : (
+                <><Play className="w-4 h-4" /> Confirmar e Gerar Excel</>
+              )}
+            </button>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+// ── Página Principal ──
+const HoleriteExtractorPage = () => {
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [pageRange, setPageRange] = useState("");
+
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisProgress, setAnalysisProgress] = useState({ current: 0, total: 0, message: "Analisando..." });
+
+  const [analysisData, setAnalysisData] = useState<AnalysisData | null>(null);
+  const [showModal, setShowModal] = useState(false);
+
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processProgress, setProcessProgress] = useState({ current: 0, total: 0, message: "Processando..." });
+
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const triggerDownload = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const pollProgress = (
+    taskId: string,
+    onDone: (data: { filename?: string }) => void,
+    setProgress: (p: { current: number; total: number; message: string }) => void
+  ) => {
+    pollingRef.current = setInterval(async () => {
+      try {
+        const res = await apiFetch(`/api/progress/${taskId}`);
+        const data = await res.json();
+
+        if (data.current_step) {
+          setProgress({
+            current: data.current_step,
+            total: data.total_steps || 1,
+            message: data.message || "Processando...",
+          });
+        }
+
+        if (data.status === "completed") {
+          if (pollingRef.current) clearInterval(pollingRef.current);
+          onDone(data);
+        } else if (data.status === "error") {
+          if (pollingRef.current) clearInterval(pollingRef.current);
+          toast.error(data.error || "Erro no processamento.");
+          setIsAnalyzing(false);
+          setIsProcessing(false);
+        }
+      } catch {
+        // erro de rede, continua tentando
+      }
+    }, 2000);
+  };
+
+  const handleStartAnalysis = async () => {
+    if (!selectedFile || !pageRange.trim()) {
+      toast.warning("Selecione um PDF e informe as páginas.");
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setAnalysisProgress({ current: 0, total: 1, message: "Enviando PDF para análise..." });
+
+    const formData = new FormData();
+    formData.append("pdf_file", selectedFile);
+    formData.append("pages", pageRange);
+
+    try {
+      const res = await apiFetch("/api/payroll/analyze", { method: "POST", body: formData });
+      const data = await res.json();
+
+      if (data.task_id) {
+        pollProgress(
+          data.task_id,
+          (result: { result?: AnalysisData; filename?: string }) => {
+            setIsAnalyzing(false);
+            if (result.result) {
+              setAnalysisData({ ...result.result, pages: pageRange });
+              setShowModal(true);
+            } else {
+              toast.error("Análise não retornou dados.");
+            }
+          },
+          setAnalysisProgress
+        );
+      } else {
+        setIsAnalyzing(false);
+        toast.error("Falha ao iniciar análise.");
+      }
+    } catch {
+      setIsAnalyzing(false);
+      toast.error("Erro de conexão.");
+    }
+  };
+
+  const handleProcessConfirm = (taskId: string) => {
+    setShowModal(false);
+    setIsProcessing(true);
+    setProcessProgress({ current: 0, total: 1, message: "Processando holerite..." });
+
+    pollProgress(
+      taskId,
+      async (data: { filename?: string }) => {
+        setIsProcessing(false);
+        toast.success("Holerite gerado com sucesso!");
+
+        // Baixa o arquivo
+        const downloadRes = await apiFetch(`/api/download/${taskId}`);
+        const blob = await downloadRes.blob();
+        const filename = data.filename || `Folha_${taskId}.xlsx`;
+        triggerDownload(blob, filename);
+      },
+      setProcessProgress
+    );
+  };
+
+  return (
+    <div className="min-h-screen gradient-bg flex flex-col">
+      <AppHeader />
+
+      <main className="flex-1 flex items-center justify-center p-6">
+        <div className="glass-card p-8 w-full max-w-4xl">
+          <div className="flex items-center gap-3 mb-6">
+            <Link to="/app" className="text-muted-foreground hover:text-foreground transition-colors">
+              <ArrowLeft className="w-5 h-5" />
+            </Link>
+            <h3 className="text-lg font-semibold text-foreground">Extrator de Holerite</h3>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-4">
+            <input
+              type="file"
+              accept=".pdf"
+              ref={fileInputRef}
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  setSelectedFile(file);
+                  toast.success(`PDF "${file.name}" importado.`);
+                }
+              }}
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isAnalyzing || isProcessing}
+              className="flex-1 flex items-center justify-center gap-2 py-3 rounded-lg border border-border bg-secondary/50 text-foreground text-sm font-medium hover:bg-surface-hover transition-all disabled:opacity-50"
+            >
+              <Upload className="w-4 h-4 text-primary" />
+              {selectedFile ? selectedFile.name.substring(0, 30) : "Importar PDF"}
+            </button>
+            <input
+              type="text"
+              value={pageRange}
+              onChange={(e) => setPageRange(e.target.value)}
+              placeholder="Páginas (ex: 1-5, 8, 10-12)"
+              disabled={isAnalyzing || isProcessing}
+              className="flex-1 px-4 py-3 bg-background/60 border border-border rounded-lg text-foreground placeholder:text-muted-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
+            />
+          </div>
+
+          <button
+            onClick={handleStartAnalysis}
+            disabled={isAnalyzing || isProcessing || !selectedFile || !pageRange.trim()}
+            className="w-full mt-6 gradient-primary text-primary-foreground py-4 rounded-xl font-bold text-base flex items-center justify-center gap-2 hover:shadow-lg hover:shadow-primary/25 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {isAnalyzing ? (
+              <><Loader2 className="w-5 h-5 animate-spin" /> Identificando Verbas...</>
+            ) : (
+              <><FileText className="w-5 h-5" /> Identificar Itens</>
+            )}
+          </button>
+        </div>
+      </main>
+
+      {/* Progress Modal — Análise */}
+      <AnimatePresence>
+        {(isAnalyzing || isProcessing) && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 backdrop-blur-sm p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 10 }}
+              animate={{ scale: 1, y: 0 }}
+              className="glass-card p-8 max-w-sm w-full text-center"
+            >
+              <Loader2 className="w-12 h-12 animate-spin text-primary mx-auto mb-4" />
+              <h3 className="text-lg font-bold text-foreground mb-2">
+                {isAnalyzing ? "Identificando Verbas" : "Gerando Excel"}
+              </h3>
+              <p className="text-muted-foreground text-sm mb-4">
+                {isAnalyzing ? analysisProgress.message : processProgress.message}
+              </p>
+              {(() => {
+                const p = isAnalyzing ? analysisProgress : processProgress;
+                return p.total > 0 ? (
+                  <>
+                    <div className="w-full bg-secondary/60 rounded-full h-2 mb-2">
+                      <div
+                        className="h-2 rounded-full gradient-primary transition-all duration-500"
+                        style={{ width: `${Math.round((p.current / p.total) * 100)}%` }}
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Página {p.current} de {p.total}
+                    </p>
+                  </>
+                ) : null;
+              })()}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Modal de Seleção de Verbas */}
+      {showModal && analysisData && (
+        <VerbaSelectionModal
+          data={analysisData}
+          onClose={() => {
+            setShowModal(false);
+            setAnalysisData(null);
+          }}
+          onConfirm={handleProcessConfirm}
+        />
+      )}
+    </div>
+  );
+};
+
+export default HoleriteExtractorPage;
