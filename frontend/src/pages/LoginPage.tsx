@@ -5,7 +5,7 @@ import { Mail, Lock, LogIn, ArrowLeft, MessageCircle } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 
-const WHATSAPP_URL = "https://wa.me/5511999999999?text=Olá! Tenho dúvidas sobre o Sistema Ponto.";
+const WHATSAPP_URL = "https://wa.me/5554999427282?text=Olá! Tenho dúvidas sobre o Sistema Ponto.";
 
 const LoginPage = () => {
   const [email, setEmail] = useState("");

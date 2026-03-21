@@ -9,10 +9,42 @@ const features = [
 ];
 
 const plans = [
-  { name: "Free Trial", price: "Grátis", pages: "50 páginas", highlight: false, badge: "Bônus de cadastro" },
-  { name: "Básico", price: "R$ 179,90", pages: "200 páginas/mês", highlight: false },
-  { name: "Padrão", price: "R$ 349,90", pages: "500 páginas/mês", highlight: true },
-  { name: "Premium", price: "R$ 699,90", pages: "Ilimitado", highlight: false },
+  {
+    name: "Free Trial",
+    price: "Grátis",
+    pages: "50 páginas",
+    pricePerPage: null,
+    extra: null,
+    highlight: false,
+    badge: "Bônus de cadastro",
+  },
+  {
+    name: "Básico",
+    price: "R$ 179,90",
+    pages: "200 páginas/mês",
+    pricePerPage: "R$ 0,90 por página",
+    extra: "R$ 1,00 por página extra",
+    highlight: false,
+    badge: null,
+  },
+  {
+    name: "Padrão",
+    price: "R$ 349,90",
+    pages: "500 páginas/mês",
+    pricePerPage: "R$ 0,70 por página",
+    extra: "R$ 0,85 por página extra",
+    highlight: true,
+    badge: null,
+  },
+  {
+    name: "Premium",
+    price: "R$ 824,90",
+    pages: "1.500 páginas/mês",
+    pricePerPage: "R$ 0,55 por página",
+    extra: "R$ 0,70 por página extra",
+    highlight: false,
+    badge: null,
+  },
 ];
 
 const LandingPage = () => {
@@ -132,8 +164,13 @@ const LandingPage = () => {
                   </div>
                 )}
                 <h4 className="text-lg font-semibold text-foreground">{p.name}</h4>
-                <p className="text-3xl font-extrabold text-foreground mt-3">{p.price}</p>
-                <p className="text-sm text-muted-foreground mt-1">{p.pages}</p>
+		<p className="text-sm text-muted-foreground mt-1">{p.pages}</p>
+                {p.pricePerPage && (
+                  <p className="text-xs text-muted-foreground mt-1">{p.pricePerPage}</p>
+                )}
+                {p.extra && (
+                  <p className="text-xs text-muted-foreground/70 mt-1">{p.extra}</p>
+                )}
                 <div className="flex-1" />
                 <Link to="/cadastro" className="mt-6">
                   <button

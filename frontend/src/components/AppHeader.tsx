@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/popover";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
-const WHATSAPP_URL = "https://wa.me/5511999999999?text=Olá! Preciso de suporte no Sistema Ponto.";
+const WHATSAPP_URL = "https://wa.me/5554999427282?text=Olá! Preciso de suporte no Sistema Ponto.";
 
 const STRIPE_PRICE_IDS: Record<string, string> = {
   basic: import.meta.env.VITE_STRIPE_PRICE_ID_BASICO || "",
