@@ -8,7 +8,7 @@ import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
 import CadastroPage from "./pages/CadastroPage";
 import ServiceSelectionPage from "./pages/ServiceSelectionPage";
-import MainAppPage from "./pages/MainAppPage";
+import PontoExtractorPage from "./pages/PontoExtractorPage";   // ← novo
 import HoleriteExtractorPage from "./pages/HoleriteExtractorPage";
 import TermosPage from "./pages/TermosPage";
 import AdminPage from "./pages/AdminPage";
@@ -27,7 +27,8 @@ const App = () => (
             <Route path="/login" element={<LoginPage />} />
             <Route path="/cadastro" element={<CadastroPage />} />
             <Route path="/app" element={<ProtectedRoute><ServiceSelectionPage /></ProtectedRoute>} />
-            <Route path="/app/ponto" element={<ProtectedRoute><MainAppPage /></ProtectedRoute>} />
+            {/* /app/ponto agora usa o novo extrator com modal de períodos */}
+            <Route path="/app/ponto" element={<ProtectedRoute><PontoExtractorPage /></ProtectedRoute>} />
             <Route path="/app/holerite" element={<ProtectedRoute><HoleriteExtractorPage /></ProtectedRoute>} />
             <Route path="/admin" element={<AdminPage />} />
             <Route path="/termos" element={<TermosPage />} />
