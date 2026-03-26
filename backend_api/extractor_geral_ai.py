@@ -12,6 +12,7 @@ import random
 import string
 from io import BytesIO
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from rq import get_current_job
 from google.cloud import documentai_v1 as documentai
@@ -28,6 +29,16 @@ if platform.system() == 'Windows':
 else:
     pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Nº de requisições paralelas ao Document AI.
+# Threads são 100% I/O-bound (só esperam resposta de rede do Google).
+# Não consomem CPU — podem ser muitas sem impacto no servidor.
+# 30 garante que até 30 páginas processem em 1 único turno (~5-10s).
+# Para processos maiores (ex: 50 páginas), ainda serão 2 turnos de 25.
+# Pode ser ajustado via env: DOCAI_MAX_WORKERS=50
+# ─────────────────────────────────────────────────────────────────────────────
+MAX_DOCAI_WORKERS = int(os.getenv('DOCAI_MAX_WORKERS', '60'))
+
 
 class ExtractorGeralAI:
     def __init__(self, model_type='6', job=None):
@@ -41,6 +52,9 @@ class ExtractorGeralAI:
             client_options={"api_endpoint": f"{self.location}-documentai.googleapis.com"}
         )
         self.storage_client = storage.Client()
+        self._processor_name = self.client.processor_path(
+            self.project_id, self.location, self.processor_id
+        )
 
     def update_progress(self, current, total, message, status='processing', extra_info=None):
         if self.job:
@@ -55,64 +69,90 @@ class ExtractorGeralAI:
             self.job.meta.update(meta)
             self.job.save_meta()
 
-    def process_pdf_batch(self, pdf_path, valid_pages):
-        self.update_progress(1, 4, "Preparando arquivo para processamento em lote...")
+    def _process_single_page(self, pdf_bytes_single: bytes, page_order: int):
+        """
+        Envia UMA página para o Document AI síncrono (online processing).
+        Retorna (page_order, entities, text) ou (page_order, [], "").
+
+        IMPORTANTE: cria um cliente gRPC próprio por chamada.
+        O cliente compartilhado (self.client) serializa requisições no mesmo
+        canal gRPC — com ele, 14 threads viram 14 chamadas em fila (~48s).
+        Com cliente por thread, cada uma tem canal independente (~5-8s total).
+        """
+        try:
+            # Cliente independente por thread → canal gRPC exclusivo → sem serialização
+            thread_client = documentai.DocumentProcessorServiceClient(
+                client_options={"api_endpoint": f"{self.location}-documentai.googleapis.com"}
+            )
+            request = documentai.ProcessRequest(
+                name=self._processor_name,
+                raw_document=documentai.RawDocument(
+                    content=pdf_bytes_single,
+                    mime_type="application/pdf"
+                )
+            )
+            result   = thread_client.process_document(request=request)
+            doc      = result.document
+            doc_text = doc.text or ""
+            for e in doc.entities:
+                e._shard_text = doc_text
+            return page_order, list(doc.entities), doc_text
+        except Exception as ex:
+            print(f"[ERRO] Página {page_order} falhou no Document AI: {ex}")
+            return page_order, [], ""
+
+    def process_pdf_parallel(self, pdf_path: str, valid_pages: list):
+        """
+        Processa cada página individualmente em paralelo via Document AI síncrono.
+        As páginas são enviadas como PDFs de 1 página cada.
+        Resultados são reordenados por page_order para manter sequência correta.
+        """
+        self.update_progress(1, 4, "Preparando páginas para envio...")
 
         reader = PdfReader(pdf_path)
-        writer = PdfWriter()
-        for p in valid_pages:
+        total  = len(valid_pages)
+
+        # Gera PDF de 1 página para cada página selecionada
+        page_pdfs = []   # lista de (page_order, pdf_bytes)
+        for order, p in enumerate(valid_pages):
+            writer = PdfWriter()
             writer.add_page(reader.pages[p['page_index']])
+            buf = BytesIO()
+            writer.write(buf)
+            page_pdfs.append((order, buf.getvalue()))
 
-        pdf_bytes = BytesIO()
-        writer.write(pdf_bytes)
-        pdf_bytes.seek(0)
+        self.update_progress(1, 4,
+            f"Enviando {total} página(s) para o Google em paralelo...")
 
-        bucket     = self.storage_client.bucket(self.gcs_bucket_name)
-        input_blob = f"input/{self.job.id}_batch.pdf"
-        bucket.blob(input_blob).upload_from_file(pdf_bytes, content_type="application/pdf")
+        # ── Paralelo I/O-bound: seguro, não consome CPU ───────────────────────
+        results = {}   # {page_order: (entities, text)}
 
-        gcs_in  = f"gs://{self.gcs_bucket_name}/{input_blob}"
-        gcs_out = f"gs://{self.gcs_bucket_name}/output/{self.job.id}/"
+        with ThreadPoolExecutor(max_workers=min(MAX_DOCAI_WORKERS, total)) as executor:
+            futures = {
+                executor.submit(self._process_single_page, pdf_bytes, order): order
+                for order, pdf_bytes in page_pdfs
+            }
 
-        request = documentai.BatchProcessRequest(
-            name=self.client.processor_path(self.project_id, self.location, self.processor_id),
-            input_documents=documentai.BatchDocumentsInputConfig(
-                gcs_documents=documentai.GcsDocuments(documents=[
-                    documentai.GcsDocument(gcs_uri=gcs_in, mime_type="application/pdf")
-                ])
-            ),
-            document_output_config=documentai.DocumentOutputConfig(
-                gcs_output_config={"gcs_uri": gcs_out}
-            ),
-        )
+            completed = 0
+            for future in as_completed(futures):
+                order, entities, text = future.result()
+                results[order] = (entities, text)
+                completed += 1
+                self.update_progress(
+                    1 + int(completed / total * 2),   # progresso de 1→3
+                    4,
+                    f"Google processou {completed}/{total} página(s)..."
+                )
 
-        operation  = self.client.batch_process_documents(request)
-        start_time = time.time()
-        while not operation.done():
-            elapsed = int(time.time() - start_time)
-            self.update_progress(2, 4, f"Google processando... ({elapsed}s)",
-                                 extra_info={'batch_timer': elapsed})
-            time.sleep(2)
-        operation.result(timeout=600)
+        self.update_progress(3, 4, "Consolidando resultados...")
 
-        self.update_progress(3, 4, "Lendo resultados da extração...")
-        blobs = sorted(list(bucket.list_blobs(prefix=f"output/{self.job.id}/")),
-                       key=lambda x: x.name)
-
+        # ── Reordena por page_order para manter sequência correta ─────────────
         all_entities = []
-        for b in blobs:
-            if b.name.endswith(".json"):
-                shard      = documentai.Document.from_json(
-                    b.download_as_bytes(), ignore_unknown_fields=True)
-                shard_text = shard.text or ""
-                for e in shard.entities:
-                    e._shard_text = shard_text
-                all_entities.extend(shard.entities)
+        for order in sorted(results.keys()):
+            entities, _ = results[order]
+            all_entities.extend(entities)
 
-        for b in blobs:
-            b.delete()
-        bucket.blob(input_blob).delete()
-
+        print(f"[DIAG] Entidades brutas: {len(all_entities)} | tipos: {set(e.type_ for e in all_entities)}")
         return all_entities
 
 
@@ -149,7 +189,7 @@ def extract_day_number(raw):
 
 
 def _ocr_page(image):
-    """Roda tesseract na faixa superior da imagem. Retorna period dict ou None."""
+    """OCR no topo da imagem para extrair período."""
     try:
         top   = image.crop((0, 0, image.size[0], int(image.size[1] * 0.3)))
         text  = pytesseract.image_to_string(top, lang='por')
@@ -170,14 +210,10 @@ def _ocr_page(image):
 
 def extract_periods_task(pdf_path, pages, user_id):
     """
-    OTIMIZAÇÃO APLICADA:
-    - convert_from_path em BATCH: uma única chamada pdftoppm para todas as
-      páginas do range. Elimina N-1 inicializações de processo e a leitura
-      repetida do PDF do disco.
-    - DPI 200: datas de cabeçalho são texto grande, não precisa de 300 DPI.
-      Reduz memória e tempo de conversão em ~55%.
-    - OCR permanece SEQUENCIAL: tesseract já ocupa bem 1 CPU por chamada.
-      Paralelismo causaria N processos simultâneos e travaria o servidor.
+    OCR otimizado:
+    - convert_from_path em batch (1 chamada pdftoppm para todas as páginas)
+    - DPI 200 (suficiente para datas de cabeçalho)
+    - OCR sequencial (tesseract = CPU-bound, não paralelizar)
     """
     job = get_current_job()
     if not job:
@@ -208,28 +244,17 @@ def extract_periods_task(pdf_path, pages, user_id):
         total_selected = len(indices)
         extractor.update_progress(0, total_selected, "Convertendo páginas...")
 
-        # ── Batch convert: UMA chamada pdftoppm para o range inteiro ──────────
-        # Antes: N chamadas (1 por página) → N inicializações de pdftoppm
-        # Agora: 1 chamada cobrindo min→max → todas as imagens retornadas juntas
-        #
-        min_page = min(indices) + 1   # 1-based
+        # Batch convert: 1 chamada pdftoppm para o range inteiro
+        min_page = min(indices) + 1
         max_page = max(indices) + 1
+        all_images = convert_from_path(pdf_path, dpi=200,
+                                       first_page=min_page, last_page=max_page)
 
-        all_images = convert_from_path(
-            pdf_path,
-            dpi=200,
-            first_page=min_page,
-            last_page=max_page,
-        )
-
-        # Mapeia posição relativa → page_idx absoluto
-        # all_images[0] = página min_page-1, all_images[1] = min_page, etc.
         relative_to_absolute = {
             (min_page - 1 + i): all_images[i]
             for i in range(len(all_images))
         }
 
-        # ── OCR sequencial em cada página selecionada ─────────────────────────
         res = []
         for count, page_idx in enumerate(indices, 1):
             extractor.update_progress(
@@ -280,12 +305,10 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
         # ── 2. Lookup dia→data por página ─────────────────────────────────────
         page_day_dicts = []
         page_sizes     = []
-
         for p in valid_pages:
             dr = pd.date_range(start=p['start_dt'], end=p['end_dt'], freq='D')
             page_sizes.append(len(dr))
-            day_to_date = {f"{d.day:02d}": d.strftime('%d/%m/%Y') for d in dr}
-            page_day_dicts.append(day_to_date)
+            page_day_dicts.append({f"{d.day:02d}": d.strftime('%d/%m/%Y') for d in dr})
 
         # ── 3. Calendário mestre ──────────────────────────────────────────────
         full_range = pd.date_range(start=global_start, end=global_end, freq='D')
@@ -299,8 +322,8 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
 
         date_to_row = {row['Dia']: idx for idx, row in master_df.iterrows()}
 
-        # ── 4. Processamento no Document AI ──────────────────────────────────
-        entities = extractor.process_pdf_batch(pdf_path, valid_pages)
+        # ── 4. Document AI paralelo (I/O-bound, seguro) ───────────────────────
+        entities = extractor.process_pdf_parallel(pdf_path, valid_pages)
         extractor.update_progress(4, 4, "Finalizando planilha...")
 
         rows_all = [
