@@ -181,9 +181,27 @@ def normalize_time(val):
 
 
 def extract_day_number(raw):
-    d = re.sub(r'[^\d]', '', str(raw or ''))
+    """
+    Extrai o número do dia (01-31) de diferentes formatos:
+      - "15"       -> "15"   (só o dia, formato padrão Vibra)
+      - "03/05"    -> "03"   (dia/mês, formato app Android)
+      - "03/05/21" -> "03"   (dia/mês/ano)
+      - "segunda-" -> None   (texto, não é dia)
+    """
+    raw = str(raw or '').strip()
+    if not raw:
+        return None
+
+    # Se contém '/', pega apenas a parte antes da primeira '/'
+    # Cobre "03/05", "03/05/2021", etc.
+    if '/' in raw:
+        raw = raw.split('/')[0].strip()
+
+    # Remove tudo que não é dígito
+    d = re.sub(r'[^\d]', '', raw)
     if not d:
         return None
+
     n = int(d)
     return f"{n:02d}" if 1 <= n <= 31 else None
 
