@@ -31,10 +31,19 @@ else:
 
 MAX_DOCAI_WORKERS = int(os.getenv('DOCAI_MAX_WORKERS', '60'))
 
-# ─── LOG DE DIAGNÓSTICO ───────────────────────────────────────────────────────
-def DIAG(msg):
-    ts = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-    print(f"[DIAG {ts}] {msg}", flush=True)
+# ─── LOG CENTRAL ─────────────────────────────────────────────────────────────
+def LOG(label, value, level='INFO'):
+    ts     = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+    prefix = {'INFO': '[LOG ]', 'WARN': '[WARN]', 'ERR ': '[ERR ]'}.get(level, '[LOG ]')
+    label_fmt = f"{label:<30}"
+    print(f"{prefix} {ts}  {label_fmt} {value}", flush=True)
+
+def LOG_SEP(title=''):
+    line = '─' * 70
+    if title:
+        pad = (70 - len(title) - 2) // 2
+        line = '─' * pad + f' {title} ' + '─' * pad
+    print(f"[LOG ] {line}", flush=True)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -86,7 +95,7 @@ class ExtractorGeralAI:
                 e._shard_text = doc_text
             return page_order, list(doc.entities), doc_text
         except Exception as ex:
-            print(f"[ERRO] Página {page_order} falhou no Document AI: {ex}")
+            print(f"[ERR ] Página {page_order} falhou no Document AI: {ex}", flush=True)
             return page_order, [], ""
 
     def process_pdf_parallel(self, pdf_path: str, valid_pages: list):
@@ -129,9 +138,7 @@ class ExtractorGeralAI:
             entities, _ = results[order]
             all_entities.extend(entities)
 
-        DIAG(f"Entidades brutas retornadas pelo DocAI: {len(all_entities)}")
-        DIAG(f"Tipos distintos: {set(e.type_ for e in all_entities)}")
-        return all_entities
+        return all_entities, results
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -160,9 +167,8 @@ def normalize_time(val):
 
 def extract_full_date(raw):
     """
-    Retorna DD/MM/YYYY se o campo contém uma data completa.
+    Retorna DD/MM/YYYY se o campo contém data completa.
     Ex: '05/07/2022' → '05/07/2022' | '5/7/2022' → '05/07/2022'
-    Retorna None se não for data completa.
     """
     raw = str(raw or '').strip()
     match = re.match(r'^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$', raw)
@@ -176,7 +182,6 @@ def extract_day_number(raw):
     """
     Fallback: extrai apenas o número do dia (01-31).
     Só usado quando o DocAI não retorna a data completa.
-    Ex: '15' → '15' | '03/05' → '03'
     """
     raw = str(raw or '').strip()
     if not raw:
@@ -269,7 +274,7 @@ def extract_periods_task(pdf_path, pages, user_id):
 
     except Exception:
         err = traceback.format_exc()
-        print(f"[ERRO][extract_periods_task] {err}")
+        print(f"[ERR ] [extract_periods_task] {err}", flush=True)
         job.meta.update({'status': 'error', 'error': err})
         job.save()
         return None
@@ -281,38 +286,64 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
         return None
     job.meta['user_id'] = user_id
     job.save_meta()
+
     extractor  = ExtractorGeralAI(model_type, job)
     day_map_pt = {0:"seg",1:"ter",2:"qua",3:"qui",4:"sex",5:"sab",6:"dom"}
+    t_inicio   = time.time()
 
     try:
         valid_pages = pages_json
 
-        # ── LOG: input recebido ───────────────────────────────────────────────
-        DIAG("=" * 70)
-        DIAG(f"INÍCIO process_pdf_task | user={user_id} | pdf={pdf_path}")
-        DIAG(f"Número de entradas em pages_json: {len(valid_pages)}")
-        for i, p in enumerate(valid_pages):
-            DIAG(f"  Entrada[{i}] → page_number={p.get('page_number')} | "
-                 f"page_index={p.get('page_index')} | period={p.get('period')}")
-        DIAG("=" * 70)
+        # ── informações do PDF ────────────────────────────────────────────────
+        pdf_size_mb    = round(os.path.getsize(pdf_path) / (1024 * 1024), 1)
+        pdf_nome       = job.meta.get('original_filename', os.path.basename(pdf_path))
+        reader_info    = PdfReader(pdf_path)
+        pdf_total_pags = len(reader_info.pages)
+        worker_pid     = os.getpid()
+        modelo_desc    = '6 — com data (geral_ai)' if model_type == '6' else '7 — sem data (geral)'
+
+        # ── LOG: cabeçalho do job ─────────────────────────────────────────────
+        LOG_SEP('JOB INICIADO')
+        LOG('job_id',          job.id)
+        LOG('usuário',         user_id)
+        LOG('worker PID',      str(worker_pid))
+        LOG('modelo',          modelo_desc)
+        LOG('arquivo',         pdf_nome)
+        LOG('tamanho do pdf',  f"{pdf_size_mb} MB")
+        LOG('total págs pdf',  f"{pdf_total_pags} páginas")
+        LOG('range selecionado', f"{len(valid_pages)} páginas recebidas do frontend")
 
         # ── 1. Validação e ordenação cronológica ──────────────────────────────
-        pages_validas = []
+        LOG_SEP('Períodos digitados pelo usuário')
+
+        pages_validas  = []
+        pages_ignoradas = []
+
         for p in valid_pages:
+            pnum = p.get('page_number', '?')
             try:
                 start_dt = datetime.strptime(p['period']['start_date'], '%d/%m/%Y')
                 end_dt   = datetime.strptime(p['period']['end_date'],   '%d/%m/%Y')
                 if end_dt < start_dt:
-                    DIAG(f"  *** IGNORANDO página {p.get('page_number')}: "
-                         f"end_date ({p['period']['end_date']}) < start_date "
-                         f"({p['period']['start_date']}). Verifique o ano digitado.")
+                    motivo = (f"end_date '{p['period']['end_date']}' < start_date "
+                              f"'{p['period']['start_date']}' — ano provavelmente errado")
+                    LOG(f"pág {pnum}", f"{p['period']['start_date']} → {p['period']['end_date']}  IGNORADA: {motivo}", 'WARN')
+                    pages_ignoradas.append((pnum, motivo))
                     continue
+                dias = len(pd.date_range(start=start_dt, end=end_dt, freq='D'))
+                LOG(f"pág {pnum}", f"{p['period']['start_date']} → {p['period']['end_date']}  ({dias} dias)")
                 p['start_dt'] = start_dt
                 p['end_dt']   = end_dt
                 pages_validas.append(p)
             except ValueError as ve:
-                DIAG(f"  *** IGNORANDO página {p.get('page_number')}: "
-                     f"data inválida → {ve}")
+                motivo = f"data inválida: {ve}"
+                LOG(f"pág {pnum}", f"IGNORADA: {motivo}", 'WARN')
+                pages_ignoradas.append((pnum, motivo))
+
+        LOG('páginas válidas',   f"{len(pages_validas)} de {len(valid_pages)}")
+        if pages_ignoradas:
+            for pnum, motivo in pages_ignoradas:
+                LOG(f"  ignorada pág {pnum}", motivo, 'WARN')
 
         if not pages_validas:
             raise ValueError("Nenhuma página com período válido após validação.")
@@ -321,24 +352,20 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
         global_start  = min(p['start_dt'] for p in pages_validas)
         global_end    = max(p['end_dt']   for p in pages_validas)
 
-        DIAG(f"Páginas válidas: {len(pages_validas)} / {len(valid_pages)}")
-        DIAG(f"Período global: {global_start.date()} → {global_end.date()}")
+        LOG('período global',
+            f"{global_start.strftime('%d/%m/%Y')} → {global_end.strftime('%d/%m/%Y')}")
 
-        # ── 2. Tamanho do calendário por página (para chunking) ───────────────
+        # ── 2. Calendário por página ──────────────────────────────────────────
         page_day_dicts = []
         page_sizes     = []
         for p in pages_validas:
             dr   = pd.date_range(start=p['start_dt'], end=p['end_dt'], freq='D')
             size = len(dr)
             page_sizes.append(size)
-            # dict de fallback: só consulta se a data completa não estiver disponível
             day_dict = {f"{d.day:02d}": d.strftime('%d/%m/%Y') for d in dr}
             page_day_dicts.append(day_dict)
-            DIAG(f"  Página {p['page_number']} → "
-                 f"{p['start_dt'].date()} a {p['end_dt'].date()} | "
-                 f"{size} dias de calendário")
 
-        DIAG(f"page_sizes: {page_sizes} | soma: {sum(page_sizes)}")
+        total_dias_calendario = sum(page_sizes)
 
         # ── 3. Calendário mestre ──────────────────────────────────────────────
         full_range = pd.date_range(start=global_start, end=global_end, freq='D')
@@ -351,25 +378,46 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
             master_df[f'Saida{i}']   = "0"
 
         date_to_row = {row['Dia']: idx for idx, row in master_df.iterrows()}
-        DIAG(f"Master calendar: {len(master_df)} dias | "
-             f"{master_df['Dia'].iloc[0]} → {master_df['Dia'].iloc[-1]}")
+        LOG('calendário mestre',
+            f"{len(master_df)} dias  ({master_df['Dia'].iloc[0]} → {master_df['Dia'].iloc[-1]})")
 
         # ── 4. Document AI paralelo ───────────────────────────────────────────
-        entities = extractor.process_pdf_parallel(pdf_path, pages_validas)
-        extractor.update_progress(4, 4, "Finalizando planilha...")
+        LOG_SEP('Document AI')
+        LOG('requisições enviadas',
+            f"{len(pages_validas)} em paralelo  (max_workers={min(MAX_DOCAI_WORKERS, len(pages_validas))})")
+
+        t_docai_inicio = time.time()
+        all_entities, results_by_order = extractor.process_pdf_parallel(pdf_path, pages_validas)
+        t_docai_fim    = time.time()
+        t_docai_seg    = round(t_docai_fim - t_docai_inicio, 1)
+
+        LOG('tempo de resposta', f"{t_docai_seg}s")
+
+        # Entidades por página (compacto em uma linha)
+        ent_por_pag_partes = []
+        paginas_sem_retorno = []
+        for order in sorted(results_by_order.keys()):
+            entities_pag, _ = results_by_order[order]
+            n    = len(entities_pag)
+            pnum = pages_validas[order]['page_number']
+            ent_por_pag_partes.append(f"pág {pnum}: {n}")
+            if n == 0:
+                paginas_sem_retorno.append(pnum)
+
+        LOG('entidades por página', ' · '.join(ent_por_pag_partes))
+
+        if paginas_sem_retorno:
+            LOG('págs sem retorno',
+                f"{paginas_sem_retorno} — página em branco ou formato não reconhecido", 'WARN')
 
         rows_all = [
-            e for e in entities
+            e for e in all_entities
             if e.type_.lower().replace(' ', '_').replace('-', '_') == 'tabela_marcacoes'
         ]
-        DIAG(f"Total entidades 'tabela_marcacoes': {len(rows_all)}")
+        LOG('total tabela_marcacoes', f"{len(rows_all)} entidades filtradas")
 
-        # ── 5. Distribuição por página e preenchimento ────────────────────────
-        # Estratégia: ignora o chunking para resolução de datas.
-        # Processa TODAS as entidades de uma vez usando a data completa
-        # retornada pelo DocAI. O chunking só serve para controlar o
-        # range de fallback quando a data completa não está disponível.
-        DIAG("Processando todas as entidades com data completa (sem chunking)...")
+        # ── 5. Preenchimento do CSV ───────────────────────────────────────────
+        extractor.update_progress(4, 4, "Finalizando planilha...")
 
         filled_count      = 0
         skip_no_date      = 0
@@ -378,9 +426,7 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
         full_date_hits    = 0
         fallback_day_hits = 0
 
-        # Monta um dicionário global de fallback: dia → lista de datas possíveis
-        # ordenadas cronologicamente. Usado apenas quando o DocAI não retorna
-        # a data completa (raro com o processor atual).
+        # dict global de fallback: dia → lista de datas possíveis em ordem cronológica
         global_day_to_dates: dict[str, list[str]] = {}
         for p, day_dict in zip(pages_validas, page_day_dicts):
             for day_num, full_dt in day_dict.items():
@@ -393,19 +439,16 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
                 for prop in entity.properties
             }
 
-            raw_dia = data.get('dia', data.get('data', ''))
-
-            # ── RESOLUÇÃO DE DATA ─────────────────────────────────────────────
+            raw_dia     = data.get('dia', data.get('data', ''))
             target_date = None
 
-            # 1) Data completa retornada pelo DocAI (caminho ideal, sem colisão)
+            # Caminho 1: data completa retornada pelo DocAI (DD/MM/YYYY)
             full_date = extract_full_date(raw_dia)
             if full_date and full_date in date_to_row:
                 target_date = full_date
                 full_date_hits += 1
             else:
-                # 2) Fallback: só o número do dia foi retornado.
-                #    Usa a primeira data possível ainda não preenchida.
+                # Caminho 2: fallback por número do dia — usa primeira data ainda vazia
                 day = extract_day_number(raw_dia)
                 if day and day in global_day_to_dates:
                     for candidate in global_day_to_dates[day]:
@@ -415,7 +458,6 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
                                 target_date = candidate
                                 fallback_day_hits += 1
                                 break
-            # ─────────────────────────────────────────────────────────────────
 
             if target_date is None:
                 skip_no_date += 1
@@ -426,15 +468,10 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
                 skip_no_row += 1
                 continue
 
-            # ── CORREÇÃO DE DUPLICAÇÃO ────────────────────────────────────────
-            # O relatório PontoMais pode repetir a mesma linha na virada de
-            # página física. Se a data já foi preenchida, ignoramos o duplicado.
+            # Ignora duplicatas: mesma data já preenchida (virada de página física)
             if master_df.at[target_idx, 'Entrada1'] != "0":
                 skip_duplicado += 1
-                DIAG(f"  SKIP duplicado: '{target_date}' já preenchida. "
-                     f"Ignorando entity com data='{raw_dia}'.")
                 continue
-            # ─────────────────────────────────────────────────────────────────
 
             for k in range(1, 12):
                 e_val = normalize_time(data.get(f'entrada{k}', data.get(f'entrada_{k}', "0")))
@@ -452,32 +489,66 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
 
             filled_count += 1
 
-        # ── Resumo final ──────────────────────────────────────────────────────
-        dias_preenchidos = (master_df['Entrada1'] != "0").sum()
-        DIAG(f"Linhas preenchidas: {filled_count} | "
-             f"Data completa: {full_date_hits} | "
-             f"Fallback dia: {fallback_day_hits} | "
-             f"Duplicados ignorados: {skip_duplicado} | "
-             f"Skip sem data: {skip_no_date} | "
-             f"Skip fora do range: {skip_no_row}")
-        DIAG(f"Dias com Entrada1 != '0': {dias_preenchidos} / {len(master_df)}")
-
         # ── 6. Salvar CSV ─────────────────────────────────────────────────────
         random_id      = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
         final_filename = f"Ponto_Extraido_{random_id}.csv"
         out_path       = os.path.join(tempfile.gettempdir(), f"{job.id}.csv")
         master_df.to_csv(out_path, index=False, sep=';', encoding='utf-8-sig')
+        csv_size_kb = round(os.path.getsize(out_path) / 1024, 1)
 
-        DIAG(f"CSV salvo: {out_path} | filename: {final_filename}")
-        DIAG("=" * 70)
+        # ── LOG: resultado ────────────────────────────────────────────────────
+        dias_preenchidos = int((master_df['Entrada1'] != "0").sum())
+        taxa = round((dias_preenchidos / len(master_df)) * 100, 1) if len(master_df) > 0 else 0
+        taxa_aviso = taxa < 30 and dias_preenchidos > 0
 
-        job.meta.update({'status': 'completed', 'file_path': out_path, 'filename': final_filename})
+        LOG_SEP('Resultado do preenchimento')
+        LOG('dias preenchidos',
+            f"{dias_preenchidos} / {len(master_df)}  (taxa: {taxa}%)"
+            + ("  ⚠ ABAIXO DO LIMIAR (30%)" if taxa_aviso else ""))
+        LOG('resolução data completa',
+            f"{full_date_hits}  (DD/MM/YYYY direto do DocAI)")
+        LOG('resolução por fallback',
+            f"{fallback_day_hits}  (número do dia apenas)")
+        LOG('duplicados ignorados',
+            f"{skip_duplicado}  (virada de página física no relatório)")
+        LOG('skip fora do range',    str(skip_no_row))
+        LOG('skip sem data',         str(skip_no_date))
+
+        if taxa_aviso:
+            LOG('avaliação',
+                'taxa baixa — verifique se as datas informadas correspondem ao PDF', 'WARN')
+        elif paginas_sem_retorno:
+            LOG('avaliação',
+                f"resultado pode estar incompleto — págs {paginas_sem_retorno} sem retorno", 'WARN')
+        else:
+            LOG('avaliação',
+                'taxa normal — dias sem marcação são folgas/feriados esperados')
+
+        t_total = round(time.time() - t_inicio, 1)
+
+        LOG_SEP('JOB CONCLUÍDO')
+        LOG('job_id',       job.id)
+        LOG('tempo total',  f"{t_total}s")
+        LOG('arquivo',      f"{final_filename}  ({csv_size_kb} KB)")
+        LOG_SEP()
+
+        job.meta.update({
+            'status':    'completed',
+            'file_path': out_path,
+            'filename':  final_filename
+        })
         job.save()
         return out_path
 
     except Exception:
         err = traceback.format_exc()
-        print(f"[ERRO] {err}")
+        t_total = round(time.time() - t_inicio, 1)
+        LOG_SEP('JOB FALHOU')
+        LOG('job_id',      job.id)
+        LOG('tempo total', f"{t_total}s")
+        LOG('erro',        err.strip().split('\n')[-1], 'ERR ')
+        LOG_SEP()
+        print(err, flush=True)
         job.meta.update({'status': 'error', 'error': err})
         job.save()
         return None
