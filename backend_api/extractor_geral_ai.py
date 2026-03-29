@@ -31,25 +31,12 @@ else:
     pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CONFIGURAÇÕES — ajuste aqui sem precisar do .env
+# CONFIGURAÇÕES
 # ─────────────────────────────────────────────────────────────────────────────
-
-# Threads paralelos por job. Controla quantas páginas sobem ao mesmo tempo
-# DENTRO de um único job. Não controla o limite global do Google.
 MAX_DOCAI_WORKERS = 60
-
-# Limite real do Google Document AI: 120 pages/min.
-# Usamos 100 como margem de segurança para absorver variações de timing
-# entre workers simultâneos sem arriscar o erro 429.
-DOCAI_RPM_LIMIT = 100
-
-# Chave Redis compartilhada entre TODOS os workers (controle global).
-# Qualquer job em qualquer processo consulta e incrementa o mesmo contador.
-DOCAI_RATE_KEY = 'docai_sliding_window'
-
-# Conexão Redis — mesma instância usada pelo RQ
+DOCAI_RPM_LIMIT   = 100       # margem segura — cota real Google: 120/min
+DOCAI_RATE_KEY    = 'docai_sliding_window'
 _redis = redis_lib.Redis(host='localhost', port=6379, db=0)
-
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -70,30 +57,14 @@ def LOG_SEP(title=''):
 
 # ─── RATE LIMITER GLOBAL (sliding window no Redis) ───────────────────────────
 def _get_rpm_usage():
-    """
-    Retorna quantas requisições foram feitas ao DocAI no último minuto,
-    contando todos os workers e jobs em execução simultânea.
-    """
     now = time.time()
     try:
-        count = _redis.zcount(DOCAI_RATE_KEY, now - 60.0, '+inf')
-        return int(count)
+        return int(_redis.zcount(DOCAI_RATE_KEY, now - 60.0, '+inf'))
     except Exception:
         return 0
 
 
 def _acquire_docai_slot(job_id='?', page_order=0, timeout=300):
-    """
-    Reserva um slot no rate limiter global antes de enviar ao Document AI.
-
-    Usa sliding window no Redis (sorted set):
-      - Remove entradas com mais de 60s (janela deslizante)
-      - Verifica se há espaço abaixo do limite
-      - Se não houver, dorme 0.5s e tenta novamente
-
-    Retorna (slot_number, waited_seconds).
-    Lança TimeoutError se não conseguir slot em `timeout` segundos.
-    """
     start      = time.time()
     waited     = 0.0
     first_wait = True
@@ -102,7 +73,6 @@ def _acquire_docai_slot(job_id='?', page_order=0, timeout=300):
         now          = time.time()
         window_start = now - 60.0
 
-        # Operação atômica: limpa expirados e conta restantes
         pipe = _redis.pipeline()
         pipe.zremrangebyscore(DOCAI_RATE_KEY, 0, window_start)
         pipe.zcard(DOCAI_RATE_KEY)
@@ -110,33 +80,25 @@ def _acquire_docai_slot(job_id='?', page_order=0, timeout=300):
         current_count = int(current_count)
 
         if current_count < DOCAI_RPM_LIMIT:
-            # Slot disponível — registra com score = timestamp para unicidade
             member = f"{now:.6f}:{job_id}:{page_order}:{random.random()}"
             _redis.zadd(DOCAI_RATE_KEY, {member: now})
-            _redis.expire(DOCAI_RATE_KEY, 120)  # TTL de segurança
+            _redis.expire(DOCAI_RATE_KEY, 120)
             return current_count + 1, round(waited, 1)
 
-        # Sem slot — verifica timeout
-        elapsed = time.time() - start
-        if elapsed > timeout:
+        if time.time() - start > timeout:
             raise TimeoutError(
                 f"Timeout de {timeout}s aguardando slot DocAI "
                 f"(uso atual: {current_count}/{DOCAI_RPM_LIMIT})"
             )
 
-        # Na primeira espera, calcula quanto tempo falta e loga
         if first_wait:
             first_wait = False
             oldest = _redis.zrange(DOCAI_RATE_KEY, 0, 0, withscores=True)
-            if oldest:
-                secs_to_free = max(0.5, (oldest[0][1] + 60.0) - time.time())
-            else:
-                secs_to_free = 1.0
+            secs_to_free = max(0.5, (oldest[0][1] + 60.0) - time.time()) if oldest else 1.0
             LOG(f"  rate limit pág {page_order}",
                 f"uso={current_count}/{DOCAI_RPM_LIMIT} — "
                 f"aguardando ~{round(secs_to_free, 1)}s para slot liberar  "
-                f"(job {job_id[:8]}...)",
-                'WARN')
+                f"(job {job_id[:8]}...)", 'WARN')
 
         time.sleep(0.5)
         waited += 0.5
@@ -172,20 +134,31 @@ class ExtractorGeralAI:
             self.job.meta.update(meta)
             self.job.save_meta()
 
+    def spatial_sort_entities(self, entities):
+        """
+        Ordena entidades tabela_marcacoes pela posição vertical (Y) na página.
+        Vem do código antigo — essencial para saber a ordem física das linhas.
+        """
+        rows = [e for e in entities
+                if e.type_.lower() == 'tabela_marcacoes']
+
+        def get_y(e):
+            try:
+                return e.page_anchor.page_refs[0].bounding_poly.normalized_vertices[0].y
+            except Exception:
+                return 0.0
+
+        return sorted(rows, key=get_y)
+
     def _process_single_page(self, pdf_bytes_single: bytes, page_order: int, job_id: str):
         """
-        Envia UMA página ao Document AI após adquirir um slot no rate limiter global.
-        O slot é reservado antes do envio, garantindo que a soma de todas as
-        requisições simultâneas de todos os jobs nunca ultrapasse DOCAI_RPM_LIMIT/min.
+        Envia UMA página ao DocAI após adquirir slot no rate limiter global.
+        Retorna entidades ordenadas por Y (spatial_sort já aplicado aqui).
         """
         slot_num, waited = _acquire_docai_slot(job_id=job_id, page_order=page_order)
-
         if waited > 0:
             LOG(f"  pág {page_order} aguardou",
-                f"{waited}s por slot  "
-                f"(uso ao enviar: {slot_num}/{DOCAI_RPM_LIMIT})",
-                'WARN')
-
+                f"{waited}s por slot  (uso ao enviar: {slot_num}/{DOCAI_RPM_LIMIT})", 'WARN')
         try:
             thread_client = documentai.DocumentProcessorServiceClient(
                 client_options={"api_endpoint": f"{self.location}-documentai.googleapis.com"}
@@ -202,14 +175,15 @@ class ExtractorGeralAI:
             doc_text = doc.text or ""
             for e in doc.entities:
                 e._shard_text = doc_text
-            return page_order, list(doc.entities), doc_text, slot_num, waited
+            # Ordena por Y imediatamente ao receber — cada página já chega ordenada
+            sorted_ents = self.spatial_sort_entities(doc.entities)
+            return page_order, sorted_ents, doc_text, slot_num, waited
         except Exception as ex:
             print(f"[ERR ] Página {page_order} falhou no Document AI: {ex}", flush=True)
             return page_order, [], "", slot_num, waited
 
     def process_pdf_parallel(self, pdf_path: str, valid_pages: list, job_id: str):
         self.update_progress(1, 4, "Preparando páginas para envio...")
-
         reader = PdfReader(pdf_path)
         total  = len(valid_pages)
 
@@ -228,9 +202,7 @@ class ExtractorGeralAI:
 
         with ThreadPoolExecutor(max_workers=min(MAX_DOCAI_WORKERS, total)) as executor:
             futures = {
-                executor.submit(
-                    self._process_single_page, pdf_bytes, order, job_id
-                ): order
+                executor.submit(self._process_single_page, pdf_bytes, order, job_id): order
                 for order, pdf_bytes in page_pdfs
             }
             completed = 0
@@ -240,19 +212,12 @@ class ExtractorGeralAI:
                 total_waited  += waited
                 completed     += 1
                 self.update_progress(
-                    1 + int(completed / total * 2),
-                    4,
+                    1 + int(completed / total * 2), 4,
                     f"Google processou {completed}/{total} página(s)..."
                 )
 
         self.update_progress(3, 4, "Consolidando resultados...")
-
-        all_entities = []
-        for order in sorted(results.keys()):
-            entities, _ = results[order]
-            all_entities.extend(entities)
-
-        return all_entities, results, round(total_waited, 1)
+        return results, round(total_waited, 1)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -279,28 +244,159 @@ def normalize_time(val):
     return "0"
 
 
+def normalize_date(date_str, default_year):
+    """
+    Vem do código antigo. Normaliza vários formatos de data para DD/MM/YYYY.
+    Suporta DD/MM, DD/MM/YY, DD/MM/YYYY, separadores ponto e hífen.
+    """
+    if not date_str:
+        return None
+    date_str = re.sub(r'[^\d/.-]', '', str(date_str)).replace('.', '/').replace('-', '/')
+    parts = date_str.split('/')
+    if len(parts) >= 2:
+        day   = parts[0].zfill(2)
+        month = parts[1].zfill(2)
+        year  = parts[2] if len(parts) == 3 else str(default_year)
+        if len(str(year)) == 2:
+            year = f"20{year}"
+        try:
+            # valida se é uma data possível
+            datetime.strptime(f"{day}/{month}/{year}", '%d/%m/%Y')
+            return f"{day}/{month}/{year}"
+        except ValueError:
+            return None
+    return None
+
+
 def extract_full_date(raw):
-    """Retorna DD/MM/YYYY se o campo contém data completa, senão None."""
+    """Retorna DD/MM/YYYY se o campo já contém data completa, senão None."""
     raw = str(raw or '').strip()
     match = re.match(r'^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$', raw)
     if match:
         d, m, y = match.groups()
-        return f"{d.zfill(2)}/{m.zfill(2)}/{y}"
+        try:
+            datetime.strptime(f"{d.zfill(2)}/{m.zfill(2)}/{y}", '%d/%m/%Y')
+            return f"{d.zfill(2)}/{m.zfill(2)}/{y}"
+        except ValueError:
+            return None
     return None
 
 
-def extract_day_number(raw):
-    """Fallback: extrai apenas o número do dia (01-31)."""
-    raw = str(raw or '').strip()
-    if not raw:
-        return None
-    if '/' in raw:
-        raw = raw.split('/')[0].strip()
-    d = re.sub(r'[^\d]', '', raw)
-    if not d:
-        return None
-    n = int(d)
-    return f"{n:02d}" if 1 <= n <= 31 else None
+def infer_date_by_position(data_ia, expected_date, default_year):
+    """
+    Tenta corrigir/inferir a data usando a data esperada por posição Y.
+
+    Casos cobertos:
+    - DocAI retornou vazio/None → usa expected_date diretamente
+    - DocAI leu dígito parcial (ex: "7" quando esperado é "17") → corrige
+    - DocAI leu DD/MM sem ano → valida contra expected_date e completa
+    - DocAI leu data coerente com a esperada → confirma
+
+    Retorna a data corrigida como DD/MM/YYYY, ou expected_date como fallback.
+    """
+    if not data_ia:
+        # Cenário 1/2: dado completamente ausente → inferência por posição
+        return expected_date
+
+    normalized = normalize_date(data_ia, default_year)
+
+    if normalized == expected_date:
+        return normalized
+
+    if normalized:
+        ai_day  = normalized.split('/')[0].lstrip('0') or '0'
+        exp_day = expected_date.split('/')[0].lstrip('0') or '0'
+
+        # Correção de dígito parcial: DocAI leu "7" mas esperado é "17"
+        # Vem do código antigo — o OCR às vezes perde o primeiro dígito
+        if len(ai_day) == 1 and exp_day.endswith(ai_day):
+            ai_rest  = normalized[2:]    # /MM/YYYY ou /MM
+            exp_rest = expected_date[2:]
+            # mês e ano do esperado devem bater
+            if ai_rest.startswith(exp_rest[:3]):
+                return expected_date
+
+        # DocAI leu data completa diferente — confia no DocAI, não na posição
+        if len(normalized) == 10:
+            return normalized
+
+    # Último recurso: usa posição
+    return expected_date
+
+
+def _fill_slots(master_df, target_idx, data):
+    """
+    Preenche os slots de Entrada/Saida no master_df para um dado target_idx.
+    Sempre busca o próximo slot vazio — nunca sobrescreve.
+    Retorna True se pelo menos um slot foi preenchido.
+    """
+    preencheu = False
+    for k in range(1, 12):
+        e_val = normalize_time(data.get(f'entrada{k}', data.get(f'entrada_{k}', "0")))
+        s_val = normalize_time(data.get(f'saida{k}',   data.get(f'saída{k}',   "0")))
+        if e_val != "0":
+            for c in range(1, 12):
+                if master_df.at[target_idx, f'Entrada{c}'] == "0":
+                    master_df.at[target_idx, f'Entrada{c}'] = e_val
+                    preencheu = True
+                    break
+        if s_val != "0":
+            for c in range(1, 12):
+                if master_df.at[target_idx, f'Saida{c}'] == "0":
+                    master_df.at[target_idx, f'Saida{c}'] = s_val
+                    preencheu = True
+                    break
+    return preencheu
+
+
+def _has_empty_slots(master_df, target_idx):
+    """
+    Retorna True se ainda existe algum slot vazio (Entrada ou Saida) na linha.
+    Usado para distinguir continuação de duplicata.
+    """
+    for c in range(1, 12):
+        if master_df.at[target_idx, f'Entrada{c}'] == "0":
+            return True
+        if master_df.at[target_idx, f'Saida{c}'] == "0":
+            return True
+    return False
+
+
+def _is_duplicate_values(master_df, target_idx, data):
+    """
+    Verifica se todos os valores não-zero da entidade entrante já existem
+    nos slots preenchidos da linha.
+
+    Necessário para distinguir dois casos que parecem iguais para _has_empty_slots:
+    - Página dividida (continuação real): entidade tem E2/S2 novos → mescla
+    - Período duplicado (duas páginas com mesmo período): entidade repete
+      E1/S1 que já estão preenchidos → skip, não preenche E3/S3 com lixo
+
+    Retorna True se for duplicata (todos os valores já existem).
+    """
+    existing_entradas = {
+        master_df.at[target_idx, f'Entrada{c}']
+        for c in range(1, 12)
+        if master_df.at[target_idx, f'Entrada{c}'] != "0"
+    }
+    existing_saidas = {
+        master_df.at[target_idx, f'Saida{c}']
+        for c in range(1, 12)
+        if master_df.at[target_idx, f'Saida{c}'] != "0"
+    }
+
+    has_new_value = False
+    for k in range(1, 12):
+        e_val = normalize_time(data.get(f'entrada{k}', data.get(f'entrada_{k}', "0")))
+        s_val = normalize_time(data.get(f'saida{k}',   data.get(f'saída{k}',   "0")))
+        if e_val != "0" and e_val not in existing_entradas:
+            has_new_value = True
+            break
+        if s_val != "0" and s_val not in existing_saidas:
+            has_new_value = True
+            break
+
+    return not has_new_value  # True = todos os valores já existem = duplicata
 
 
 def _ocr_page(image):
@@ -412,7 +508,6 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
         rpm_uso_agora  = _get_rpm_usage()
         slots_livres   = DOCAI_RPM_LIMIT - rpm_uso_agora
 
-        # ── LOG: cabeçalho do job ─────────────────────────────────────────────
         LOG_SEP('JOB INICIADO')
         LOG('job_id',             job.id)
         LOG('usuário',            user_id)
@@ -474,17 +569,7 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
         LOG('período global',
             f"{global_start.strftime('%d/%m/%Y')} → {global_end.strftime('%d/%m/%Y')}")
 
-        # ── 2. Calendário por página ──────────────────────────────────────────
-        page_day_dicts = []
-        page_sizes     = []
-        for p in pages_validas:
-            dr   = pd.date_range(start=p['start_dt'], end=p['end_dt'], freq='D')
-            size = len(dr)
-            page_sizes.append(size)
-            day_dict = {f"{d.day:02d}": d.strftime('%d/%m/%Y') for d in dr}
-            page_day_dicts.append(day_dict)
-
-        # ── 3. Calendário mestre ──────────────────────────────────────────────
+        # ── 2. Calendário mestre ──────────────────────────────────────────────
         full_range = pd.date_range(start=global_start, end=global_end, freq='D')
         master_df  = pd.DataFrame({
             'Dia':      full_range.strftime('%d/%m/%Y'),
@@ -499,20 +584,19 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
             f"{len(master_df)} dias  "
             f"({master_df['Dia'].iloc[0]} → {master_df['Dia'].iloc[-1]})")
 
-        # ── 4. Document AI paralelo ───────────────────────────────────────────
+        # ── 3. Document AI paralelo ───────────────────────────────────────────
         LOG_SEP('Document AI')
         LOG('requisições a enviar',
             f"{len(pages_validas)} páginas  "
             f"(max_workers={min(MAX_DOCAI_WORKERS, len(pages_validas))})")
 
         t_docai_inicio = time.time()
-        all_entities, results_by_order, total_waited = extractor.process_pdf_parallel(
+        results_by_order, total_waited = extractor.process_pdf_parallel(
             pdf_path, pages_validas, job.id
         )
         t_docai_seg = round(time.time() - t_docai_inicio, 1)
 
         LOG('tempo de resposta DocAI', f"{t_docai_seg}s")
-
         if total_waited > 0:
             LOG('aguardou rate limit',
                 f"{total_waited}s no total  "
@@ -524,7 +608,6 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
         LOG('uso global após envio',
             f"{rpm_uso_apos} / {DOCAI_RPM_LIMIT} req no último minuto")
 
-        # Entidades por página — compacto em uma linha
         ent_por_pag_partes  = []
         paginas_sem_retorno = []
         for order in sorted(results_by_order.keys()):
@@ -536,95 +619,165 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
                 paginas_sem_retorno.append(pnum)
 
         LOG('entidades por página', ' · '.join(ent_por_pag_partes))
-
         if paginas_sem_retorno:
             LOG('págs sem retorno',
-                f"{paginas_sem_retorno} — em branco ou formato não reconhecido pelo processor",
+                f"{paginas_sem_retorno} — em branco ou formato não reconhecido",
                 'WARN')
 
-        rows_all = [
-            e for e in all_entities
-            if e.type_.lower().replace(' ', '_').replace('-', '_') == 'tabela_marcacoes'
-        ]
-        LOG('total tabela_marcacoes', f"{len(rows_all)} entidades filtradas")
-
-        # ── 5. Preenchimento do CSV ───────────────────────────────────────────
+        # ── 4. Preenchimento do CSV ───────────────────────────────────────────
+        # Processamento por página, em ordem cronológica.
+        # Para cada página:
+        #   - Entidades já chegam ordenadas por Y (feito no _process_single_page)
+        #   - Mantemos um ponteiro page_row_ptr para a linha física esperada
+        #   - Quando a data está borrada/ausente, inferimos pela posição Y
+        #   - Quando a data já está preenchida no master_df, verificamos se é
+        #     continuação (slots vazios → mescla) ou duplicata real (tudo cheio → skip)
         extractor.update_progress(4, 4, "Finalizando planilha...")
 
-        filled_count      = 0
-        skip_no_date      = 0
-        skip_no_row       = 0
-        skip_duplicado    = 0
-        full_date_hits    = 0
-        fallback_day_hits = 0
+        filled_count          = 0
+        skip_no_date          = 0
+        skip_no_row           = 0
+        skip_duplicado        = 0
+        continuacoes_mescladas = 0
+        inferidas_por_y       = 0
+        full_date_hits        = 0
+        day_month_hits        = 0
+        fallback_day_hits     = 0
 
-        # dict global de fallback: dia → lista de datas possíveis em ordem cronológica
-        global_day_to_dates: dict[str, list[str]] = {}
-        for p, day_dict in zip(pages_validas, page_day_dicts):
-            for day_num, full_dt in day_dict.items():
-                global_day_to_dates.setdefault(day_num, []).append(full_dt)
+        for page_idx, p_info in enumerate(pages_validas):
+            entities_pag, _ = results_by_order.get(page_idx, ([], ""))
 
-        for entity in rows_all:
-            shard_text = getattr(entity, '_shard_text', '')
-            data = {
-                prop.type_.lower(): get_text_safely(prop, shard_text)
-                for prop in entity.properties
-            }
+            # Sequência de datas do período desta página — base do tracker Y
+            page_dr    = pd.date_range(start=p_info['start_dt'], end=p_info['end_dt'], freq='D')
+            page_dates = [d.strftime('%d/%m/%Y') for d in page_dr]
+            default_year = p_info['start_dt'].year
 
-            raw_dia     = data.get('dia', data.get('data', ''))
-            target_date = None
+            # Ponteiro para a linha física esperada dentro do período desta página
+            page_row_ptr = 0
 
-            # Caminho 1: data completa retornada pelo DocAI (DD/MM/YYYY) — sem colisão
-            full_date = extract_full_date(raw_dia)
-            if full_date and full_date in date_to_row:
-                target_date = full_date
-                full_date_hits += 1
-            else:
-                # Caminho 2: fallback por número do dia — usa primeira data ainda vazia
-                day = extract_day_number(raw_dia)
-                if day and day in global_day_to_dates:
-                    for candidate in global_day_to_dates[day]:
-                        if candidate in date_to_row:
-                            idx_cand = date_to_row[candidate]
-                            if master_df.at[idx_cand, 'Entrada1'] == "0":
+            for entity in entities_pag:
+                # entities_pag já está ordenada por Y (spatial_sort aplicado no _process_single_page)
+
+                shard_text = getattr(entity, '_shard_text', '')
+                data = {
+                    prop.type_.lower(): get_text_safely(prop, shard_text)
+                    for prop in entity.properties
+                }
+
+                raw_dia = data.get('dia', data.get('data', ''))
+
+                # ── Resolução de data em 4 etapas ────────────────────────────
+
+                target_date = None
+
+                # Etapa 1: data completa DD/MM/YYYY no campo (PontoMais, etc.)
+                full_date = extract_full_date(raw_dia)
+                if full_date and full_date in date_to_row:
+                    target_date = full_date
+                    full_date_hits += 1
+                    # Avança o ponteiro Y até esta data dentro do período da página
+                    if full_date in page_dates:
+                        new_ptr = page_dates.index(full_date)
+                        if new_ptr >= page_row_ptr:
+                            page_row_ptr = new_ptr + 1
+
+                # Etapa 2: DD/MM sem ano → usa o ano do período da página (Murici, etc.)
+                if target_date is None and raw_dia:
+                    match_dm = re.match(r'^(\d{1,2})[/.-](\d{1,2})$', str(raw_dia).strip())
+                    if match_dm:
+                        d, m = match_dm.groups()
+                        years_range = list(range(p_info['start_dt'].year,
+                                                  p_info['end_dt'].year + 1))
+                        for year in years_range:
+                            candidate = f"{d.zfill(2)}/{m.zfill(2)}/{year}"
+                            if candidate in date_to_row:
                                 target_date = candidate
-                                fallback_day_hits += 1
+                                day_month_hits += 1
+                                if candidate in page_dates:
+                                    new_ptr = page_dates.index(candidate)
+                                    if new_ptr >= page_row_ptr:
+                                        page_row_ptr = new_ptr + 1
                                 break
 
-            if target_date is None:
-                skip_no_date += 1
-                continue
+                # Etapa 3: data borrada/ausente → inferência por posição Y
+                # Usa page_row_ptr para saber qual dia esperamos nesta linha física
+                if target_date is None:
+                    if page_row_ptr < len(page_dates):
+                        expected_date = page_dates[page_row_ptr]
 
-            target_idx = date_to_row.get(target_date)
-            if target_idx is None:
-                skip_no_row += 1
-                continue
+                        # Tenta ainda corrigir dígito parcial se raw_dia não está vazio
+                        inferred = infer_date_by_position(raw_dia or None, expected_date, default_year)
 
-            # Ignora duplicatas — o relatório PontoMais repete o último dia
-            # na virada de página física
-            if master_df.at[target_idx, 'Entrada1'] != "0":
-                skip_duplicado += 1
-                continue
+                        if inferred in date_to_row:
+                            target_date = inferred
+                            inferidas_por_y += 1
+                            page_row_ptr += 1
+                            if raw_dia:
+                                LOG(f"  inferência Y pág {p_info['page_number']}",
+                                    f"DocAI leu '{raw_dia}' → corrigido para '{inferred}'", 'WARN')
+                            else:
+                                LOG(f"  inferência Y pág {p_info['page_number']}",
+                                    f"data ausente → inferida '{inferred}' por posição", 'WARN')
 
-            for k in range(1, 12):
-                e_val = normalize_time(
-                    data.get(f'entrada{k}', data.get(f'entrada_{k}', "0")))
-                s_val = normalize_time(
-                    data.get(f'saida{k}', data.get(f'saída{k}', "0")))
-                if e_val != "0":
-                    for c in range(1, 12):
-                        if master_df.at[target_idx, f'Entrada{c}'] == "0":
-                            master_df.at[target_idx, f'Entrada{c}'] = e_val
-                            break
-                if s_val != "0":
-                    for c in range(1, 12):
-                        if master_df.at[target_idx, f'Saida{c}'] == "0":
-                            master_df.at[target_idx, f'Saida{c}'] = s_val
-                            break
+                # Etapa 4: fallback — só o número do dia dentro do período da página
+                if target_date is None and raw_dia:
+                    raw_clean = re.sub(r'[^\d]', '', str(raw_dia).split('/')[0])
+                    if raw_clean:
+                        n = int(raw_clean)
+                        if 1 <= n <= 31:
+                            day_str   = f"{n:02d}"
+                            day_match = next(
+                                (d for d in page_dates if d.startswith(day_str + '/')),
+                                None
+                            )
+                            if day_match and day_match in date_to_row:
+                                idx_cand = date_to_row[day_match]
+                                if master_df.at[idx_cand, 'Entrada1'] == "0":
+                                    target_date = day_match
+                                    fallback_day_hits += 1
+                                    if day_match in page_dates:
+                                        new_ptr = page_dates.index(day_match)
+                                        if new_ptr >= page_row_ptr:
+                                            page_row_ptr = new_ptr + 1
 
-            filled_count += 1
+                # ── Sem data após todas as etapas ────────────────────────────
+                if target_date is None:
+                    skip_no_date += 1
+                    page_row_ptr += 1  # avança mesmo sem data para não desalinhar
+                    continue
 
-        # ── 6. Salvar CSV ─────────────────────────────────────────────────────
+                target_idx = date_to_row.get(target_date)
+                if target_idx is None:
+                    skip_no_row += 1
+                    continue
+
+                # ── Preenchimento ou mescla ───────────────────────────────────
+                if master_df.at[target_idx, 'Entrada1'] == "0":
+                    # Linha vazia — preenche normalmente
+                    preencheu = _fill_slots(master_df, target_idx, data)
+                    if preencheu:
+                        filled_count += 1
+                else:
+                    # Linha já tem dados — três possibilidades:
+                    # 1. Período duplicado (duas páginas com mesmo período) → skip
+                    # 2. Página dividida (continuação real com valores novos) → mescla
+                    # 3. Todos os slots cheios → skip
+                    if _is_duplicate_values(master_df, target_idx, data):
+                        # Todos os valores da entidade já existem na linha
+                        # → período duplicado ou virada simples → ignora
+                        skip_duplicado += 1
+                    elif _has_empty_slots(master_df, target_idx):
+                        # Há slots vazios E há valores novos → continuação real
+                        preencheu = _fill_slots(master_df, target_idx, data)
+                        if preencheu:
+                            continuacoes_mescladas += 1
+                            LOG(f"  mescla pág {p_info['page_number']}",
+                                f"continuação mesclada em '{target_date}' "
+                                f"(marcações de página dividida)")
+                    else:
+                        # Slots cheios com valores diferentes — situação inesperada
+                        skip_duplicado += 1
+        # ── 5. Salvar CSV ─────────────────────────────────────────────────────
         random_id      = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
         final_filename = f"Ponto_Extraido_{random_id}.csv"
         out_path       = os.path.join(tempfile.gettempdir(), f"{job.id}.csv")
@@ -642,10 +795,16 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
             + ("  ⚠ ABAIXO DO LIMIAR (30%)" if taxa_aviso else ""))
         LOG('resolução data completa',
             f"{full_date_hits}  (DD/MM/YYYY direto do DocAI)")
-        LOG('resolução por fallback',
+        LOG('resolução DD/MM + ano página',
+            f"{day_month_hits}  (ano inferido do período digitado)")
+        LOG('inferidas por posição Y',
+            f"{inferidas_por_y}  (data borrada/ausente recuperada por ordem física)")
+        LOG('resolução fallback dia',
             f"{fallback_day_hits}  (número do dia apenas)")
+        LOG('continuações mescladas',
+            f"{continuacoes_mescladas}  (marcações de página dividida unificadas)")
         LOG('duplicados ignorados',
-            f"{skip_duplicado}  (virada de página física no relatório)")
+            f"{skip_duplicado}  (virada de página simples — linha idêntica)")
         LOG('skip fora do range',    str(skip_no_row))
         LOG('skip sem data',         str(skip_no_date))
 
