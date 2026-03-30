@@ -1,12 +1,12 @@
 # /opt/pontua/AutoPonto/backend_api/extractor_geral_ai.py
 
 import os
+import json
 import tempfile
 import pandas as pd
 import logging
 import re
 import traceback
-import platform
 import time
 import random
 import string
@@ -18,25 +18,24 @@ import redis as redis_lib
 from rq import get_current_job
 from google.cloud import documentai_v1 as documentai
 from google.cloud import storage
+from google import genai
 from pypdf import PdfReader, PdfWriter
-from pdf2image import convert_from_path
-import pytesseract
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ExtractorAI")
 
-if platform.system() == 'Windows':
-    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-else:
-    pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
-
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIGURAÇÕES
 # ─────────────────────────────────────────────────────────────────────────────
-MAX_DOCAI_WORKERS = 60
-DOCAI_RPM_LIMIT   = 100       # margem segura — cota real Google: 120/min
-DOCAI_RATE_KEY    = 'docai_sliding_window'
+MAX_DOCAI_WORKERS  = 60
+MAX_GEMINI_WORKERS = 20           # paralelo para extração de períodos
+DOCAI_RPM_LIMIT    = 100          # margem segura — cota real Google: 120/min
+DOCAI_RATE_KEY     = 'docai_sliding_window'
 _redis = redis_lib.Redis(host='localhost', port=6379, db=0)
+
+# Cliente Gemini — mesmo usado pelo payroll_extractor_ai
+_gemini = genai.Client(api_key=os.getenv('GEMINI_API_KEY'))
+GEMINI_MODEL = 'gemini-2.5-flash'
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -399,19 +398,91 @@ def _is_duplicate_values(master_df, target_idx, data):
     return not has_new_value  # True = todos os valores já existem = duplicata
 
 
-def _ocr_page(image):
+def _gemini_extract_period(pdf_path, page_idx, page_number):
+    """
+    Envia UMA página ao Gemini e retorna o período (start_date, end_date).
+
+    - Sobe a página como PDF de 1 página (não JPEG — qualidade nativa)
+    - Gemini lê a página inteira, não só o cabeçalho
+    - Prompt pede primeira e última data visíveis no cartão de ponto
+    - Retorna dict com start_date/end_date em DD/MM/YYYY, ou None se falhar
+
+    O page_order é controlado externamente pelo ThreadPoolExecutor —
+    o resultado é sempre vinculado ao page_idx correto no dict de resultados.
+    """
+    tmp_path = None
+    uploaded_file = None
     try:
-        top   = image.crop((0, 0, image.size[0], int(image.size[1] * 0.3)))
-        text  = pytesseract.image_to_string(top, lang='por')
-        dates = re.findall(r'\b(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4})\b', text)
-        if len(dates) >= 2:
+        # Extrai página como PDF de 1 página
+        reader = PdfReader(pdf_path)
+        writer = PdfWriter()
+        writer.add_page(reader.pages[page_idx])
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
+            writer.write(tmp.name)
+            tmp_path = tmp.name
+
+        # Upload para o Gemini Files API
+        uploaded_file = _gemini.files.upload(file=tmp_path)
+
+        # Aguarda o arquivo estar pronto
+        f = _gemini.files.get(name=uploaded_file.name)
+        waited = 0
+        while f.state.name == 'PROCESSING' and waited < 30:
+            time.sleep(1)
+            waited += 1
+            f = _gemini.files.get(name=uploaded_file.name)
+
+        prompt = """Este documento é um cartão de ponto ou relatório de marcações de ponto de funcionário.
+
+Leia a página inteira de cima para baixo e identifique a PRIMEIRA e a ÚLTIMA data de registro de ponto visíveis nesta folha.
+
+Retorne APENAS um JSON válido, sem texto adicional, sem markdown, sem explicações:
+{"start_date": "DD/MM/YYYY", "end_date": "DD/MM/YYYY", "confidence": "high"}
+
+Use confidence "low" se as datas estiverem ilegíveis ou ambíguas.
+Se não encontrar nenhuma data de ponto, retorne: {"start_date": null, "end_date": null, "confidence": "low"}"""
+
+        response = _gemini.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[f, prompt]
+        )
+
+        # Extrai JSON da resposta — remove markdown se vier com ```
+        raw = response.text.strip()
+        raw = re.sub(r'^```[a-z]*\n?', '', raw)
+        raw = re.sub(r'\n?```$', '', raw)
+        result = json.loads(raw)
+
+        start = result.get('start_date')
+        end   = result.get('end_date')
+        conf  = result.get('confidence', 'low')
+
+        if start and end:
+            # Normaliza para DD/MM/YYYY (Gemini às vezes retorna com traço)
+            start = start.replace('-', '/').replace('.', '/')
+            end   = end.replace('-', '/').replace('.', '/')
             return {
-                'start_date': dates[0].replace('.', '/'),
-                'end_date':   dates[1].replace('.', '/')
+                'start_date': start,
+                'end_date':   end,
+                'confidence': conf
             }
         return None
-    except Exception:
+
+    except Exception as ex:
+        print(f"[ERR ] Gemini período pág {page_number}: {ex}", flush=True)
         return None
+    finally:
+        if uploaded_file:
+            try:
+                _gemini.files.delete(name=uploaded_file.name)
+            except Exception:
+                pass
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -419,18 +490,28 @@ def _ocr_page(image):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def extract_periods_task(pdf_path, pages, user_id):
+    """
+    Extrai o período (primeira e última data) de cada página selecionada
+    usando Gemini em paralelo.
+
+    Garante ordem correta: cada future é mapeado ao seu page_idx original
+    via dict results{page_idx: period}. Independente da ordem de chegada
+    das respostas, o resultado final é ordenado por page_idx.
+    """
     job = get_current_job()
     if not job:
         return None
     job.meta['user_id'] = user_id
     job.save_meta()
-    extractor = ExtractorGeralAI(job=job)
+
+    t_inicio = time.time()
 
     try:
         reader    = PdfReader(pdf_path)
         total_pdf = len(reader.pages)
-        indices_set = set()
 
+        # Monta lista de índices a partir do range recebido
+        indices_set = set()
         if pages:
             for part in str(pages).split(','):
                 part = part.strip()
@@ -446,31 +527,88 @@ def extract_periods_task(pdf_path, pages, user_id):
             indices = list(range(total_pdf))
 
         total_selected = len(indices)
-        extractor.update_progress(0, total_selected, "Convertendo páginas...")
+        LOG_SEP('EXTRAÇÃO DE PERÍODOS')
+        LOG('arquivo',          os.path.basename(pdf_path))
+        LOG('total págs pdf',   f"{total_pdf} páginas")
+        LOG('páginas selecionadas', f"{total_selected}")
+        LOG('modelo',           f"Gemini {GEMINI_MODEL}  (paralelo, max {MAX_GEMINI_WORKERS} workers)")
 
-        min_page = min(indices) + 1
-        max_page = max(indices) + 1
-        all_images = convert_from_path(pdf_path, dpi=200,
-                                       first_page=min_page, last_page=max_page)
+        job.meta.update({
+            'status': 'processing',
+            'message': f'Enviando {total_selected} páginas ao Gemini...',
+            'current_step': 0,
+            'total_steps': total_selected
+        })
+        job.save_meta()
 
-        relative_to_absolute = {
-            (min_page - 1 + i): all_images[i]
-            for i in range(len(all_images))
-        }
+        # ── Processamento paralelo ────────────────────────────────────────────
+        # Chave do dict = page_idx (número real da página no PDF, base 0)
+        # Isso garante que page 255 sempre mapeia para o resultado de page 255,
+        # independente da ordem em que o Gemini responde.
+        results = {}   # {page_idx: period_dict | None}
+        completed_count = 0
 
+        with ThreadPoolExecutor(max_workers=min(MAX_GEMINI_WORKERS, total_selected)) as executor:
+            # Mapeia future → page_idx para saber qual página cada future representa
+            futures = {
+                executor.submit(
+                    _gemini_extract_period,
+                    pdf_path,
+                    page_idx,
+                    page_idx + 1      # page_number legível para logs
+                ): page_idx
+                for page_idx in indices
+            }
+
+            for future in as_completed(futures):
+                page_idx = futures[future]   # garante mapeamento correto
+                period   = future.result()
+                results[page_idx] = period
+
+                completed_count += 1
+                conf_tag = ''
+                if period:
+                    conf_tag = '' if period.get('confidence') == 'high' else '  ⚠ low confidence'
+                    LOG(f"pág {page_idx + 1}",
+                        f"{period['start_date']} → {period['end_date']}{conf_tag}")
+                else:
+                    LOG(f"pág {page_idx + 1}", "sem período identificado", 'WARN')
+
+                job.meta.update({
+                    'message': f'Gemini processou {completed_count}/{total_selected} páginas...',
+                    'current_step': completed_count
+                })
+                job.save_meta()
+
+        # ── Monta resultado final em ordem de page_idx ────────────────────────
+        # sorted(indices) garante que a lista final está na mesma ordem
+        # que o usuário selecionou, independente da chegada paralela.
         res = []
-        for count, page_idx in enumerate(indices, 1):
-            extractor.update_progress(
-                count, total_selected,
-                f"Lendo cabeçalho {count}/{total_selected} (Pág {page_idx + 1})..."
-            )
-            image  = relative_to_absolute.get(page_idx)
-            period = _ocr_page(image) if image is not None else None
+        sem_periodo = []
+        low_conf    = []
+
+        for page_idx in sorted(indices):
+            period = results.get(page_idx)
+            if period is None:
+                sem_periodo.append(page_idx + 1)
+            elif period.get('confidence') == 'low':
+                low_conf.append(page_idx + 1)
+
             res.append({
                 'page_number': page_idx + 1,
                 'page_index':  page_idx,
                 'period':      period
             })
+
+        t_total = round(time.time() - t_inicio, 1)
+        LOG_SEP('RESULTADO')
+        LOG('páginas com período',    f"{total_selected - len(sem_periodo)} de {total_selected}")
+        if sem_periodo:
+            LOG('sem período identificado', str(sem_periodo), 'WARN')
+        if low_conf:
+            LOG('low confidence (revisar)', str(low_conf), 'WARN')
+        LOG('tempo total',            f"{t_total}s")
+        LOG_SEP()
 
         job.meta.update({'status': 'completed', 'result': res, 'pdf_path': pdf_path})
         job.save()
