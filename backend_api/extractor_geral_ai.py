@@ -328,23 +328,57 @@ def _fill_slots(master_df, target_idx, data):
     Preenche os slots de Entrada/Saida no master_df para um dado target_idx.
     Sempre busca o próximo slot vazio — nunca sobrescreve.
     Retorna True se pelo menos um slot foi preenchido.
+
+    FIX: Em páginas de continuação (mescla), o DocAI às vezes retorna horários
+    de SAÍDA no campo entrada1 (e.g., a saída do almoço 12:00 vem como entrada1
+    em vez de saida1). Para corrigir isso, quando um e_val chega sem s_val,
+    verificamos se existe uma entrada "órfã" (Entrada{c} preenchida, Saida{c}
+    vazia) cujo horário é menor que e_val — nesse caso o e_val é na verdade
+    uma saída disfarçada e vai para Saida{c}.
+
+    Comportamento:
+    - s_val presente: preenche no próximo Saida slot vazio (independente)
+    - e_val presente + entrada órfã com e_val > entrada_c: preenche Saida{c}
+    - e_val presente + sem órfã elegível: preenche próximo Entrada slot vazio
     """
     preencheu = False
     for k in range(1, 12):
         e_val = normalize_time(data.get(f'entrada{k}', data.get(f'entrada_{k}', "0")))
         s_val = normalize_time(data.get(f'saida{k}',   data.get(f'saída{k}',   "0")))
-        if e_val != "0":
-            for c in range(1, 12):
-                if master_df.at[target_idx, f'Entrada{c}'] == "0":
-                    master_df.at[target_idx, f'Entrada{c}'] = e_val
-                    preencheu = True
-                    break
+
+        if e_val == "0" and s_val == "0":
+            continue
+
+        # Saida explícita: preenche no próximo slot Saida vazio (comportamento original)
         if s_val != "0":
             for c in range(1, 12):
                 if master_df.at[target_idx, f'Saida{c}'] == "0":
                     master_df.at[target_idx, f'Saida{c}'] = s_val
                     preencheu = True
                     break
+
+        if e_val != "0":
+            # FIX: procura entrada "órfã" (Entrada preenchida, Saida vazia)
+            # onde e_val é posterior — indica que e_val é na verdade uma saída
+            colocado_como_saida = False
+            for c in range(1, 12):
+                entrada_c = master_df.at[target_idx, f'Entrada{c}']
+                saida_c   = master_df.at[target_idx, f'Saida{c}']
+                if entrada_c != "0" and saida_c == "0" and e_val > entrada_c:
+                    # Horário posterior a uma entrada sem saída → é uma saída
+                    master_df.at[target_idx, f'Saida{c}'] = e_val
+                    preencheu = True
+                    colocado_como_saida = True
+                    break
+
+            if not colocado_como_saida:
+                # Valor é realmente uma entrada — preenche no próximo slot vazio
+                for c in range(1, 12):
+                    if master_df.at[target_idx, f'Entrada{c}'] == "0":
+                        master_df.at[target_idx, f'Entrada{c}'] = e_val
+                        preencheu = True
+                        break
+
     return preencheu
 
 
@@ -371,6 +405,12 @@ def _is_duplicate_values(master_df, target_idx, data):
     - Período duplicado (duas páginas com mesmo período): entidade repete
       E1/S1 que já estão preenchidos → skip, não preenche E3/S3 com lixo
 
+    FIX: Compara e_val contra o conjunto UNIFICADO de entradas + saídas já
+    presentes. Sem este fix, um e_val=12:00 vindo do DocAI (que na verdade é
+    uma saída já registrada em Saida1=12:00) não era reconhecido como duplicata
+    porque a verificação era feita apenas contra existing_entradas, não contra
+    existing_saidas — resultando no valor sendo inserido em Entrada2.
+
     Retorna True se for duplicata (todos os valores já existem).
     """
     existing_entradas = {
@@ -383,15 +423,18 @@ def _is_duplicate_values(master_df, target_idx, data):
         for c in range(1, 12)
         if master_df.at[target_idx, f'Saida{c}'] != "0"
     }
+    # FIX: união de todos os valores já presentes, independente de serem
+    # entrada ou saída — o DocAI de páginas de continuação mistura os dois
+    existing_all = existing_entradas | existing_saidas
 
     has_new_value = False
     for k in range(1, 12):
         e_val = normalize_time(data.get(f'entrada{k}', data.get(f'entrada_{k}', "0")))
         s_val = normalize_time(data.get(f'saida{k}',   data.get(f'saída{k}',   "0")))
-        if e_val != "0" and e_val not in existing_entradas:
+        if e_val != "0" and e_val not in existing_all:
             has_new_value = True
             break
-        if s_val != "0" and s_val not in existing_saidas:
+        if s_val != "0" and s_val not in existing_all:
             has_new_value = True
             break
 
