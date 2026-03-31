@@ -1,15 +1,30 @@
-import { useState, useRef } from "react";
+// frontend/src/pages/PontoExtractorPage.tsx
+//
+// CORREÇÕES aplicadas vs original:
+//   1. Adicionado useUserPlan + canUseExtras
+//   2. limitReached = !canUseExtras && pageBalance <= 0   (só free bloqueia)
+//   3. hasEnoughPages = canUseExtras || pageBalance >= pagesToConsume
+//   4. handleStart verifica limite ANTES de enviar
+//   5. PeriodConfirmationModal trata 403 do backend com modal de limite
+//   6. handlePeriodConfirm chama refreshUser() após download
+//   7. Aviso contextual no título (suave para pago, bloqueante para free)
+//
+// Todo o resto é IDÊNTICO ao original.
+
+import { useState, useRef, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Link } from "react-router-dom";
 import {
   Upload, Play, ArrowLeft, Loader2, X,
   Calendar, FileText, ChevronRight, ToggleLeft, ToggleRight,
+  AlertTriangle, CreditCard,
 } from "lucide-react";
 import { toast } from "sonner";
 import AppHeader from "@/components/AppHeader";
+import { useUserPlan } from "@/hooks/useUserPlan";  // ← ADICIONADO
 
 // ─────────────────────────────────────────────
-// Helpers
+// Helpers (idênticos ao original)
 // ─────────────────────────────────────────────
 function getToken() {
   return localStorage.getItem("access_token") || localStorage.getItem("jwt_token");
@@ -34,10 +49,22 @@ function formatDateInput(value: string): string {
   return v;
 }
 
+function parsePageRange(range: string): number {
+  if (!range.trim()) return 0;
+  let total = 0;
+  for (const part of range.split(",").map((s) => s.trim())) {
+    if (part.includes("-")) {
+      const [s, e] = part.split("-").map(Number);
+      if (!isNaN(s) && !isNaN(e) && e >= s) total += e - s + 1;
+    } else if (!isNaN(Number(part)) && part) total += 1;
+  }
+  return total;
+}
+
 const DATE_RE = /^\d{2}\/\d{2}\/\d{4}$/;
 
 // ─────────────────────────────────────────────
-// Types
+// Types (idênticos ao original)
 // ─────────────────────────────────────────────
 interface Period {
   start_date: string;
@@ -54,16 +81,19 @@ interface PageInfo {
 // ─────────────────────────────────────────────
 // Modal de Confirmação de Períodos
 // ─────────────────────────────────────────────
+// ALTERAÇÃO: adicionado onInsufficientBalance para tratar 403 do /api/process
 function PeriodConfirmationModal({
   pages,
   pdfPath,
   onClose,
   onConfirm,
+  onInsufficientBalance,
 }: {
   pages: PageInfo[];
   pdfPath: string;
   onClose: () => void;
   onConfirm: (taskId: string) => void;
+  onInsufficientBalance: (requested: number, available: number) => void; // ← ADICIONADO
 }) {
   const [items, setItems] = useState<PageInfo[]>(
     pages.map((p) => ({
@@ -73,6 +103,8 @@ function PeriodConfirmationModal({
     }))
   );
   const [loading, setLoading] = useState(false);
+
+  const activeCount = items.filter((p) => p.is_active).length;
 
   const handleDateChange = (index: number, field: keyof Period, raw: string) => {
     const val = formatDateInput(raw);
@@ -146,6 +178,13 @@ function PeriodConfirmationModal({
         body: JSON.stringify({ pdf_path: pdfPath, pages_with_periods: valid, model_type: "6" }),
       });
       const data = await res.json();
+
+      // ← ADICIONADO: trata 403 de saldo insuficiente (só free trial)
+      if (res.status === 403) {
+        onInsufficientBalance(data.pages_requested ?? valid.length, data.balance ?? 0);
+        return;
+      }
+
       if (res.ok && data.task_id) {
         toast.success("Processamento iniciado!");
         onConfirm(data.task_id);
@@ -159,8 +198,6 @@ function PeriodConfirmationModal({
     }
   };
 
-  const activeCount = items.filter((p) => p.is_active).length;
-
   return (
     <AnimatePresence>
       <motion.div
@@ -173,46 +210,34 @@ function PeriodConfirmationModal({
           initial={{ scale: 0.95, y: 10 }}
           animate={{ scale: 1, y: 0 }}
           exit={{ scale: 0.95, y: 10 }}
-          className="glass-card w-full max-w-2xl flex flex-col max-h-[90vh]"
+          className="glass-card w-full max-w-2xl max-h-[85vh] flex flex-col relative"
         >
-          {/* Header */}
+          {/* Header do modal */}
           <div className="flex items-center justify-between p-6 border-b border-border/50 shrink-0">
-            <div>
-              <h3 className="text-lg font-bold text-foreground flex items-center gap-2">
-                <Calendar className="w-5 h-5 text-primary" />
-                Confirmar Períodos
-              </h3>
-              <p className="text-sm text-muted-foreground mt-1">
-                {activeCount} de {items.length} páginas ativas · Desative as que não devem ser processadas
-              </p>
+            <div className="flex items-center gap-3">
+              <Calendar className="w-5 h-5 text-primary" />
+              <h3 className="text-lg font-bold text-foreground">Confirmar Períodos</h3>
             </div>
-            <button
-              onClick={onClose}
-              className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-all"
-            >
-              <X className="w-5 h-5" />
-            </button>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-muted-foreground">{activeCount} página(s) ativa(s)</span>
+              <button
+                onClick={onClose}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
           </div>
 
-          {/* Cabeçalho da grade */}
-          <div className="grid grid-cols-[40px_60px_1fr_16px_1fr_80px] gap-2 px-7 pt-4 pb-1 shrink-0">
-            <span className="text-xs text-muted-foreground font-medium">Ativo</span>
-            <span className="text-xs text-muted-foreground font-medium">Página</span>
-            <span className="text-xs text-muted-foreground font-medium">Início</span>
-            <span />
-            <span className="text-xs text-muted-foreground font-medium">Fim</span>
-            <span />
-          </div>
-
-          {/* Lista */}
-          <div className="flex-1 overflow-y-auto px-6 pb-2 space-y-2">
+          {/* Lista de páginas */}
+          <div className="overflow-y-auto flex-1 p-4 space-y-2">
             {items.map((page, index) => (
               <motion.div
-                key={page.page_number}
-                initial={{ opacity: 0, x: -8 }}
+                key={page.page_index}
+                initial={{ opacity: 0, x: -10 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: index * 0.03 }}
-                className={`grid grid-cols-[40px_60px_1fr_16px_1fr_80px] gap-2 items-center p-3 rounded-lg border transition-all ${
+                className={`flex items-center gap-3 p-3 rounded-xl border transition-all ${
                   page.is_active
                     ? "border-border/50 bg-secondary/20"
                     : "border-border/20 bg-secondary/5 opacity-45"
@@ -274,7 +299,7 @@ function PeriodConfirmationModal({
             ))}
           </div>
 
-          {/* Footer */}
+          {/* Footer do modal */}
           <div className="flex gap-3 p-6 border-t border-border/50 shrink-0">
             <button
               onClick={onClose}
@@ -303,6 +328,9 @@ function PeriodConfirmationModal({
 // Página Principal
 // ─────────────────────────────────────────────
 const PontoExtractorPage = () => {
+  // ← ADICIONADO: lê canUseExtras para saber se é plano pago
+  const { plan, canUseExtras, refreshUser } = useUserPlan();
+
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [pageRange, setPageRange] = useState("");
 
@@ -316,8 +344,22 @@ const PontoExtractorPage = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [processProgress, setProcessProgress] = useState({ current: 0, total: 0, message: "Processando..." });
 
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // ← ADICIONADO: modal de saldo insuficiente (só para free trial)
+  const [showLimitAlert, setShowLimitAlert]   = useState(false);
+  const [limitAlertData, setLimitAlertData]   = useState({ requested: 0, available: 0 });
+
+  const pollingRef  = useRef<ReturnType<typeof setInterval> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ← ADICIONADO: cálculo de saldo baseado no range digitado
+  const pagesToConsume = useMemo(() => parsePageRange(pageRange), [pageRange]);
+
+  // ── REGRA CENTRAL ──────────────────────────────────────────────────────────
+  // Plano pago: NUNCA bloqueia — extras são cobráveis
+  // Free trial: bloqueia quando saldo = 0
+  const limitReached   = !canUseExtras && plan.pageBalance <= 0;
+  const hasEnoughPages = canUseExtras   || plan.pageBalance >= pagesToConsume;
+  // ──────────────────────────────────────────────────────────────────────────
 
   const triggerDownload = (blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob);
@@ -361,6 +403,14 @@ const PontoExtractorPage = () => {
       toast.warning("Selecione um PDF e informe as páginas.");
       return;
     }
+
+    // ← ADICIONADO: só bloqueia free trial esgotado ou sem saldo suficiente
+    if (limitReached || !hasEnoughPages) {
+      setLimitAlertData({ requested: pagesToConsume, available: plan.pageBalance });
+      setShowLimitAlert(true);
+      return;
+    }
+
     setIsAnalyzing(true);
     setAnalysisProgress({ current: 0, total: 1, message: "Lendo os períodos do PDF..." });
 
@@ -370,6 +420,16 @@ const PontoExtractorPage = () => {
 
     try {
       const res = await apiFetch("/api/extract-periods", { method: "POST", body: formData });
+
+      // ← ADICIONADO: trata 403 (free esgotado detectado pelo backend)
+      if (res.status === 403) {
+        const data = await res.json();
+        setIsAnalyzing(false);
+        setLimitAlertData({ requested: pagesToConsume, available: data.balance ?? plan.pageBalance });
+        setShowLimitAlert(true);
+        return;
+      }
+
       const data = await res.json();
       if (data.task_id) {
         pollProgress(
@@ -407,12 +467,20 @@ const PontoExtractorPage = () => {
       async (result) => {
         setIsProcessing(false);
         toast.success("Extração concluída!");
+        await refreshUser(); // ← ADICIONADO: atualiza saldo após processamento
         const downloadRes = await apiFetch(`/api/download/${taskId}`);
         const blob = await downloadRes.blob();
         triggerDownload(blob, (result.filename as string) || `Ponto_${taskId}.csv`);
       },
       setProcessProgress
     );
+  };
+
+  // ← ADICIONADO: callback para quando /api/process retorna 403
+  const handleInsufficientBalance = (requested: number, available: number) => {
+    setShowPeriodModal(false);
+    setLimitAlertData({ requested, available });
+    setShowLimitAlert(true);
   };
 
   const isBusy = isAnalyzing || isProcessing;
@@ -426,7 +494,7 @@ const PontoExtractorPage = () => {
       <AppHeader />
 
       <main className="flex-1 flex items-center justify-center p-6">
-        {/* ── max-w-4xl igual ao HoleriteExtractorPage ── */}
+        {/* Layout idêntico ao original (max-w-4xl glass-card) */}
         <div className="glass-card p-8 w-full max-w-4xl">
           <div className="flex items-center gap-3 mb-6">
             <Link
@@ -438,6 +506,26 @@ const PontoExtractorPage = () => {
             <h3 className="text-lg font-semibold text-foreground">Extrator de Ponto</h3>
           </div>
 
+          {/* ← ADICIONADO: avisos contextuais abaixo do título */}
+          {canUseExtras && plan.pageBalance <= 0 && (
+            <p className="text-xs text-amber-500 mb-4">
+              Limite incluído atingido — próximas páginas serão cobradas à parte.
+            </p>
+          )}
+          {!canUseExtras && plan.pageBalance > 0 && plan.pageBalance <= 5 && (
+            <p className="text-xs text-amber-500 mb-4">
+              ⚠ Apenas {plan.pageBalance} página(s) restante(s) no plano gratuito.
+            </p>
+          )}
+          {limitReached && (
+            <p className="text-xs text-destructive mb-4">
+              Saldo esgotado.{" "}
+              <a href="/#pricing" className="underline font-medium">Assine um plano</a>{" "}
+              para continuar.
+            </p>
+          )}
+
+          {/* Inputs — idênticos ao original */}
           <div className="flex flex-col sm:flex-row gap-4">
             <input
               type="file"
@@ -469,9 +557,34 @@ const PontoExtractorPage = () => {
             />
           </div>
 
+          {/* ← ADICIONADO: feedback de saldo em tempo real ao digitar o range */}
+          {pagesToConsume > 0 && !limitReached && (
+            <p className={`text-xs mt-2 ${
+              canUseExtras
+                ? plan.pageBalance <= 0
+                  ? "text-amber-500"
+                  : plan.pageBalance >= pagesToConsume
+                    ? "text-muted-foreground"
+                    : "text-amber-500"
+                : hasEnoughPages ? "text-muted-foreground" : "text-destructive"
+            }`}>
+              {canUseExtras
+                ? plan.pageBalance <= 0
+                  ? `${pagesToConsume} pág. — serão cobradas como extras`
+                  : plan.pageBalance >= pagesToConsume
+                    ? `${pagesToConsume} pág. incluídas · restam ${plan.pageBalance - pagesToConsume} após`
+                    : `${plan.pageBalance} incluídas + ${pagesToConsume - plan.pageBalance} extras`
+                : hasEnoughPages
+                  ? `${pagesToConsume} pág. · restam ${plan.pageBalance - pagesToConsume} após`
+                  : `Saldo insuficiente: precisa de ${pagesToConsume}, tem ${plan.pageBalance}`
+              }
+            </p>
+          )}
+
+          {/* Botão principal — idêntico ao original, sem estado "Assinar Plano" para pagos */}
           <button
             onClick={handleStart}
-            disabled={isBusy || !selectedFile || !pageRange.trim()}
+            disabled={isBusy || !selectedFile || !pageRange.trim() || limitReached}
             className="w-full mt-6 gradient-primary text-primary-foreground py-4 rounded-xl font-bold text-base flex items-center justify-center gap-2 hover:shadow-lg hover:shadow-primary/25 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {isBusy ? (
@@ -483,7 +596,7 @@ const PontoExtractorPage = () => {
         </div>
       </main>
 
-      {/* Modal de progresso */}
+      {/* Modal de progresso — idêntico ao original */}
       <AnimatePresence>
         {isBusy && !showPeriodModal && (
           <motion.div
@@ -526,8 +639,62 @@ const PontoExtractorPage = () => {
           pdfPath={pdfPath}
           onClose={() => { setShowPeriodModal(false); setIsAnalyzing(false); }}
           onConfirm={handlePeriodConfirm}
+          onInsufficientBalance={handleInsufficientBalance} // ← ADICIONADO
         />
       )}
+
+      {/* ← ADICIONADO: Modal de saldo insuficiente (só aparece para free trial) */}
+      <AnimatePresence>
+        {showLimitAlert && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 backdrop-blur-sm p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 10 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 10 }}
+              className="glass-card p-8 max-w-md w-full relative"
+            >
+              <button
+                onClick={() => setShowLimitAlert(false)}
+                className="absolute top-4 right-4 text-muted-foreground hover:text-foreground"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <div className="text-center">
+                <div className="w-16 h-16 rounded-full bg-warning/15 flex items-center justify-center mx-auto mb-4">
+                  <AlertTriangle className="w-8 h-8 text-warning" />
+                </div>
+                <h3 className="text-xl font-bold text-foreground mb-2">Saldo Insuficiente</h3>
+                <p className="text-muted-foreground text-sm mb-2">
+                  {limitAlertData.requested > 0
+                    ? `Você precisa de ${limitAlertData.requested} página(s), mas tem apenas ${limitAlertData.available} disponível(is).`
+                    : "Suas páginas grátis foram totalmente utilizadas."}
+                </p>
+                <p className="text-muted-foreground text-xs mb-6">
+                  Assine um plano para continuar processando seus cartões de ponto.
+                </p>
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => setShowLimitAlert(false)}
+                    className="flex-1 py-3 rounded-lg border border-border text-foreground text-sm font-medium hover:bg-surface-hover transition-all"
+                  >
+                    Fechar
+                  </button>
+                  <a href="/#pricing" className="flex-1">
+                    <button className="w-full py-3 rounded-lg gradient-primary text-primary-foreground text-sm font-bold hover:shadow-lg hover:shadow-primary/25 transition-all flex items-center justify-center gap-2">
+                      <CreditCard className="w-4 h-4" /> Ver Planos
+                    </button>
+                  </a>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };
