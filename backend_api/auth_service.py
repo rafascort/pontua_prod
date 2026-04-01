@@ -153,6 +153,12 @@ def login():
     if user and user.password_hash:
         try:
             if check_password_hash(user.password_hash, password):
+                if not getattr(user, 'email_verified', True):
+                    return jsonify({
+                        "msg":        "Confirme seu email antes de fazer login.",
+                        "error_code": "EMAIL_NOT_VERIFIED",
+                        "email":      email,
+                    }), 403
                 if not user.is_active:
                     return jsonify({"msg": "Sua conta está inativa. Entre em contato com o suporte."}), 403
                 if user.stripe_customer_id and not user.next_reset_date:
@@ -185,20 +191,26 @@ def register():
     if User.query.filter_by(email=email).first():
         return jsonify({"msg": "Email já cadastrado"}), 409
 
-    hashed_password = generate_password_hash(password)
+    token    = secrets.token_urlsafe(32)
     new_user = User(
-        email=email,
-        password_hash=hashed_password,
-        # name=name, # Descomente se adicionar a coluna 'name'
-        is_active=True,
-        role='user',
-        page_count=0,
-        plan_status='free'
+        email                      = email,
+        password_hash              = generate_password_hash(password),
+        is_active                  = False,
+        role                       = 'user',
+        page_count                 = 0,
+        plan_status                = 'free',
+        email_verified             = False,
+        email_verification_token   = token,
+        email_verification_sent_at = datetime.now(timezone.utc),
     )
     db.session.add(new_user)
     try:
         db.session.commit()
-        return jsonify({"msg": f"Usuário {email} criado com sucesso! Faça o login."}), 201
+        sent = send_verification_email(email, token)
+        return jsonify({
+            "msg":        "Conta criada! Verifique seu email para ativar.",
+            "email_sent": sent,
+        }), 201
     except Exception as e:
         db.session.rollback()
         print(f"Erro ao registrar usuário: {e}")
