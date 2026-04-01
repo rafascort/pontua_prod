@@ -30,11 +30,9 @@ redis_conn = redis.Redis(host='localhost', port=6379, db=0)
 stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
 
 # --- LIMITES DOS PLANOS ---
-# CORREÇÃO: PLAN_LIMIT_FREE padrão era 0, mas free tem 50 páginas.
-# Garante que o padrão seja 50 caso a variável não esteja no .env.
 try:
     PLAN_LIMITS = {
-        'free':     int(os.getenv('PLAN_LIMIT_FREE',    50)),   # ← padrão corrigido de 0 → 50
+        'free':     int(os.getenv('PLAN_LIMIT_FREE',    50)),
         'basic':    int(os.getenv('PLAN_LIMIT_BASICO',  200)),
         'standard': int(os.getenv('PLAN_LIMIT_PADRAO',  500)),
         'premium':  int(os.getenv('PLAN_LIMIT_PREMIUM', 1500)),
@@ -44,6 +42,9 @@ try:
 except ValueError:
     print("ERRO CRÍTICO (queue_manager): Limites de plano no .env não são números válidos.")
     PLAN_LIMITS = {'free': 50, 'basic': 200, 'standard': 500, 'premium': 1500, 'past_due': 0, 'inactive': 0}
+
+# Planos pagos que podem usar páginas extras (cobradas pelo Stripe)
+PAID_PLANS = ['basic', 'standard', 'premium']
 
 # Mapeamento de nome de plano para ID DE PREÇO DE PÁGINA EXTRA
 PLAN_NAME_TO_EXTRA_PRICE_ID = {
@@ -74,20 +75,21 @@ EXTRACTOR_MODULES = {
 # =============================================================
 # CORREÇÃO: check_user_page_balance
 # Valida saldo server-side antes de enfileirar qualquer job.
-# Antes, a proteção existia só no frontend — uma chamada direta
-# à API bypassava completamente o limite.
+#
+# REGRA:
+#   - Admin         → sempre liberado
+#   - Plano pago    → sempre liberado (extras cobráveis pelo Stripe)
+#   - Free trial    → bloqueado quando saldo = 0 ou insuficiente
 # =============================================================
 def check_user_page_balance(user_email: str, pages_requested: int):
     """
-    Verifica se o usuário tem saldo suficiente para processar
-    a quantidade de páginas solicitada.
+    Verifica se o usuário pode processar a quantidade de páginas solicitada.
 
     Retorna:
-        (True, None)           → pode processar
+        (True, None)            → pode processar
         (False, (json, status)) → bloqueia com resposta de erro
     """
-    # 0 significa "todas as páginas do PDF" — o worker calcula o total depois.
-    # Não bloqueamos aqui; a contagem ocorre no /download.
+    # 0 = "todas as páginas do PDF" — worker calculará o total real no /download.
     if pages_requested <= 0:
         return True, None
 
@@ -99,17 +101,24 @@ def check_user_page_balance(user_email: str, pages_requested: int):
     if user.role == 'admin':
         return True, None
 
-    plan_status  = user.plan_status or 'free'
-    plan_limit   = PLAN_LIMITS.get(plan_status, 0)
+    plan_status = user.plan_status or 'free'
+
+    # CORREÇÃO: planos pagos sempre podem processar — quando ultrapassam o
+    # limite incluído, as páginas extras são cobradas automaticamente pelo Stripe.
+    if plan_status in PAID_PLANS:
+        return True, None
+
+    # Free trial: bloqueia quando saldo = 0 ou insuficiente
+    plan_limit    = PLAN_LIMITS.get(plan_status, 0)
     current_count = user.page_count or 0
-    balance      = plan_limit - current_count
+    balance       = plan_limit - current_count
 
     if balance <= 0:
         return False, (
             jsonify({
                 "error":       "Saldo de páginas esgotado.",
-                "detail":      f"Seu plano '{plan_status}' não tem páginas disponíveis. "
-                               "Assine ou atualize seu plano para continuar.",
+                "detail":      "Suas páginas grátis foram utilizadas. "
+                               "Assine um plano para continuar.",
                 "balance":     0,
                 "plan_status": plan_status,
             }),
@@ -121,7 +130,7 @@ def check_user_page_balance(user_email: str, pages_requested: int):
             jsonify({
                 "error":           "Páginas insuficientes.",
                 "detail":          f"Você solicitou {pages_requested} página(s) mas tem apenas "
-                                   f"{balance} disponível(is) no plano '{plan_status}'.",
+                                   f"{balance} disponível(is) no plano gratuito.",
                 "balance":         balance,
                 "pages_requested": pages_requested,
                 "plan_status":     plan_status,
@@ -150,8 +159,8 @@ def report_usage_to_stripe(user, pages_processed_this_job, new_total_page_count)
         print(f"[DIAGNOSTICO] Usuário {user.email} não é elegível para reporte (Plano: {user.plan_status}, Role: {user.role}).")
         return
 
-    plan_limit      = PLAN_LIMITS.get(user.plan_status)
-    extra_price_id  = PLAN_NAME_TO_EXTRA_PRICE_ID.get(user.plan_status)
+    plan_limit     = PLAN_LIMITS.get(user.plan_status)
+    extra_price_id = PLAN_NAME_TO_EXTRA_PRICE_ID.get(user.plan_status)
 
     if plan_limit is None:
         print(f"AVISO: Limite não definido para plano '{user.plan_status}' ({user.email}). Não reportando uso.")
@@ -174,8 +183,8 @@ def report_usage_to_stripe(user, pages_processed_this_job, new_total_page_count)
             meter_event = stripe.billing.MeterEvent.create(
                 event_name=event_name,
                 payload={
-                    "value":               str(pages_to_report),
-                    "stripe_customer_id":  user.stripe_customer_id,
+                    "value":              str(pages_to_report),
+                    "stripe_customer_id": user.stripe_customer_id,
                 }
             )
             print(f"SUCESSO: Reportado {pages_to_report} pgs extras para {user.email} "
@@ -191,14 +200,19 @@ def report_usage_to_stripe(user, pages_processed_this_job, new_total_page_count)
 
 
 # =============================================================
-# ROTAS DE FOLHA DE PAGAMENTO (ADMIN ONLY)
+# ROTAS DE FOLHA DE PAGAMENTO
+# CORREÇÃO: removido @admin_required() — qualquer usuário ativo
+# com plano pode usar o extrator de holerite.
 # =============================================================
 
 @app.route('/api/payroll/analyze', methods=['POST'])
 @jwt_required()
-@admin_required()
 def payroll_analyze():
     current_user_email = get_jwt_identity()
+    claims = get_jwt()
+    if not claims.get('is_active'):
+        return jsonify({"error": "Conta inativa."}), 403
+
     if 'pdf_file' not in request.files:
         return jsonify({'error': 'PDF não enviado.'}), 400
     file  = request.files['pdf_file']
@@ -220,9 +234,12 @@ def payroll_analyze():
 
 @app.route('/api/payroll/process', methods=['POST'])
 @jwt_required()
-@admin_required()
 def payroll_process():
     current_user_email = get_jwt_identity()
+    claims = get_jwt()
+    if not claims.get('is_active'):
+        return jsonify({"error": "Conta inativa."}), 403
+
     data = request.get_json()
     q    = QUEUES.get('payroll')
     job  = q.enqueue(
@@ -237,7 +254,6 @@ def payroll_process():
 # =============================================================
 # ROTA: /api/extract-periods
 # Primeira etapa do extrator de ponto (identificação de períodos).
-# CORREÇÃO: adicionada validação server-side de saldo mínimo.
 # =============================================================
 @app.route('/api/extract-periods', methods=['POST'])
 @jwt_required()
@@ -256,12 +272,10 @@ def extract_periods():
         if file.filename == '':
             return jsonify({'error': 'Nenhum ficheiro selecionado.'}), 400
 
-        # ─── CORREÇÃO: valida se o usuário tem pelo menos 1 página disponível
-        # (o número exato será conhecido só após o modal de períodos)
+        # Valida se o usuário pode processar pelo menos 1 página
         ok, err = check_user_page_balance(current_user_email, 1)
         if not ok:
             return err
-        # ────────────────────────────────────────────────────────────────────
 
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
             file.save(tmp_file.name)
@@ -293,7 +307,6 @@ def extract_periods():
 
 # =============================================================
 # ROTA: /api/process  (Modelo "Com Data" — fluxo com períodos)
-# CORREÇÃO: adicionada validação server-side do saldo exato.
 # =============================================================
 @app.route('/api/process', methods=['POST'])
 @jwt_required()
@@ -306,10 +319,10 @@ def process_pdf():
     num_pages_to_process = 0
     pdf_path = None
     try:
-        data             = request.get_json()
+        data               = request.get_json()
         pages_with_periods = data.get('pages_with_periods')
-        pdf_path         = data.get('pdf_path')
-        model_type       = data.get('model_type', '6')
+        pdf_path           = data.get('pdf_path')
+        model_type         = data.get('model_type', '6')
 
         if not pages_with_periods or not pdf_path:
             return jsonify({'error': 'Dados incompletos.'}), 400
@@ -322,13 +335,11 @@ def process_pdf():
 
         num_pages_to_process = len(pages_with_periods)
 
-        # ─── CORREÇÃO: valida saldo exato antes de processar
         ok, err = check_user_page_balance(current_user_email, num_pages_to_process)
         if not ok:
             return err
-        # ────────────────────────────────────────────────────────────────────
 
-        q                    = QUEUES.get(model_type)
+        q                     = QUEUES.get(model_type)
         extractor_module_name = EXTRACTOR_MODULES.get(model_type)
         if not q or not extractor_module_name:
             raise ValueError(f"Fila/Módulo não encontrado para modelo {model_type}.")
@@ -354,8 +365,7 @@ def process_pdf():
 
 
 # =============================================================
-# ROTA: /api/process-direct  (Modelo "Sem Data" — holerite / direto)
-# CORREÇÃO: adicionada validação server-side do saldo.
+# ROTA: /api/process-direct  (Modelo "Sem Data" — direto)
 # =============================================================
 @app.route('/api/process-direct', methods=['POST'])
 @jwt_required()
@@ -380,7 +390,6 @@ def process_pdf_direct():
         if model_type not in QUEUES or model_type not in EXTRACTOR_MODULES:
             raise ValueError(f'Modelo {model_type} não configurado.')
 
-        # Calcula o número de páginas a partir do range informado
         if pages:
             page_list = []
             for part in pages.split(','):
@@ -395,21 +404,18 @@ def process_pdf_direct():
                     page_list.append(int(part))
             num_pages_to_process = len(set(p for p in page_list if p > 0))
         else:
-            # 0 = "todas as páginas" — worker calculará o total real
             num_pages_to_process = 0
 
-        # ─── CORREÇÃO: valida saldo se soubermos o número de páginas
         if num_pages_to_process > 0:
             ok, err = check_user_page_balance(current_user_email, num_pages_to_process)
             if not ok:
                 return err
-        # ────────────────────────────────────────────────────────────────────
 
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
             file.save(tmp_file.name)
             pdf_path = tmp_file.name
 
-        q                    = QUEUES.get(model_type)
+        q                     = QUEUES.get(model_type)
         extractor_module_name = EXTRACTOR_MODULES.get(model_type)
         if not q or not extractor_module_name:
             raise ValueError(f"Fila/Módulo não encontrado para modelo {model_type}.")
@@ -470,8 +476,8 @@ def get_progress(task_id):
     progress_data = job.meta.copy()
 
     if status_rq == 'finished':
-        internal_status           = progress_data.get('status', 'completed')
-        progress_data['status']   = internal_status
+        internal_status         = progress_data.get('status', 'completed')
+        progress_data['status'] = internal_status
         if internal_status == 'completed':
             progress_data['result'] = job.result
         elif internal_status == 'error':
@@ -502,8 +508,6 @@ def get_progress(task_id):
 # =============================================================
 # ROTA: /api/download/<task_id>
 # Contabiliza o uso de páginas e reporta extras ao Stripe.
-# A contagem ocorre aqui (no download) e não no enqueue,
-# garantindo que só páginas efetivamente processadas são cobradas.
 # =============================================================
 @app.route('/api/download/<task_id>', methods=['GET'])
 @jwt_required()
@@ -536,15 +540,15 @@ def download_result(task_id):
     if not file_path or not os.path.exists(file_path):
         return jsonify({'error': 'Ficheiro resultado não encontrado.'}), 404
 
-    # ─── Contabilização de uso (executa apenas uma vez por job) ───────────
+    # ─── Contabilização de uso (executa apenas uma vez por job) ──────────
     if not job.meta.get('usage_counted', False):
         print(f"[LOG] Job {task_id} será contabilizado agora (antes do download)...")
         try:
-            num_pages_processed = int(job.meta.get('pages_to_process', 0))
+            num_pages_processed  = int(job.meta.get('pages_to_process', 0))
             user = User.query.filter_by(email=current_user_email).first()
 
             if user and user.role != 'admin' and num_pages_processed > 0:
-                user.page_count    += num_pages_processed
+                user.page_count     += num_pages_processed
                 new_total_page_count = user.page_count
                 db.session.commit()
 
@@ -567,10 +571,9 @@ def download_result(task_id):
             db.session.rollback()
             print(f"[ERRO FATAL] Contagem/Reporte falhou para {current_user_email} no /download: {e}")
             traceback.print_exc()
-            # Não impede o download — apenas loga o erro
     else:
         print(f"[LOG] Job {task_id} já teve uso contabilizado. Apenas enviando arquivo.")
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def remove_file_after_download(path_to_remove):
         time.sleep(10)
