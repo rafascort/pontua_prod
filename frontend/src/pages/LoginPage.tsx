@@ -1,106 +1,110 @@
-// ============================================================
-// CORREÇÃO 2: LoginPage.tsx
-// Problema: sempre navegava para /app sem verificar o estado do plano.
-// Fix: após login, verifica plan_status e page_count do usuário
-// e redireciona adequadamente:
-//   - admin        → /admin
-//   - plano ativo  → /app
-//   - free com saldo → /app
-//   - free esgotado / past_due / sem plano → /#pricing
-// ============================================================
+// frontend/src/pages/LoginPage.tsx
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Mail, Lock, LogIn, ArrowLeft, MessageCircle } from "lucide-react";
+import { Mail, Lock, LogIn, ArrowLeft, MessageCircle, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 
 const WHATSAPP_URL =
   "https://wa.me/5554999427282?text=Olá! Tenho dúvidas sobre o Sistema Ponto.";
 
-const ACTIVE_PLANS = ["basic", "standard", "premium"];
+const ACTIVE_PLANS   = ["basic", "standard", "premium"];
 const FREE_PAGE_LIMIT = 50;
 
 const LoginPage = () => {
-  const [email, setEmail] = useState("");
+  const [email,    setEmail]    = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const navigate = useNavigate();
+
+  // Estado para email não verificado
+  const [notVerified,     setNotVerified]     = useState(false);
+  const [unverifiedEmail, setUnverifiedEmail] = useState("");
+  const [resending,       setResending]       = useState(false);
+  const [resendCooldown,  setResendCooldown]  = useState(0);
+
+  const navigate      = useNavigate();
+  const [searchParams] = useSearchParams();
   const { login, refreshUser } = useAuth();
+
+  // Mostra toast se vier de verificação bem-sucedida
+  const verified = searchParams.get("verified");
+  if (verified === "true" && !isLoading) {
+    // Só mostra uma vez
+    setTimeout(() => toast.success("Email confirmado! Faça login para continuar."), 100);
+  }
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email || !password) {
-      toast.error("Preencha todos os campos.");
-      return;
-    }
+    if (!email || !password) { toast.error("Preencha todos os campos."); return; }
     setIsLoading(true);
+    setNotVerified(false);
     try {
       await login(email, password);
-
-      // Busca os dados atualizados do usuário (agora vêm do DB, não só do JWT)
-      // refreshUser já é chamado dentro de login(), então user estará populado
-      // Decodifica o token para obter role e plan_status
-      const token = localStorage.getItem("access_token");
-      if (token) {
-        try {
-          const payload = token.split(".")[1];
-          const decoded = JSON.parse(
-            window.atob(payload.replace(/-/g, "+").replace(/_/g, "/"))
-          );
-
-          if (decoded.role === "admin") {
-            navigate("/admin");
-            return;
-          }
-        } catch {
-          // Token inválido — deixa refreshUser decidir
-        }
-      }
-
-      // Aguarda o user do contexto ser preenchido via refreshUser
-      // Usa pequeno delay para garantir que o estado foi atualizado
-      await new Promise((r) => setTimeout(r, 100));
       await refreshUser();
 
-      // Lê o user atualizado via /api/user/me (que agora retorna do DB)
+      // Lê o plano atual para decidir para onde redirecionar
       const me = await fetch("/api/user/me", {
         headers: { Authorization: `Bearer ${localStorage.getItem("access_token")}` },
       }).then((r) => r.json());
 
       const planStatus: string = me?.plan_status ?? "free";
-      const pageCount: number = me?.page_count ?? 0;
+      const pageCount:  number = me?.page_count  ?? 0;
 
-      if (me?.role === "admin") {
-        navigate("/admin");
-        return;
-      }
+      if (me?.role === "admin") { navigate("/admin"); return; }
 
-      const hasActivePlan = ACTIVE_PLANS.includes(planStatus);
-      const isFreeWithBalance =
-        planStatus === "free" && pageCount < FREE_PAGE_LIMIT;
+      const hasActivePlan    = ACTIVE_PLANS.includes(planStatus);
+      const isFreeWithBalance = planStatus === "free" && pageCount < FREE_PAGE_LIMIT;
 
       if (hasActivePlan || isFreeWithBalance) {
-        toast.success("Login realizado com sucesso!");
+        toast.success("Bem-vindo de volta!");
         navigate("/app");
       } else {
-        // Usuário sem saldo ou com pagamento pendente
-        const reason =
-          planStatus === "past_due"
-            ? "past_due"
-            : "free_exhausted";
-        toast.info(
-          planStatus === "past_due"
-            ? "Seu pagamento está pendente. Regularize para continuar."
-            : "Suas páginas grátis foram utilizadas. Escolha um plano para continuar."
-        );
+        const reason = planStatus === "past_due" ? "past_due" : "free_exhausted";
+        toast.info(planStatus === "past_due"
+          ? "Seu pagamento está pendente. Regularize para continuar."
+          : "Suas páginas grátis foram utilizadas. Assine um plano para continuar.");
         window.location.href = `/#pricing?reason=${reason}`;
       }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Erro ao fazer login.";
-      toast.error(message);
+      const message = err instanceof Error ? err.message : "";
+
+      // Email não verificado — mostra seção de reenvio
+      if (message.includes("EMAIL_NOT_VERIFIED") || message.includes("Confirme seu email")) {
+        setNotVerified(true);
+        setUnverifiedEmail(email);
+      } else {
+        toast.error(message || "Email ou senha inválidos.");
+      }
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleResend = async () => {
+    if (resendCooldown > 0) return;
+    setResending(true);
+    try {
+      const res  = await fetch("/api/auth/resend-verification", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ email: unverifiedEmail }),
+      });
+      const data = await res.json();
+
+      if (res.status === 429) {
+        setResendCooldown(data.retry_after ?? 60);
+        const interval = setInterval(() => {
+          setResendCooldown((c) => { if (c <= 1) { clearInterval(interval); return 0; } return c - 1; });
+        }, 1000);
+        toast.info(`Aguarde ${data.retry_after}s.`);
+      } else {
+        toast.success("Email reenviado! Verifique sua caixa de entrada (e spam).");
+      }
+    } catch {
+      toast.error("Erro ao reenviar. Tente novamente.");
+    } finally {
+      setResending(false);
     }
   };
 
@@ -122,16 +126,39 @@ const LoginPage = () => {
 
         <div className="text-center mb-8">
           <h2 className="text-2xl font-bold text-foreground">Entrar</h2>
-          <p className="text-muted-foreground text-sm mt-2">
-            Bem-vindo de volta ao Sistema Ponto
-          </p>
+          <p className="text-muted-foreground text-sm mt-2">Bem-vindo de volta ao Sistema Ponto</p>
         </div>
+
+        {/* ── Aviso de email não verificado ───────────────────── */}
+        {notVerified && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-6 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30"
+          >
+            <p className="text-sm font-semibold text-amber-500 mb-1">Email não confirmado</p>
+            <p className="text-xs text-muted-foreground mb-3">
+              Confirme seu email antes de fazer login.
+              Verifique a caixa de entrada de <strong>{unverifiedEmail}</strong> (e a pasta de spam).
+            </p>
+            <button
+              onClick={handleResend}
+              disabled={resending || resendCooldown > 0}
+              className="flex items-center gap-2 text-xs font-semibold text-amber-500 hover:text-amber-400 transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${resending ? "animate-spin" : ""}`} />
+              {resendCooldown > 0
+                ? `Reenviar em ${resendCooldown}s`
+                : resending
+                ? "Enviando..."
+                : "Reenviar email de verificação"}
+            </button>
+          </motion.div>
+        )}
 
         <form onSubmit={handleLogin} className="flex flex-col gap-4">
           <div>
-            <label className="text-sm font-medium text-foreground mb-2 block">
-              E-mail
-            </label>
+            <label className="text-sm font-medium text-foreground mb-2 block">E-mail</label>
             <div className="relative">
               <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <input
@@ -147,9 +174,7 @@ const LoginPage = () => {
           </div>
 
           <div>
-            <label className="text-sm font-medium text-foreground mb-2 block">
-              Senha
-            </label>
+            <label className="text-sm font-medium text-foreground mb-2 block">Senha</label>
             <div className="relative">
               <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <input

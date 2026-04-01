@@ -15,7 +15,13 @@ import traceback
 from functools import wraps
 import stripe
 import time # <-- Import time
-
+import ssl
+import secrets
+import smtplib
+import ssl
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from datetime import timedelta, timezone
 # Carrega variáveis de ambiente
 load_dotenv()
 
@@ -101,7 +107,9 @@ class User(db.Model):
     plan_status = db.Column(db.String(50), nullable=False, default='free')
     stripe_customer_id = db.Column(db.String(120), nullable=True, unique=True)
     next_reset_date = db.Column(db.Date, nullable=True)
-
+    email_verified = db.Column(db.Boolean, default=False, nullable=False, server_default='true')
+    email_verification_token = db.Column(db.String(128), nullable=True)
+    email_verification_sent_at = db.Column(db.DateTime, nullable=True)
 
 # --- Funções Auxiliares JWT e Decorators ---
 
@@ -845,5 +853,167 @@ def handle_customer_subscription_deleted(subscription):
     if user.plan_status != 'free': user.plan_status = 'free'
     try: db.session.commit(); print(f"Webhook: Plano de {user.email} salvo como 'free'.")
     except Exception as e: print(f"Erro ao salvar status 'free' {user.email}: {e}"); db.session.rollback()
-
+def send_verification_email(user_email: str, token: str) -> bool:
+    smtp_host     = os.getenv("SMTP_HOST")
+    smtp_port     = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user     = os.getenv("SMTP_USER")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    from_name     = os.getenv("SMTP_FROM_NAME", "Sistema Ponto")
+    frontend_url  = os.getenv("FRONTEND_URL", "https://sistemaponto.com")
+ 
+    if not all([smtp_host, smtp_user, smtp_password]):
+        print("[EMAIL] ERRO: variáveis SMTP não configuradas no .env")
+        return False
+ 
+    verify_url = f"{frontend_url}/verificar-email?token={token}"
+ 
+    html_body = f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#0d1117;font-family:-apple-system,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0d1117;padding:40px 20px;">
+    <tr><td align="center">
+      <table width="560" cellpadding="0" cellspacing="0"
+             style="background:#161b22;border-radius:12px;border:1px solid #30363d;max-width:560px;width:100%;">
+        <tr><td style="background:linear-gradient(135deg,#1a3a5c,#0d2137);padding:32px 40px;text-align:center;">
+          <h1 style="margin:0;color:#4a9eff;font-size:22px;font-weight:700;">Sistema Ponto</h1>
+          <p style="margin:8px 0 0;color:#8b9dc3;font-size:13px;">Automação de cartões de ponto com IA</p>
+        </td></tr>
+        <tr><td style="padding:40px;">
+          <h2 style="margin:0 0 16px;color:#e6edf3;font-size:20px;">Confirme seu e-mail</h2>
+          <p style="margin:0 0 8px;color:#8b949e;font-size:15px;line-height:1.6;">
+            Obrigado por se cadastrar! Clique no botão abaixo para ativar sua conta e ganhar
+            <strong style="color:#4a9eff;">50 páginas grátis</strong>.
+          </p>
+          <p style="margin:0 0 32px;color:#6e7681;font-size:13px;">
+            Este link expira em <strong style="color:#8b949e;">24 horas</strong>.
+          </p>
+          <table width="100%" cellpadding="0" cellspacing="0">
+            <tr><td align="center" style="padding:0 0 32px;">
+              <a href="{verify_url}"
+                 style="display:inline-block;background:linear-gradient(135deg,#1a6bd6,#4a9eff);
+                        color:#fff;text-decoration:none;font-weight:700;font-size:15px;
+                        padding:14px 40px;border-radius:8px;">
+                ✓ &nbsp; Verificar meu e-mail
+              </a>
+            </td></tr>
+          </table>
+          <div style="background:#0d1117;border-radius:8px;padding:16px;border:1px solid #30363d;">
+            <p style="margin:0 0 8px;color:#6e7681;font-size:12px;">Ou copie este link no navegador:</p>
+            <p style="margin:0;color:#4a9eff;font-size:12px;word-break:break-all;">{verify_url}</p>
+          </div>
+        </td></tr>
+        <tr><td style="padding:24px 40px;border-top:1px solid #21262d;text-align:center;">
+          <p style="margin:0;color:#6e7681;font-size:12px;">
+            Se você não criou uma conta no Sistema Ponto, ignore este email.
+          </p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+ 
+    text_body = f"""Confirme seu email no Sistema Ponto.
+ 
+Clique no link abaixo para ativar sua conta e ganhar 50 páginas grátis (expira em 24h):
+{verify_url}
+ 
+Se você não criou uma conta, ignore este email.
+"""
+ 
+    try:
+        msg            = MIMEMultipart("alternative")
+        msg["Subject"] = "✓ Confirme seu e-mail — Sistema Ponto"
+        msg["From"]    = f"{from_name} <{smtp_user}>"
+        msg["To"]      = user_email
+        msg.attach(MIMEText(text_body, "plain", "utf-8"))
+        msg.attach(MIMEText(html_body, "html",  "utf-8"))
+        
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP_SSL(smtp_host, smtp_port, context=ctx) as server:
+            server.login(smtp_user, smtp_password)
+            server.sendmail(smtp_user, user_email, msg.as_string()) 
+ 
+        print(f"[EMAIL] Verificação enviada para {user_email}")
+        return True
+    except Exception as e:
+        print(f"[EMAIL] ERRO ao enviar para {user_email}: {e}")
+        return False
+ 
+ 
+# --- Rota: verificar token do email ---
+ 
+@app.route('/api/auth/verify-email', methods=['GET'])
+def verify_email():
+    token = request.args.get('token', '').strip()
+    if not token:
+        return jsonify({"msg": "Token não fornecido.", "error_code": "NO_TOKEN"}), 400
+ 
+    user = User.query.filter_by(email_verification_token=token).first()
+    if not user:
+        return jsonify({"msg": "Link inválido ou já utilizado.", "error_code": "INVALID_TOKEN"}), 400
+ 
+    # Checa expiração (24h)
+    if user.email_verification_sent_at:
+        sent_at = user.email_verification_sent_at
+        if sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - sent_at > timedelta(hours=24):
+            return jsonify({
+                "msg":        "Link expirado. Solicite um novo email de verificação.",
+                "error_code": "TOKEN_EXPIRED",
+                "email":      user.email,
+            }), 400
+ 
+    try:
+        user.email_verified             = True
+        user.is_active                  = True
+        user.email_verification_token   = None
+        user.email_verification_sent_at = None
+        db.session.commit()
+        print(f"[EMAIL] Verificado com sucesso: {user.email}")
+        return jsonify({"msg": "Email verificado! Sua conta está ativa.", "success": True}), 200
+    except Exception as e:
+        db.session.rollback()
+        print(f"[EMAIL] Erro ao verificar {user.email}: {e}")
+        return jsonify({"msg": "Erro interno ao ativar conta."}), 500
+ 
+ 
+# --- Rota: reenviar email de verificação ---
+ 
+@app.route('/api/auth/resend-verification', methods=['POST'])
+def resend_verification():
+    email = request.json.get('email', '').strip().lower()
+    if not email:
+        return jsonify({"msg": "Email obrigatório."}), 400
+ 
+    user = User.query.filter_by(email=email).first()
+ 
+    # Sempre responde igual (evita enumeração de emails)
+    if not user or getattr(user, 'email_verified', True):
+        return jsonify({"msg": "Se o email existir e não estiver verificado, você receberá o link em instantes."}), 200
+ 
+    # Rate limit: 1 reenvio a cada 60 segundos
+    if user.email_verification_sent_at:
+        sent_at = user.email_verification_sent_at
+        if sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=timezone.utc)
+        elapsed = (datetime.now(timezone.utc) - sent_at).total_seconds()
+        if elapsed < 60:
+            wait = int(60 - elapsed)
+            return jsonify({"msg": f"Aguarde {wait}s antes de solicitar outro email.", "retry_after": wait}), 429
+ 
+    try:
+        new_token                          = secrets.token_urlsafe(32)
+        user.email_verification_token      = new_token
+        user.email_verification_sent_at    = datetime.now(timezone.utc)
+        db.session.commit()
+        send_verification_email(email, new_token)
+        return jsonify({"msg": "Email de verificação reenviado."}), 200
+    except Exception as e:
+        db.session.rollback()
+        print(f"[EMAIL] Erro ao reenviar para {email}: {e}")
+        return jsonify({"msg": "Erro ao reenviar email. Tente novamente."}), 500
+ 
 # --- FIM DO ARQUIVO auth_service.py ---

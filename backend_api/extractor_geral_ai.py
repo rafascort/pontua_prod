@@ -24,12 +24,19 @@ from pypdf import PdfReader, PdfWriter
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ExtractorAI")
 
+# ── Suprime logs de bibliotecas externas ─────────────────────────────────────
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("google_genai.models").setLevel(logging.WARNING)
+os.environ.setdefault('GRPC_VERBOSITY', 'ERROR')
+os.environ.setdefault('GRPC_TRACE', '')
+# ─────────────────────────────────────────────────────────────────────────────
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIGURAÇÕES
 # ─────────────────────────────────────────────────────────────────────────────
-MAX_DOCAI_WORKERS  = 60
+MAX_DOCAI_WORKERS  = 120
 MAX_GEMINI_WORKERS = 20           # paralelo para extração de períodos
-DOCAI_RPM_LIMIT    = 100          # margem segura — cota real Google: 120/min
+DOCAI_RPM_LIMIT    = 220          # margem segura — cota real Google: 120/min
 DOCAI_RATE_KEY     = 'docai_sliding_window'
 _redis = redis_lib.Redis(host='localhost', port=6379, db=0)
 
@@ -699,7 +706,7 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
         LOG('total págs pdf',     f"{pdf_total_pags} páginas")
         LOG('range selecionado',  f"{len(valid_pages)} páginas recebidas do frontend")
         LOG_SEP('Limite DocAI')
-        LOG('limite configurado', f"{DOCAI_RPM_LIMIT} req/min  (margem segura — cota Google: 120)")
+        LOG('limite configurado', f"{DOCAI_RPM_LIMIT} req/min  (margem segura — cota Google: 240)")
         LOG('uso global agora',
             f"{rpm_uso_agora} / {DOCAI_RPM_LIMIT} req no último minuto"
             + ("  ⚠ próximo do limite" if rpm_uso_agora >= DOCAI_RPM_LIMIT * 0.8 else ""))
