@@ -210,7 +210,7 @@ def report_usage_to_stripe(user, pages_processed_this_job, new_total_page_count)
 def payroll_analyze():
     current_user_email = get_jwt_identity()
     claims = get_jwt()
-    if not claims.get('is_active'):
+    if claims.get('is_active') == False:
         return jsonify({"error": "Conta inativa."}), 403
 
     if 'pdf_file' not in request.files:
@@ -237,7 +237,7 @@ def payroll_analyze():
 def payroll_process():
     current_user_email = get_jwt_identity()
     claims = get_jwt()
-    if not claims.get('is_active'):
+    if claims.get('is_active') == False:
         return jsonify({"error": "Conta inativa."}), 403
 
     data = request.get_json()
@@ -260,7 +260,7 @@ def payroll_process():
 def extract_periods():
     current_user_email = get_jwt_identity()
     claims = get_jwt()
-    if not claims.get('is_active'):
+    if claims.get('is_active') == False:
         return jsonify({"error": "Conta inativa."}), 403
 
     pdf_path = None
@@ -313,7 +313,7 @@ def extract_periods():
 def process_pdf():
     current_user_email = get_jwt_identity()
     claims = get_jwt()
-    if not claims.get('is_active'):
+    if claims.get('is_active') == False:
         return jsonify({"error": "Conta inativa."}), 403
 
     num_pages_to_process = 0
@@ -372,7 +372,7 @@ def process_pdf():
 def process_pdf_direct():
     current_user_email = get_jwt_identity()
     claims = get_jwt()
-    if not claims.get('is_active'):
+    if claims.get('is_active') == False:
         return jsonify({"error": "Conta inativa."}), 403
 
     num_pages_to_process = 0
