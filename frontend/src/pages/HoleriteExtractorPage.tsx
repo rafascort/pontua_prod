@@ -378,7 +378,7 @@ const HoleriteExtractorPage = () => {
         triggerDownload(blob, filename);
 
         // ← ADICIONADO: atualiza saldo do usuário após download
-        await refreshUser();
+        setTimeout(() => refreshUser(), 1500);
       },
       setProcessProgress
     );

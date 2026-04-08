@@ -212,16 +212,29 @@ def payroll_analyze():
     claims = get_jwt()
     if claims.get('is_active') == False:
         return jsonify({"error": "Conta inativa."}), 403
-
+ 
     if 'pdf_file' not in request.files:
         return jsonify({'error': 'PDF não enviado.'}), 400
+ 
     file  = request.files['pdf_file']
     pages = request.form.get('pages', '')
-
+ 
+    # Verifica saldo antes de enfileirar
+    if pages:
+        pages_requested = sum(
+            (int(p.split('-')[1]) - int(p.split('-')[0]) + 1)
+            if '-' in p else 1
+            for p in pages.replace(' ', '').split(',')
+            if p and (p.isdigit() or ('-' in p and all(x.isdigit() for x in p.split('-') if x)))
+        )
+        can_process, error_response = check_user_page_balance(current_user_email, pages_requested)
+        if not can_process:
+            return error_response
+ 
     with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
         file.save(tmp.name)
         pdf_path = tmp.name
-
+ 
     q   = QUEUES.get('payroll')
     job = q.enqueue(
         'payroll_extractor_ai.scan_verbas_task',
@@ -239,17 +252,30 @@ def payroll_process():
     claims = get_jwt()
     if claims.get('is_active') == False:
         return jsonify({"error": "Conta inativa."}), 403
-
-    data = request.get_json()
-    q    = QUEUES.get('payroll')
-    job  = q.enqueue(
+ 
+    data  = request.get_json()
+    pages = data.get('pages', '')
+ 
+    # Verifica saldo antes de enfileirar
+    if pages:
+        pages_requested = sum(
+            (int(p.split('-')[1]) - int(p.split('-')[0]) + 1)
+            if '-' in p else 1
+            for p in pages.replace(' ', '').split(',')
+            if p and (p.isdigit() or ('-' in p and all(x.isdigit() for x in p.split('-') if x)))
+        )
+        can_process, error_response = check_user_page_balance(current_user_email, pages_requested)
+        if not can_process:
+            return error_response
+ 
+    q   = QUEUES.get('payroll')
+    job = q.enqueue(
         'payroll_extractor_ai.process_payroll_final_task',
-        data['pdf_path'], data['pages'], data['selected_verbas'], current_user_email,
+        data['pdf_path'], pages, data['selected_verbas'], current_user_email,
         job_timeout='1h', result_ttl=1800,
         meta={'user_id': current_user_email, 'usage_counted': False}
     )
-    return jsonify({'task_id': job.id})
-
+    return jsonify({'task_id': job.id}) 
 
 # =============================================================
 # ROTA: /api/extract-periods

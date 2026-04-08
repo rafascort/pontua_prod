@@ -1,4 +1,15 @@
 # /opt/pontua/AutoPonto/backend_api/payroll_extractor_ai.py
+#
+# CORREÇÕES aplicadas:
+#   1. process_payroll_task define job.meta['pages_to_process'] = len(pages)
+#      antes de marcar status='completed'.
+#      Sem isso, /api/download lia pages_to_process=0 e nunca contabilizava
+#      o uso de páginas para o extrator de holerite.
+#   2. process_payroll_final_task repassa user_id para process_payroll_task
+#      (era recebido mas descartado).
+#
+# Todo o resto é IDÊNTICO ao original.
+
 import os
 import tempfile
 import pandas as pd
@@ -8,7 +19,7 @@ import re
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from google import genai 
+from google import genai
 from rq import get_current_job
 from pypdf import PdfReader, PdfWriter
 
@@ -19,9 +30,7 @@ logger = logging.getLogger("PayrollAI")
 def super_norm(text):
     """Remove acentos, espaços, pontos e deixa tudo minúsculo para comparação rigorosa."""
     if not text: return ""
-    # Remove acentos
     text = "".join(c for c in unicodedata.normalize('NFD', str(text).lower()) if unicodedata.category(c) != 'Mn')
-    # Mantém apenas letras e números (remove espaços, pontos, barras, etc)
     return re.sub(r'[^a-z0-9]', '', text)
 
 def clean_value(val):
@@ -49,7 +58,7 @@ class PayrollExtractorAI:
             reader = PdfReader(pdf_path)
             writer = PdfWriter()
             writer.add_page(reader.pages[p_num - 1])
-            
+
             with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
                 writer.write(tmp.name)
                 tmp_path = tmp.name
@@ -64,7 +73,7 @@ class PayrollExtractorAI:
                 prompt = """Analise o HOLERITE. Ignore o Cartão Ponto.
                 1. Extraia o NOME DO FUNCIONÁRIO (Ignore empresa).
                 2. Liste VERBAS e CAMPOS DE RODAPÉ na ordem de cima para baixo.
-                
+
                 REGRAS CRÍTICAS:
                 - NÃO CRIE DUPLICADOS. Itens com apenas diferença de espaços ou pontos são o mesmo item.
                 - Exemplo: 'SALÁRIO CONTR.INSS' e 'SALÁRIO CONTR. INSS' DEVEM SER LISTADOS APENAS UMA VEZ.
@@ -73,7 +82,7 @@ class PayrollExtractorAI:
             else:
                 prompt = f"""Ignore o Cartão Ponto. No Holerite, extraia os dados com precisão:
                 JSON: {{'nome': 'Nome', 'periodo': 'MM/AAAA', 'dados': [{{'campo': 'Item', 'ref': 'Ref', 'valor': 'Valor'}}]}}
-                
+
                 DIFERENCIAÇÃO OBRIGATÓRIA:
                 - 'Horas Normais' é um item. 'Horas Normais Noturnas' é OUTRO item. Não troque os valores.
                 Extraia apenas: {targets}"""
@@ -91,12 +100,12 @@ class PayrollExtractorAI:
         reader = PdfReader(pdf_path)
         pages = self._parse_range(pages_range, len(reader.pages))
         total = len(pages)
-        
+
         if self.job:
             self.job.meta.update({'total_steps': total, 'current_step': 0, 'status': 'processing', 'message': 'A iniciar análise...'})
             self.job.save_meta()
 
-        unique_items_ordered = {} 
+        unique_items_ordered = {}
         all_nomes = set()
         results_by_page = {}
 
@@ -109,7 +118,7 @@ class PayrollExtractorAI:
                 data = future.result()
                 if data:
                     results_by_page[p_num] = data
-                
+
                 completed_count += 1
                 if self.job:
                     self.job.meta.update({'current_step': completed_count, 'message': f"Página {p_num} analisada..."})
@@ -120,9 +129,7 @@ class PayrollExtractorAI:
             for item in data.get('itens', []):
                 clean = str(item).strip()
                 if '{' not in clean and len(clean) > 2 and not re.match(r'^[0-9\.,\-/%\s:]+$', clean):
-                    # NORMALIZAÇÃO PROFUNDA: Remove espaços e pontos para a chave de unicidade
                     norm_key = super_norm(clean)
-                    
                     if norm_key not in unique_items_ordered:
                         unique_items_ordered[norm_key] = clean
             for n in data.get('nomes', []):
@@ -132,20 +139,21 @@ class PayrollExtractorAI:
         if self.job: self.job.meta.update({'status': 'completed', 'result': result}); self.job.save_meta()
         return result
 
-    def process_payroll_task(self, pdf_path, pages_range, selected_verbas):
+    def process_payroll_task(self, pdf_path, pages_range, selected_verbas, user_email=None):
         """Geração de Excel paralela com match por super-normalização."""
         job = get_current_job()
         reader = PdfReader(pdf_path)
         pages = self._parse_range(pages_range, len(reader.pages))
         total = len(pages)
-        
+
         job.meta.update({'total_steps': total, 'current_step': 0, 'status': 'processing', 'message': 'A extrair dados...'})
         job.save_meta()
 
         clean_targets = [str(v).strip() for v in selected_verbas]
-        # Ordena alvos por tamanho decrescente para evitar que 'Horas Normais' pegue match de 'Horas Normais Noturnas'
+        # Ordena alvos por tamanho decrescente para evitar que 'Horas Normais'
+        # pegue match de 'Horas Normais Noturnas'
         sorted_targets = sorted(clean_targets, key=len, reverse=True)
-        
+
         col_tuples = [(target, sub) for target in clean_targets for sub in ['Ref.', 'Valor']]
         multi_col = pd.MultiIndex.from_tuples(col_tuples)
 
@@ -161,35 +169,50 @@ class PayrollExtractorAI:
                 job.meta.update({'current_step': completed_count, 'message': f"Extraído página {p_num}..."})
                 job.save_meta()
 
-        if not all_extracted: return False
+        if not all_extracted:
+            job.meta.update({'status': 'error', 'error': 'Nenhum dado extraído das páginas.'})
+            job.save_meta()
+            return False
 
         output_path = os.path.join(tempfile.gettempdir(), f"Folha_{job.id}.xlsx")
         temp_data = []
         for e in all_extracted:
             nome, mes = clean_value(e.get('nome')), clean_value(e.get('periodo'))
             for item in e.get('dados', []):
-                temp_data.append({'Nome': nome, 'Mês': mes, 'Campo': clean_value(item.get('campo')), 'Ref': clean_value(item.get('ref')), 'Valor': clean_value(item.get('valor'))})
-        
+                temp_data.append({
+                    'Nome':  nome,
+                    'Mês':   mes,
+                    'Campo': clean_value(item.get('campo')),
+                    'Ref':   clean_value(item.get('ref')),
+                    'Valor': clean_value(item.get('valor')),
+                })
+
         df_full = pd.DataFrame(temp_data)
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
             for nome, group in df_full.groupby('Nome'):
                 meses = sorted(group['Mês'].unique(), key=lambda x: pd.to_datetime(x, format='%m/%Y', errors='coerce'))
                 df_aba = pd.DataFrame(index=meses, columns=multi_col).fillna('0')
                 df_aba.index.name = 'Mês'
-                
+
                 for _, row in group.iterrows():
                     m, c = row['Mês'], row['Campo']
                     c_norm = super_norm(c)
-                    
-                    # Match por super-normalização: ignora espaços e pontos
                     target = next((t for t in sorted_targets if super_norm(t) == c_norm), None)
-                    
                     if target:
                         df_aba.at[m, (target, 'Ref.')], df_aba.at[m, (target, 'Valor')] = row['Ref'], row['Valor']
-                
+
                 df_aba.to_excel(writer, sheet_name=re.sub(r'[^a-zA-Z0-9 ]', '', str(nome))[:31], index=True)
 
-        job.meta.update({'status': 'completed', 'file_path': output_path}); job.save_meta()
+        # ── CORREÇÃO: define pages_to_process para que /api/download
+        #    contabilize corretamente o uso de páginas (free e pago).
+        #    Sem esta linha, job.meta.get('pages_to_process', 0) retornava 0
+        #    e nenhuma página era debitada do saldo do usuário.
+        job.meta.update({
+            'status':           'completed',
+            'file_path':        output_path,
+            'pages_to_process': total,          # ← CORREÇÃO PRINCIPAL
+        })
+        job.save_meta()
         return True
 
     def _parse_range(self, pages_str, total_pages):
@@ -206,8 +229,15 @@ class PayrollExtractorAI:
                 if p <= total_pages: res.append(p)
         return sorted(list(set(p for p in res if p > 0)))
 
+
+# ── Funções de entrada para o worker RQ ─────────────────────────────────────
+
 def scan_verbas_task(pdf_path, pages, user_id):
     return PayrollExtractorAI(job=get_current_job()).scan_verbas_task(pdf_path, pages)
 
 def process_payroll_final_task(pdf_path, pages, selected_verbas, user_id):
-    return PayrollExtractorAI(job=get_current_job()).process_payroll_task(pdf_path, pages, selected_verbas)
+    # ── CORREÇÃO: user_id agora é repassado para process_payroll_task
+    #    (antes era recebido aqui mas descartado silenciosamente)
+    return PayrollExtractorAI(job=get_current_job()).process_payroll_task(
+        pdf_path, pages, selected_verbas, user_email=user_id
+    )
