@@ -467,10 +467,10 @@ const PontoExtractorPage = () => {
       async (result) => {
         setIsProcessing(false);
         toast.success("Extração concluída!");
-        setTimeout(() => refreshUser(), 1500); // ← ADICIONADO: atualiza saldo após processamento
         const downloadRes = await apiFetch(`/api/download/${taskId}`);
         const blob = await downloadRes.blob();
         triggerDownload(blob, (result.filename as string) || `Ponto_${taskId}.csv`);
+	await refreshUser();
       },
       setProcessProgress
     );
