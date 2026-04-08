@@ -4,6 +4,9 @@
 #   1. Logs reorganizados no padrão LOG/LOG_SEP do extractor_geral_ai.py
 #   2. process_payroll_task define job.meta['pages_to_process'] = total
 #   3. process_payroll_final_task repassa user_email para process_payroll_task
+#   4. safe_parse_json() — parse robusto de JSON (lida com "Extra data")
+#   5. normalize_name_key() — agrupa nomes com typos de OCR (letras duplicadas)
+#   6. Retry automático (até 3 tentativas) em _process_single_page
 
 import os
 import tempfile
@@ -63,6 +66,68 @@ def is_valid_name(name):
     if any(w in name.upper() for w in forbidden): return False
     if len(re.findall(r'\d', name)) > 4: return False
     return True
+
+
+def safe_parse_json(text):
+    """Parse robusto de JSON — lida com 'Extra data' (dois JSONs concatenados)."""
+    if not text:
+        return None
+
+    match = re.search(r'\{.*\}', text, re.DOTALL)
+    if not match:
+        return None
+
+    json_str = match.group()
+
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError as e:
+        # "Extra data" = mais de um objeto JSON concatenado na resposta
+        if "Extra data" in str(e):
+            depth = 0
+            in_string = False
+            escape_next = False
+            for i, ch in enumerate(json_str):
+                if escape_next:
+                    escape_next = False
+                    continue
+                if ch == '\\' and in_string:
+                    escape_next = True
+                    continue
+                if ch == '"' and not escape_next:
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(json_str[:i+1])
+                        except json.JSONDecodeError:
+                            break
+
+        # Tenta limpar trailing commas
+        cleaned = re.sub(r',\s*}', '}', json_str)
+        cleaned = re.sub(r',\s*]', ']', cleaned)
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
+
+def normalize_name_key(name):
+    """Chave de agrupamento para nomes, tolerando typos de OCR (letras duplicadas)."""
+    if not name:
+        return ""
+    n = super_norm(name)
+    # Colapsa letras repetidas consecutivas (ex: 'uiilio' → 'uilio' → mesmo que 'uilio')
+    n = re.sub(r'(.)\1+', r'\1', n)
+    return n
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -72,26 +137,30 @@ class PayrollExtractorAI:
         self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
         self.model_id = "gemini-2.5-flash"
 
-    # ── Processa uma página individual via Gemini ─────────────────────────────
+    # ── Processa uma página individual via Gemini (com retry) ─────────────────
     def _process_single_page(self, pdf_path, p_num, prompt_type, targets=None):
-        tmp_path = None
-        try:
-            reader = PdfReader(pdf_path)
-            writer = PdfWriter()
-            writer.add_page(reader.pages[p_num - 1])
+        MAX_RETRIES = 2
+        last_error = None
 
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
-                writer.write(tmp.name)
-                tmp_path = tmp.name
+        for attempt in range(MAX_RETRIES + 1):
+            tmp_path = None
+            try:
+                reader = PdfReader(pdf_path)
+                writer = PdfWriter()
+                writer.add_page(reader.pages[p_num - 1])
 
-            uploaded = self.client.files.upload(file=tmp_path)
-            file     = self.client.files.get(name=uploaded.name)
-            while file.state.name == "PROCESSING":
-                time.sleep(1)
-                file = self.client.files.get(name=uploaded.name)
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
+                    writer.write(tmp.name)
+                    tmp_path = tmp.name
 
-            if prompt_type == "analyze":
-                prompt = """Analise o HOLERITE. Ignore o Cartão Ponto.
+                uploaded = self.client.files.upload(file=tmp_path)
+                file     = self.client.files.get(name=uploaded.name)
+                while file.state.name == "PROCESSING":
+                    time.sleep(1)
+                    file = self.client.files.get(name=uploaded.name)
+
+                if prompt_type == "analyze":
+                    prompt = """Analise o HOLERITE. Ignore o Cartão Ponto.
 1. Extraia o NOME DO FUNCIONÁRIO (ignore empresa).
 2. Liste VERBAS e CAMPOS DE RODAPÉ na ordem de cima para baixo.
 
@@ -100,27 +169,42 @@ REGRAS CRÍTICAS:
 - Exemplo: 'SALÁRIO CONTR.INSS' e 'SALÁRIO CONTR. INSS' → listar UMA VEZ.
 - Não confunda 'Horas Normais' com 'Horas Normais Noturnas'.
 JSON: {"nomes": [], "itens": []}"""
-            else:
-                prompt = f"""Ignore o Cartão Ponto. No Holerite, extraia os dados com precisão:
+                else:
+                    prompt = f"""Ignore o Cartão Ponto. No Holerite, extraia os dados com precisão:
 JSON: {{"nome": "Nome", "periodo": "MM/AAAA", "dados": [{{"campo": "Item", "ref": "Ref", "valor": "Valor"}}]}}
 
 DIFERENCIAÇÃO OBRIGATÓRIA:
 - 'Horas Normais' é um item. 'Horas Normais Noturnas' é OUTRO item. Não troque os valores.
 Extraia apenas: {targets}"""
 
-            response = self.client.models.generate_content(
-                model=self.model_id, contents=[file, prompt]
-            )
-            self.client.files.delete(name=file.name)
-            return json.loads(re.search(r'\{.*\}', response.text, re.DOTALL).group())
+                response = self.client.models.generate_content(
+                    model=self.model_id, contents=[file, prompt]
+                )
+                self.client.files.delete(name=file.name)
 
-        except Exception as e:
-            LOG(f'erro página {p_num}', str(e), 'ERR ')
-            return None
-        finally:
-            if tmp_path and os.path.exists(tmp_path):
-                try: os.unlink(tmp_path)
-                except: pass
+                result = safe_parse_json(response.text)
+                if result:
+                    return result
+
+                last_error = f"JSON inválido (tentativa {attempt+1}/{MAX_RETRIES+1})"
+                LOG(f'página {p_num}', last_error, 'WARN')
+                if attempt < MAX_RETRIES:
+                    time.sleep(2)
+                    continue
+
+            except Exception as e:
+                last_error = str(e)
+                if attempt < MAX_RETRIES:
+                    LOG(f'página {p_num}', f"erro tentativa {attempt+1}: {e} — retentando...", 'WARN')
+                    time.sleep(2)
+                    continue
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    try: os.unlink(tmp_path)
+                    except: pass
+
+        LOG(f'erro página {p_num}', f"falhou após {MAX_RETRIES+1} tentativas: {last_error}", 'ERR ')
+        return None
 
     # ── ETAPA 1: Identificação de verbas ─────────────────────────────────────
     def scan_verbas_task(self, pdf_path, pages_range):
@@ -145,7 +229,7 @@ Extraia apenas: {targets}"""
             self.job.save_meta()
 
         unique_items_ordered = {}
-        all_nomes            = set()
+        all_nomes            = {}   # CORREÇÃO: dict {chave_normalizada: nome_original}
         results_by_page      = {}
         erros                = []
 
@@ -180,7 +264,11 @@ Extraia apenas: {targets}"""
                     if norm_key not in unique_items_ordered:
                         unique_items_ordered[norm_key] = clean
             for n in data.get('nomes', []):
-                if is_valid_name(n): all_nomes.add(str(n).strip().upper())
+                if is_valid_name(n):
+                    name_upper = str(n).strip().upper()
+                    name_key = normalize_name_key(name_upper)
+                    if name_key not in all_nomes:
+                        all_nomes[name_key] = name_upper
 
         t_total = round(time.time() - t_inicio, 1)
 
@@ -193,7 +281,7 @@ Extraia apenas: {targets}"""
         LOG_SEP()
 
         result = {
-            "nomes":    sorted(list(all_nomes)),
+            "nomes":    sorted(list(all_nomes.values())),
             "verbas":   list(unique_items_ordered.values()),
             "pdf_path": pdf_path,
             "pages":    pages_range,
@@ -278,9 +366,21 @@ Extraia apenas: {targets}"""
                 })
 
         df_full = pd.DataFrame(temp_data)
-        abas    = 0
+
+        # CORREÇÃO: Normalizar nomes para agrupar variações de OCR na mesma aba
+        df_full['Nome_key'] = df_full['Nome'].apply(normalize_name_key)
+
+        # Mapeia cada chave normalizada ao primeiro nome encontrado
+        name_map = {}
+        for _, row in df_full.iterrows():
+            k = row['Nome_key']
+            if k not in name_map:
+                name_map[k] = row['Nome']
+
+        abas = 0
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            for nome, group in df_full.groupby('Nome'):
+            for nome_key, group in df_full.groupby('Nome_key'):
+                nome_display = name_map.get(nome_key, nome_key)
                 meses = sorted(
                     group['Mês'].unique(),
                     key=lambda x: pd.to_datetime(x, format='%m/%Y', errors='coerce')
@@ -295,7 +395,7 @@ Extraia apenas: {targets}"""
                         df_aba.at[row['Mês'], (target, 'Ref.')]   = row['Ref']
                         df_aba.at[row['Mês'], (target, 'Valor')]  = row['Valor']
 
-                sheet_name = re.sub(r'[^a-zA-Z0-9 ]', '', str(nome))[:31]
+                sheet_name = re.sub(r'[^a-zA-Z0-9 ]', '', str(nome_display))[:31]
                 df_aba.to_excel(writer, sheet_name=sheet_name, index=True)
                 abas += 1
 
