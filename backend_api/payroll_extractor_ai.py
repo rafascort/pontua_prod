@@ -1,36 +1,55 @@
 # /opt/pontua/AutoPonto/backend_api/payroll_extractor_ai.py
 #
 # CORREÇÕES aplicadas:
-#   1. process_payroll_task define job.meta['pages_to_process'] = len(pages)
-#      antes de marcar status='completed'.
-#      Sem isso, /api/download lia pages_to_process=0 e nunca contabilizava
-#      o uso de páginas para o extrator de holerite.
-#   2. process_payroll_final_task repassa user_id para process_payroll_task
-#      (era recebido mas descartado).
-#
-# Todo o resto é IDÊNTICO ao original.
+#   1. Logs reorganizados no padrão LOG/LOG_SEP do extractor_geral_ai.py
+#   2. process_payroll_task define job.meta['pages_to_process'] = total
+#   3. process_payroll_final_task repassa user_email para process_payroll_task
 
 import os
 import tempfile
 import pandas as pd
 import json
-import logging
 import re
 import time
+import traceback
 import unicodedata
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from google import genai
 from rq import get_current_job
 from pypdf import PdfReader, PdfWriter
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("PayrollAI")
+# ── Suprime logs ruidosos de bibliotecas externas ────────────────────────────
+import logging
+logging.basicConfig(level=logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("google_genai.models").setLevel(logging.WARNING)
+# ─────────────────────────────────────────────────────────────────────────────
 
-# --- UTILITÁRIOS DE NORMALIZAÇÃO PROFUNDA ---
+
+# ─── LOG CENTRAL (mesmo padrão do extractor_geral_ai) ────────────────────────
+def LOG(label, value, level='INFO'):
+    ts     = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+    prefix = {'INFO': '[LOG ]', 'WARN': '[WARN]', 'ERR ': '[ERR ]'}.get(level, '[LOG ]')
+    print(f"{prefix} {ts}  {label:<30} {value}", flush=True)
+
+def LOG_SEP(title=''):
+    line = '─' * 70
+    if title:
+        pad  = max(0, (70 - len(title) - 2) // 2)
+        line = '─' * pad + f' {title} ' + '─' * pad
+    print(f"[LOG ] {line}", flush=True)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# ─── UTILITÁRIOS ─────────────────────────────────────────────────────────────
 def super_norm(text):
-    """Remove acentos, espaços, pontos e deixa tudo minúsculo para comparação rigorosa."""
+    """Remove acentos, espaços e pontos — comparação rigorosa de verbas."""
     if not text: return ""
-    text = "".join(c for c in unicodedata.normalize('NFD', str(text).lower()) if unicodedata.category(c) != 'Mn')
+    text = "".join(
+        c for c in unicodedata.normalize('NFD', str(text).lower())
+        if unicodedata.category(c) != 'Mn'
+    )
     return re.sub(r'[^a-z0-9]', '', text)
 
 def clean_value(val):
@@ -41,19 +60,21 @@ def clean_value(val):
 def is_valid_name(name):
     if not name or len(name) < 8: return False
     forbidden = ["LTDA", "CNPJ", "CPF", "RUA", "AVENIDA", "ENDERECO", "EMPRESA", "S.A", "EIRELI"]
-    name_up = name.upper()
-    if any(word in name_up for word in forbidden): return False
+    if any(w in name.upper() for w in forbidden): return False
     if len(re.findall(r'\d', name)) > 4: return False
     return True
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 class PayrollExtractorAI:
     def __init__(self, job=None):
-        self.job = job
-        api_key = os.getenv("GEMINI_API_KEY")
-        self.client = genai.Client(api_key=api_key)
+        self.job    = job
+        self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
         self.model_id = "gemini-2.5-flash"
 
+    # ── Processa uma página individual via Gemini ─────────────────────────────
     def _process_single_page(self, pdf_path, p_num, prompt_type, targets=None):
+        tmp_path = None
         try:
             reader = PdfReader(pdf_path)
             writer = PdfWriter()
@@ -63,65 +84,91 @@ class PayrollExtractorAI:
                 writer.write(tmp.name)
                 tmp_path = tmp.name
 
-            uploaded_file = self.client.files.upload(file=tmp_path)
-            file = self.client.files.get(name=uploaded_file.name)
+            uploaded = self.client.files.upload(file=tmp_path)
+            file     = self.client.files.get(name=uploaded.name)
             while file.state.name == "PROCESSING":
                 time.sleep(1)
-                file = self.client.files.get(name=uploaded_file.name)
+                file = self.client.files.get(name=uploaded.name)
 
             if prompt_type == "analyze":
                 prompt = """Analise o HOLERITE. Ignore o Cartão Ponto.
-                1. Extraia o NOME DO FUNCIONÁRIO (Ignore empresa).
-                2. Liste VERBAS e CAMPOS DE RODAPÉ na ordem de cima para baixo.
+1. Extraia o NOME DO FUNCIONÁRIO (ignore empresa).
+2. Liste VERBAS e CAMPOS DE RODAPÉ na ordem de cima para baixo.
 
-                REGRAS CRÍTICAS:
-                - NÃO CRIE DUPLICADOS. Itens com apenas diferença de espaços ou pontos são o mesmo item.
-                - Exemplo: 'SALÁRIO CONTR.INSS' e 'SALÁRIO CONTR. INSS' DEVEM SER LISTADOS APENAS UMA VEZ.
-                - Não confunda 'Horas Normais' com 'Horas Normais Noturnas'.
-                JSON: {'nomes': [], 'itens': []}"""
+REGRAS CRÍTICAS:
+- NÃO CRIE DUPLICADOS. Itens com apenas diferença de espaços ou pontos são o mesmo item.
+- Exemplo: 'SALÁRIO CONTR.INSS' e 'SALÁRIO CONTR. INSS' → listar UMA VEZ.
+- Não confunda 'Horas Normais' com 'Horas Normais Noturnas'.
+JSON: {"nomes": [], "itens": []}"""
             else:
                 prompt = f"""Ignore o Cartão Ponto. No Holerite, extraia os dados com precisão:
-                JSON: {{'nome': 'Nome', 'periodo': 'MM/AAAA', 'dados': [{{'campo': 'Item', 'ref': 'Ref', 'valor': 'Valor'}}]}}
+JSON: {{"nome": "Nome", "periodo": "MM/AAAA", "dados": [{{"campo": "Item", "ref": "Ref", "valor": "Valor"}}]}}
 
-                DIFERENCIAÇÃO OBRIGATÓRIA:
-                - 'Horas Normais' é um item. 'Horas Normais Noturnas' é OUTRO item. Não troque os valores.
-                Extraia apenas: {targets}"""
+DIFERENCIAÇÃO OBRIGATÓRIA:
+- 'Horas Normais' é um item. 'Horas Normais Noturnas' é OUTRO item. Não troque os valores.
+Extraia apenas: {targets}"""
 
-            response = self.client.models.generate_content(model=self.model_id, contents=[file, prompt])
+            response = self.client.models.generate_content(
+                model=self.model_id, contents=[file, prompt]
+            )
             self.client.files.delete(name=file.name)
-            os.unlink(tmp_path)
             return json.loads(re.search(r'\{.*\}', response.text, re.DOTALL).group())
-        except Exception as e:
-            logger.error(f"Erro na página {p_num}: {e}")
-            return None
 
+        except Exception as e:
+            LOG(f'erro página {p_num}', str(e), 'ERR ')
+            return None
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try: os.unlink(tmp_path)
+                except: pass
+
+    # ── ETAPA 1: Identificação de verbas ─────────────────────────────────────
     def scan_verbas_task(self, pdf_path, pages_range):
-        """Identificação inicial paralela com eliminação rigorosa de duplicatas."""
-        reader = PdfReader(pdf_path)
-        pages = self._parse_range(pages_range, len(reader.pages))
-        total = len(pages)
+        reader    = PdfReader(pdf_path)
+        pages     = self._parse_range(pages_range, len(reader.pages))
+        total     = len(pages)
+        t_inicio  = time.time()
+        worker_pid = os.getpid()
+
+        LOG_SEP('HOLERITE — ANÁLISE INICIADA')
+        LOG('job_id',          self.job.id if self.job else '?')
+        LOG('worker PID',      str(worker_pid))
+        LOG('páginas',         f"{total}  ({pages_range})")
+        LOG('total no PDF',    f"{len(reader.pages)} páginas")
+        LOG_SEP()
 
         if self.job:
-            self.job.meta.update({'total_steps': total, 'current_step': 0, 'status': 'processing', 'message': 'A iniciar análise...'})
+            self.job.meta.update({
+                'total_steps': total, 'current_step': 0,
+                'status': 'processing', 'message': 'Identificando verbas...',
+            })
             self.job.save_meta()
 
         unique_items_ordered = {}
-        all_nomes = set()
-        results_by_page = {}
+        all_nomes            = set()
+        results_by_page      = {}
+        erros                = []
 
         with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = {executor.submit(self._process_single_page, pdf_path, p, "analyze"): p for p in pages}
+            futures        = {executor.submit(self._process_single_page, pdf_path, p, "analyze"): p for p in pages}
             completed_count = 0
 
             for future in as_completed(futures):
                 p_num = futures[future]
-                data = future.result()
+                data  = future.result()
                 if data:
                     results_by_page[p_num] = data
+                    LOG(f'página {p_num}', f"ok — {len(data.get('itens', []))} itens, {len(data.get('nomes', []))} nomes")
+                else:
+                    erros.append(p_num)
+                    LOG(f'página {p_num}', 'sem retorno', 'WARN')
 
                 completed_count += 1
                 if self.job:
-                    self.job.meta.update({'current_step': completed_count, 'message': f"Página {p_num} analisada..."})
+                    self.job.meta.update({
+                        'current_step': completed_count,
+                        'message':      f"Analisando página {p_num}...",
+                    })
                     self.job.save_meta()
 
         for p_num in sorted(results_by_page.keys()):
@@ -135,47 +182,90 @@ class PayrollExtractorAI:
             for n in data.get('nomes', []):
                 if is_valid_name(n): all_nomes.add(str(n).strip().upper())
 
-        result = {"nomes": sorted(list(all_nomes)), "verbas": list(unique_items_ordered.values()), "pdf_path": pdf_path, "pages": pages_range}
-        if self.job: self.job.meta.update({'status': 'completed', 'result': result}); self.job.save_meta()
+        t_total = round(time.time() - t_inicio, 1)
+
+        LOG_SEP('ANÁLISE CONCLUÍDA')
+        LOG('tempo',           f"{t_total}s")
+        LOG('verbas únicas',   str(len(unique_items_ordered)))
+        LOG('funcionários',    str(len(all_nomes)))
+        if erros:
+            LOG('páginas sem retorno', str(erros), 'WARN')
+        LOG_SEP()
+
+        result = {
+            "nomes":    sorted(list(all_nomes)),
+            "verbas":   list(unique_items_ordered.values()),
+            "pdf_path": pdf_path,
+            "pages":    pages_range,
+        }
+        if self.job:
+            self.job.meta.update({'status': 'completed', 'result': result})
+            self.job.save_meta()
         return result
 
+    # ── ETAPA 2: Geração do Excel ─────────────────────────────────────────────
     def process_payroll_task(self, pdf_path, pages_range, selected_verbas, user_email=None):
-        """Geração de Excel paralela com match por super-normalização."""
-        job = get_current_job()
-        reader = PdfReader(pdf_path)
-        pages = self._parse_range(pages_range, len(reader.pages))
-        total = len(pages)
+        job       = get_current_job()
+        reader    = PdfReader(pdf_path)
+        pages     = self._parse_range(pages_range, len(reader.pages))
+        total     = len(pages)
+        t_inicio  = time.time()
+        worker_pid = os.getpid()
 
-        job.meta.update({'total_steps': total, 'current_step': 0, 'status': 'processing', 'message': 'A extrair dados...'})
+        LOG_SEP('HOLERITE — EXTRAÇÃO INICIADA')
+        LOG('job_id',          job.id)
+        LOG('usuário',         user_email or '?')
+        LOG('worker PID',      str(worker_pid))
+        LOG('páginas',         f"{total}  ({pages_range})")
+        LOG('verbas selecionadas', str(len(selected_verbas)))
+        LOG_SEP()
+
+        job.meta.update({
+            'total_steps': total, 'current_step': 0,
+            'status': 'processing', 'message': 'Extraindo dados...',
+        })
         job.save_meta()
 
-        clean_targets = [str(v).strip() for v in selected_verbas]
-        # Ordena alvos por tamanho decrescente para evitar que 'Horas Normais'
-        # pegue match de 'Horas Normais Noturnas'
+        clean_targets  = [str(v).strip() for v in selected_verbas]
         sorted_targets = sorted(clean_targets, key=len, reverse=True)
+        col_tuples     = [(t, sub) for t in clean_targets for sub in ['Ref.', 'Valor']]
+        multi_col      = pd.MultiIndex.from_tuples(col_tuples)
 
-        col_tuples = [(target, sub) for target in clean_targets for sub in ['Ref.', 'Valor']]
-        multi_col = pd.MultiIndex.from_tuples(col_tuples)
+        all_extracted   = []
+        erros           = []
+        completed_count = 0
 
-        all_extracted = []
         with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = {executor.submit(self._process_single_page, pdf_path, p, "process", clean_targets): p for p in pages}
-            completed_count = 0
+            futures = {
+                executor.submit(self._process_single_page, pdf_path, p, "process", clean_targets): p
+                for p in pages
+            }
             for future in as_completed(futures):
                 p_num = futures[future]
-                data = future.result()
-                if data: all_extracted.append(data)
+                data  = future.result()
+                if data:
+                    all_extracted.append(data)
+                    LOG(f'página {p_num}', f"ok — {len(data.get('dados', []))} campos")
+                else:
+                    erros.append(p_num)
+                    LOG(f'página {p_num}', 'sem retorno', 'WARN')
+
                 completed_count += 1
-                job.meta.update({'current_step': completed_count, 'message': f"Extraído página {p_num}..."})
+                job.meta.update({
+                    'current_step': completed_count,
+                    'message':      f"Extraindo página {p_num}...",
+                })
                 job.save_meta()
 
         if not all_extracted:
+            LOG('resultado', 'nenhum dado extraído — abortando', 'ERR ')
             job.meta.update({'status': 'error', 'error': 'Nenhum dado extraído das páginas.'})
             job.save_meta()
             return False
 
+        # ── Monta Excel ───────────────────────────────────────────────────────
         output_path = os.path.join(tempfile.gettempdir(), f"Folha_{job.id}.xlsx")
-        temp_data = []
+        temp_data   = []
         for e in all_extracted:
             nome, mes = clean_value(e.get('nome')), clean_value(e.get('periodo'))
             for item in e.get('dados', []):
@@ -188,33 +278,48 @@ class PayrollExtractorAI:
                 })
 
         df_full = pd.DataFrame(temp_data)
+        abas    = 0
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
             for nome, group in df_full.groupby('Nome'):
-                meses = sorted(group['Mês'].unique(), key=lambda x: pd.to_datetime(x, format='%m/%Y', errors='coerce'))
-                df_aba = pd.DataFrame(index=meses, columns=multi_col).fillna('0')
+                meses = sorted(
+                    group['Mês'].unique(),
+                    key=lambda x: pd.to_datetime(x, format='%m/%Y', errors='coerce')
+                )
+                df_aba           = pd.DataFrame(index=meses, columns=multi_col).fillna('0')
                 df_aba.index.name = 'Mês'
 
                 for _, row in group.iterrows():
-                    m, c = row['Mês'], row['Campo']
-                    c_norm = super_norm(c)
+                    c_norm = super_norm(row['Campo'])
                     target = next((t for t in sorted_targets if super_norm(t) == c_norm), None)
                     if target:
-                        df_aba.at[m, (target, 'Ref.')], df_aba.at[m, (target, 'Valor')] = row['Ref'], row['Valor']
+                        df_aba.at[row['Mês'], (target, 'Ref.')]   = row['Ref']
+                        df_aba.at[row['Mês'], (target, 'Valor')]  = row['Valor']
 
-                df_aba.to_excel(writer, sheet_name=re.sub(r'[^a-zA-Z0-9 ]', '', str(nome))[:31], index=True)
+                sheet_name = re.sub(r'[^a-zA-Z0-9 ]', '', str(nome))[:31]
+                df_aba.to_excel(writer, sheet_name=sheet_name, index=True)
+                abas += 1
 
-        # ── CORREÇÃO: define pages_to_process para que /api/download
-        #    contabilize corretamente o uso de páginas (free e pago).
-        #    Sem esta linha, job.meta.get('pages_to_process', 0) retornava 0
-        #    e nenhuma página era debitada do saldo do usuário.
+        t_total  = round(time.time() - t_inicio, 1)
+        xlsx_kb  = round(os.path.getsize(output_path) / 1024, 1)
+
+        LOG_SEP('EXTRAÇÃO CONCLUÍDA')
+        LOG('tempo',           f"{t_total}s")
+        LOG('funcionários',    f"{abas} aba(s) gerada(s)")
+        LOG('arquivo',         f"Folha_{job.id}.xlsx  ({xlsx_kb} KB)")
+        if erros:
+            LOG('páginas sem retorno', str(erros), 'WARN')
+        LOG_SEP()
+
+        # ── CORREÇÃO: pages_to_process para /api/download contabilizar ────────
         job.meta.update({
             'status':           'completed',
             'file_path':        output_path,
-            'pages_to_process': total,          # ← CORREÇÃO PRINCIPAL
+            'pages_to_process': total,
         })
         job.save_meta()
         return True
 
+    # ── Helper de parse de range ──────────────────────────────────────────────
     def _parse_range(self, pages_str, total_pages):
         res = []
         for part in str(pages_str).split(','):
@@ -230,14 +335,12 @@ class PayrollExtractorAI:
         return sorted(list(set(p for p in res if p > 0)))
 
 
-# ── Funções de entrada para o worker RQ ─────────────────────────────────────
+# ── Funções de entrada para o worker RQ ──────────────────────────────────────
 
 def scan_verbas_task(pdf_path, pages, user_id):
     return PayrollExtractorAI(job=get_current_job()).scan_verbas_task(pdf_path, pages)
 
 def process_payroll_final_task(pdf_path, pages, selected_verbas, user_id):
-    # ── CORREÇÃO: user_id agora é repassado para process_payroll_task
-    #    (antes era recebido aqui mas descartado silenciosamente)
     return PayrollExtractorAI(job=get_current_job()).process_payroll_task(
         pdf_path, pages, selected_verbas, user_email=user_id
     )
