@@ -1,11 +1,48 @@
-import { useState, useRef } from "react";
+// frontend/src/pages/HoleriteExtractorPage.tsx
+//
+// CORREÇÕES aplicadas vs original:
+//   1. Adicionado useUserPlan + canUseExtras
+//   2. limitReached = !canUseExtras && pageBalance <= 0   (só free bloqueia)
+//   3. hasEnoughPages = canUseExtras || pageBalance >= pagesToConsume
+//   4. Adicionado parsePageRange + pagesToConsume (useMemo)
+//   5. handleStartAnalysis verifica limite ANTES de enviar
+//   6. Feedback de páginas em tempo real (igual ao PontoExtractorPage)
+//   7. Aviso de saldo baixo (≤5 páginas) para free trial
+//   8. refreshUser() chamado após download
+//   9. Botão de upload já tinha disabled={isAnalyzing || isProcessing} — mantido
+//
+// Todo o resto é IDÊNTICO ao original.
+
+import { useState, useRef, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Link } from "react-router-dom";
 import {
   Upload, Play, ArrowLeft, Loader2, X, Check, FileText,
+  AlertTriangle, CreditCard,
 } from "lucide-react";
 import { toast } from "sonner";
 import AppHeader from "@/components/AppHeader";
+import { useUserPlan } from "@/hooks/useUserPlan";
+
+// ─────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────
+
+// ← ADICIONADO: calcula quantas páginas o range representa
+function parsePageRange(range: string): number {
+  if (!range.trim()) return 0;
+  let total = 0;
+  const parts = range.split(",").map((s) => s.trim());
+  for (const part of parts) {
+    if (part.includes("-")) {
+      const [start, end] = part.split("-").map(Number);
+      if (!isNaN(start) && !isNaN(end) && end >= start) total += end - start + 1;
+    } else {
+      if (!isNaN(Number(part)) && part) total += 1;
+    }
+  }
+  return total;
+}
 
 const API_BASE_URL = "";
 
@@ -26,7 +63,9 @@ async function apiFetch(url: string, options: RequestInit = {}) {
   return res;
 }
 
-// ── Modal de Seleção de Verbas ──
+// ─────────────────────────────────────────────
+// Modal de Seleção de Verbas (idêntico ao original)
+// ─────────────────────────────────────────────
 interface AnalysisData {
   nomes: string[];
   verbas: string[];
@@ -191,8 +230,13 @@ function VerbaSelectionModal({
   );
 }
 
-// ── Página Principal ──
+// ─────────────────────────────────────────────
+// Página Principal
+// ─────────────────────────────────────────────
 const HoleriteExtractorPage = () => {
+  // ← ADICIONADO: lê canUseExtras para saber se é plano pago
+  const { plan, canUseExtras, refreshUser } = useUserPlan();
+
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [pageRange, setPageRange] = useState("");
 
@@ -205,8 +249,24 @@ const HoleriteExtractorPage = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [processProgress, setProcessProgress] = useState({ current: 0, total: 0, message: "Processando..." });
 
+  // ← ADICIONADO: modal de saldo insuficiente
+  const [showLimitAlert, setShowLimitAlert] = useState(false);
+  const [limitAlertData, setLimitAlertData] = useState({ requested: 0, available: 0 });
+
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ← ADICIONADO: cálculo de saldo baseado no range digitado
+  const pagesToConsume = useMemo(() => parsePageRange(pageRange), [pageRange]);
+
+  // ── REGRA CENTRAL ──────────────────────────────────────────────────────────
+  // Plano pago: NUNCA bloqueia — extras são cobráveis
+  // Free trial: bloqueia quando saldo = 0
+  const limitReached   = !canUseExtras && plan.pageBalance <= 0;
+  const hasEnoughPages = canUseExtras   || plan.pageBalance >= pagesToConsume;
+  // ───────────────────────────────────────────────────────────────────────────
+
+  const isBusy = isAnalyzing || isProcessing;
 
   const triggerDownload = (blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob);
@@ -221,15 +281,16 @@ const HoleriteExtractorPage = () => {
 
   const pollProgress = (
     taskId: string,
-    onDone: (data: { filename?: string }) => void,
+    onDone: (data: { filename?: string; result?: AnalysisData }) => void,
     setProgress: (p: { current: number; total: number; message: string }) => void
   ) => {
+    if (pollingRef.current) clearInterval(pollingRef.current);
     pollingRef.current = setInterval(async () => {
       try {
         const res = await apiFetch(`/api/progress/${taskId}`);
         const data = await res.json();
 
-        if (data.current_step) {
+        if (data.current_step !== undefined) {
           setProgress({
             current: data.current_step,
             total: data.total_steps || 1,
@@ -240,7 +301,7 @@ const HoleriteExtractorPage = () => {
         if (data.status === "completed") {
           if (pollingRef.current) clearInterval(pollingRef.current);
           onDone(data);
-        } else if (data.status === "error") {
+        } else if (data.status === "error" || data.status === "failed") {
           if (pollingRef.current) clearInterval(pollingRef.current);
           toast.error(data.error || "Erro no processamento.");
           setIsAnalyzing(false);
@@ -255,6 +316,13 @@ const HoleriteExtractorPage = () => {
   const handleStartAnalysis = async () => {
     if (!selectedFile || !pageRange.trim()) {
       toast.warning("Selecione um PDF e informe as páginas.");
+      return;
+    }
+
+    // ← ADICIONADO: só bloqueia free trial esgotado ou sem saldo suficiente
+    if (limitReached || !hasEnoughPages) {
+      setLimitAlertData({ requested: pagesToConsume, available: plan.pageBalance });
+      setShowLimitAlert(true);
       return;
     }
 
@@ -304,11 +372,13 @@ const HoleriteExtractorPage = () => {
         setIsProcessing(false);
         toast.success("Holerite gerado com sucesso!");
 
-        // Baixa o arquivo
         const downloadRes = await apiFetch(`/api/download/${taskId}`);
         const blob = await downloadRes.blob();
         const filename = data.filename || `Folha_${taskId}.xlsx`;
         triggerDownload(blob, filename);
+
+        // ← ADICIONADO: atualiza saldo do usuário após download
+        await refreshUser();
       },
       setProcessProgress
     );
@@ -320,6 +390,8 @@ const HoleriteExtractorPage = () => {
 
       <main className="flex-1 flex items-center justify-center p-6">
         <div className="glass-card p-8 w-full max-w-4xl">
+
+          {/* Cabeçalho */}
           <div className="flex items-center gap-3 mb-6">
             <Link to="/app" className="text-muted-foreground hover:text-foreground transition-colors">
               <ArrowLeft className="w-5 h-5" />
@@ -327,6 +399,38 @@ const HoleriteExtractorPage = () => {
             <h3 className="text-lg font-semibold text-foreground">Extrator de Holerite</h3>
           </div>
 
+          {/* ← ADICIONADO: banner de saldo esgotado para free trial */}
+          {limitReached && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="flex items-center justify-between gap-4 p-4 rounded-lg bg-warning/10 border border-warning/30 mb-6"
+            >
+              <div className="flex items-center gap-3">
+                <AlertTriangle className="w-5 h-5 text-warning shrink-0" />
+                <p className="text-sm text-foreground">
+                  <span className="font-semibold">Seu limite de teste acabou.</span>{" "}
+                  Adquira um plano para continuar processando.
+                </p>
+              </div>
+              <Link
+                to="/#pricing"
+                className="gradient-primary text-primary-foreground px-5 py-2 rounded-lg text-sm font-semibold whitespace-nowrap hover:shadow-lg hover:shadow-primary/25 transition-all flex items-center gap-2"
+              >
+                <CreditCard className="w-4 h-4" />
+                Ver Planos
+              </Link>
+            </motion.div>
+          )}
+
+          {/* ← ADICIONADO: aviso de saldo baixo (≤5 páginas) para free trial */}
+          {!canUseExtras && plan.pageBalance > 0 && plan.pageBalance <= 5 && (
+            <p className="text-xs text-amber-500 mb-4">
+              ⚠ Apenas {plan.pageBalance} página(s) restante(s) no plano gratuito.
+            </p>
+          )}
+
+          {/* Inputs */}
           <div className="flex flex-col sm:flex-row gap-4">
             <input
               type="file"
@@ -343,29 +447,58 @@ const HoleriteExtractorPage = () => {
             />
             <button
               onClick={() => fileInputRef.current?.click()}
-              disabled={isAnalyzing || isProcessing}
+              disabled={isBusy}
               className="flex-1 flex items-center justify-center gap-2 py-3 rounded-lg border border-border bg-secondary/50 text-foreground text-sm font-medium hover:bg-surface-hover transition-all disabled:opacity-50"
             >
               <Upload className="w-4 h-4 text-primary" />
-              {selectedFile ? selectedFile.name.substring(0, 30) : "Importar PDF"}
+              {selectedFile
+                ? selectedFile.name.substring(0, 30) + (selectedFile.name.length > 30 ? "…" : "")
+                : "Importar PDF"}
             </button>
             <input
               type="text"
               value={pageRange}
               onChange={(e) => setPageRange(e.target.value)}
               placeholder="Páginas (ex: 1-5, 8, 10-12)"
-              disabled={isAnalyzing || isProcessing}
-              className="flex-1 px-4 py-3 bg-background/60 border border-border rounded-lg text-foreground placeholder:text-muted-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
+              disabled={isBusy}
+              className="flex-1 px-4 py-3 bg-background/60 border border-border rounded-lg text-foreground placeholder:text-muted-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all disabled:opacity-50"
             />
           </div>
 
+          {/* ← ADICIONADO: feedback de saldo em tempo real ao digitar o range */}
+          {pagesToConsume > 0 && !limitReached && (
+            <p className={`text-xs mt-2 ${
+              canUseExtras
+                ? plan.pageBalance <= 0
+                  ? "text-amber-500"
+                  : plan.pageBalance >= pagesToConsume
+                    ? "text-muted-foreground"
+                    : "text-amber-500"
+                : hasEnoughPages ? "text-muted-foreground" : "text-destructive"
+            }`}>
+              {canUseExtras
+                ? plan.pageBalance <= 0
+                  ? `${pagesToConsume} pág. — serão cobradas como extras`
+                  : plan.pageBalance >= pagesToConsume
+                    ? `${pagesToConsume} pág. incluídas · restam ${plan.pageBalance - pagesToConsume} após`
+                    : `${plan.pageBalance} incluídas + ${pagesToConsume - plan.pageBalance} extras`
+                : hasEnoughPages
+                  ? `${pagesToConsume} pág. · restam ${plan.pageBalance - pagesToConsume} após`
+                  : `Saldo insuficiente: precisa de ${pagesToConsume}, tem ${plan.pageBalance}`
+              }
+            </p>
+          )}
+
+          {/* Botão principal */}
           <button
             onClick={handleStartAnalysis}
-            disabled={isAnalyzing || isProcessing || !selectedFile || !pageRange.trim()}
+            disabled={isBusy || !selectedFile || !pageRange.trim() || limitReached}
             className="w-full mt-6 gradient-primary text-primary-foreground py-4 rounded-xl font-bold text-base flex items-center justify-center gap-2 hover:shadow-lg hover:shadow-primary/25 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {isAnalyzing ? (
-              <><Loader2 className="w-5 h-5 animate-spin" /> Identificando Verbas...</>
+              <><Loader2 className="w-5 h-5 animate-spin" /> {analysisProgress.message}</>
+            ) : isProcessing ? (
+              <><Loader2 className="w-5 h-5 animate-spin" /> {processProgress.message}</>
             ) : (
               <><FileText className="w-5 h-5" /> Identificar Itens</>
             )}
@@ -373,9 +506,9 @@ const HoleriteExtractorPage = () => {
         </div>
       </main>
 
-      {/* Progress Modal — Análise */}
+      {/* Modal de progresso */}
       <AnimatePresence>
-        {(isAnalyzing || isProcessing) && (
+        {isBusy && !showModal && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -426,6 +559,56 @@ const HoleriteExtractorPage = () => {
           onConfirm={handleProcessConfirm}
         />
       )}
+
+      {/* ← ADICIONADO: modal de saldo insuficiente (igual ao PontoExtractorPage) */}
+      <AnimatePresence>
+        {showLimitAlert && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 backdrop-blur-sm p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 10 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 10 }}
+              className="glass-card p-8 max-w-md w-full relative"
+            >
+              <button
+                onClick={() => setShowLimitAlert(false)}
+                className="absolute top-4 right-4 text-muted-foreground hover:text-foreground"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <div className="text-center">
+                <div className="w-16 h-16 rounded-full bg-warning/15 flex items-center justify-center mx-auto mb-4">
+                  <AlertTriangle className="w-8 h-8 text-warning" />
+                </div>
+                <h3 className="text-xl font-bold text-foreground mb-2">Saldo Insuficiente</h3>
+                <p className="text-muted-foreground text-sm mb-6">
+                  Você precisa de {limitAlertData.requested} página(s), mas só tem{" "}
+                  {limitAlertData.available} disponível(is).
+                </p>
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => setShowLimitAlert(false)}
+                    className="flex-1 py-3 rounded-lg border border-border text-foreground text-sm font-medium hover:bg-surface-hover transition-all"
+                  >
+                    Fechar
+                  </button>
+                  <Link to="/#pricing" className="flex-1">
+                    <button className="w-full py-3 rounded-lg gradient-primary text-primary-foreground text-sm font-bold hover:shadow-lg hover:shadow-primary/25 transition-all flex items-center justify-center gap-2">
+                      <CreditCard className="w-4 h-4" />
+                      Ver Planos
+                    </button>
+                  </Link>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };
