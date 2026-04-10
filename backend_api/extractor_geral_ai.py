@@ -831,6 +831,8 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
         full_date_hits        = 0
         day_month_hits        = 0
         fallback_day_hits     = 0
+       
+        _infer_warn: dict[int, list] = {}
 
         for page_idx, p_info in enumerate(pages_validas):
             entities_pag, _ = results_by_order.get(page_idx, ([], ""))
@@ -900,12 +902,11 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
                             target_date = inferred
                             inferidas_por_y += 1
                             page_row_ptr += 1
+                            pn = p_info['page_number']
                             if raw_dia:
-                                LOG(f"  inferência Y pág {p_info['page_number']}",
-                                    f"DocAI leu '{raw_dia}' → corrigido para '{inferred}'", 'WARN')
+                                _infer_warn.setdefault(pn, []).append(f"'{raw_dia}'→'{inferred}'")
                             else:
-                                LOG(f"  inferência Y pág {p_info['page_number']}",
-                                    f"data ausente → inferida '{inferred}' por posição", 'WARN')
+                                _infer_warn.setdefault(pn, []).append(f"ausente→'{inferred}'")
 
                 # Etapa 4: fallback — só o número do dia dentro do período da página
                 if target_date is None and raw_dia:
@@ -965,6 +966,10 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
                     else:
                         # Slots cheios com valores diferentes — situação inesperada
                         skip_duplicado += 1
+        for _pn, _itens in sorted(_infer_warn.items()):
+            LOG(f"  inferência Y pág {_pn}",
+                f"{len(_itens)} datas corrigidas/inferidas por posição  "
+                f"(ex: {_itens[0]})", 'WARN')
         # ── 5. Salvar CSV ─────────────────────────────────────────────────────
         random_id      = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
         final_filename = f"Ponto_Extraido_{random_id}.csv"

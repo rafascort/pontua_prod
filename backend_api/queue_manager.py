@@ -315,7 +315,7 @@ def extract_periods():
             'extractor_geral_ai.extract_periods_task',
             pdf_path, pages,
             user_id=current_user_email,
-            job_timeout='2m', result_ttl=1800,
+            job_timeout='15m', result_ttl=1800,
             meta={'user_id': current_user_email, 'pdf_path': pdf_path, 'step': 'period_extraction'}
         )
         return jsonify({'task_id': job.id, 'status': 'queued', 'step': 'period_extraction'})
