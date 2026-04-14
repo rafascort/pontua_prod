@@ -1,14 +1,21 @@
 # /opt/pontua/AutoPonto/backend_api/payroll_extractor_ai.py
 #
-# CORREÇÕES aplicadas:
-#   1. Logs reorganizados no padrão LOG/LOG_SEP do extractor_geral_ai.py
-#   2. process_payroll_task define job.meta['pages_to_process'] = total
-#   3. process_payroll_final_task repassa user_email para process_payroll_task
-#   4. safe_parse_json() — parse robusto de JSON (lida com "Extra data")
-#   5. normalize_name_key() — agrupa nomes com typos de OCR (letras duplicadas)
-#   6. Retry automático (até 3 tentativas) em _process_single_page
+# OTIMIZAÇÕES v2:
+#   1. Inline base64 em vez de Files API (elimina upload + polling)
+#   2. Pré-split de páginas antes do paralelismo (PdfReader 1× em vez de N×)
+#   3. max_workers aumentado para 20
+#   4. Logs com tabelas completas: verbas selecionadas, funcionários detectados
+#   5. Abas geradas com nomes dos funcionários no log final
+#
+# Mantido do original:
+#   - Processamento página a página (garante precisão)
+#   - Retry automático (até 3 tentativas)
+#   - safe_parse_json() — parse robusto de JSON
+#   - normalize_name_key() — agrupa nomes com typos de OCR
+#   - Mapeamento future → p_num (garante ordem correta)
 
 import os
+import base64
 import tempfile
 import pandas as pd
 import json
@@ -16,6 +23,7 @@ import re
 import time
 import traceback
 import unicodedata
+from io import BytesIO
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from google import genai
@@ -27,6 +35,10 @@ import logging
 logging.basicConfig(level=logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("google_genai.models").setLevel(logging.WARNING)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Configuração ─────────────────────────────────────────────────────────────
+MAX_GEMINI_WORKERS = 20
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -42,6 +54,20 @@ def LOG_SEP(title=''):
         pad  = max(0, (70 - len(title) - 2) // 2)
         line = '─' * pad + f' {title} ' + '─' * pad
     print(f"[LOG ] {line}", flush=True)
+
+
+def LOG_TABLE(title, items):
+    """Imprime uma tabela formatada no log com título e itens numerados."""
+    if not items:
+        return
+    col_width = 57
+    print(f"[LOG ] ┌─────────────────────────────────────────────────────────────────────┐", flush=True)
+    print(f"[LOG ] │  {title:<67} │", flush=True)
+    print(f"[LOG ] ├───────┬─────────────────────────────────────────────────────────────┤", flush=True)
+    for i, item in enumerate(items, 1):
+        item_str = str(item)[:col_width]
+        print(f"[LOG ] │ {i:>4}  │ {item_str:<{col_width}} │", flush=True)
+    print(f"[LOG ] └───────┴─────────────────────────────────────────────────────────────┘", flush=True)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -131,34 +157,46 @@ def normalize_name_key(name):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _presplit_pages(pdf_path, pages):
+    """
+    Abre o PDF UMA vez e extrai cada página como bytes em memória.
+    Retorna dict {p_num: bytes_da_pagina_como_pdf}.
+    """
+    reader = PdfReader(pdf_path)
+    total_pdf = len(reader.pages)
+    page_buffers = {}
+
+    t0 = time.time()
+    for p in pages:
+        idx = p - 1
+        if 0 <= idx < total_pdf:
+            writer = PdfWriter()
+            writer.add_page(reader.pages[idx])
+            buf = BytesIO()
+            writer.write(buf)
+            page_buffers[p] = buf.getvalue()
+
+    elapsed = round(time.time() - t0, 2)
+    LOG('pré-split', f"{len(page_buffers)} páginas em {elapsed}s")
+    return page_buffers, total_pdf
+
+
 class PayrollExtractorAI:
     def __init__(self, job=None):
         self.job    = job
         self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
         self.model_id = "gemini-2.5-flash"
 
-    # ── Processa uma página individual via Gemini (com retry) ─────────────────
-    def _process_single_page(self, pdf_path, p_num, prompt_type, targets=None):
+    # ── Processa uma página via Gemini usando inline base64 (com retry) ──────
+    def _process_single_page(self, page_bytes, p_num, prompt_type, targets=None):
         MAX_RETRIES = 2
         last_error = None
 
+        # Codifica base64 uma vez (fora do retry)
+        page_b64 = base64.standard_b64encode(page_bytes).decode('utf-8')
+
         for attempt in range(MAX_RETRIES + 1):
-            tmp_path = None
             try:
-                reader = PdfReader(pdf_path)
-                writer = PdfWriter()
-                writer.add_page(reader.pages[p_num - 1])
-
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
-                    writer.write(tmp.name)
-                    tmp_path = tmp.name
-
-                uploaded = self.client.files.upload(file=tmp_path)
-                file     = self.client.files.get(name=uploaded.name)
-                while file.state.name == "PROCESSING":
-                    time.sleep(1)
-                    file = self.client.files.get(name=uploaded.name)
-
                 if prompt_type == "analyze":
                     prompt = """Analise o HOLERITE. Ignore o Cartão Ponto.
 1. Extraia o NOME DO FUNCIONÁRIO (ignore empresa).
@@ -178,9 +216,17 @@ DIFERENCIAÇÃO OBRIGATÓRIA:
 Extraia apenas: {targets}"""
 
                 response = self.client.models.generate_content(
-                    model=self.model_id, contents=[file, prompt]
+                    model=self.model_id,
+                    contents=[
+                        {
+                            "inline_data": {
+                                "mime_type": "application/pdf",
+                                "data": page_b64
+                            }
+                        },
+                        prompt
+                    ]
                 )
-                self.client.files.delete(name=file.name)
 
                 result = safe_parse_json(response.text)
                 if result:
@@ -198,27 +244,25 @@ Extraia apenas: {targets}"""
                     LOG(f'página {p_num}', f"erro tentativa {attempt+1}: {e} — retentando...", 'WARN')
                     time.sleep(2)
                     continue
-            finally:
-                if tmp_path and os.path.exists(tmp_path):
-                    try: os.unlink(tmp_path)
-                    except: pass
 
         LOG(f'erro página {p_num}', f"falhou após {MAX_RETRIES+1} tentativas: {last_error}", 'ERR ')
         return None
 
     # ── ETAPA 1: Identificação de verbas ─────────────────────────────────────
     def scan_verbas_task(self, pdf_path, pages_range):
-        reader    = PdfReader(pdf_path)
-        pages     = self._parse_range(pages_range, len(reader.pages))
+        pages     = self._parse_range_from_file(pdf_path, pages_range)
         total     = len(pages)
         t_inicio  = time.time()
         worker_pid = os.getpid()
+
+        # Pré-split: abre o PDF 1 vez, extrai bytes de cada página
+        page_buffers, total_pdf = _presplit_pages(pdf_path, pages)
 
         LOG_SEP('HOLERITE — ANÁLISE INICIADA')
         LOG('job_id',          self.job.id if self.job else '?')
         LOG('worker PID',      str(worker_pid))
         LOG('páginas',         f"{total}  ({pages_range})")
-        LOG('total no PDF',    f"{len(reader.pages)} páginas")
+        LOG('total no PDF',    f"{total_pdf} páginas")
         LOG_SEP()
 
         if self.job:
@@ -229,12 +273,15 @@ Extraia apenas: {targets}"""
             self.job.save_meta()
 
         unique_items_ordered = {}
-        all_nomes            = {}   # CORREÇÃO: dict {chave_normalizada: nome_original}
+        all_nomes            = {}   # dict {chave_normalizada: nome_original}
         results_by_page      = {}
         erros                = []
 
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            futures        = {executor.submit(self._process_single_page, pdf_path, p, "analyze"): p for p in pages}
+        with ThreadPoolExecutor(max_workers=min(MAX_GEMINI_WORKERS, total)) as executor:
+            futures = {
+                executor.submit(self._process_single_page, page_buffers[p], p, "analyze"): p
+                for p in pages if p in page_buffers
+            }
             completed_count = 0
 
             for future in as_completed(futures):
@@ -275,9 +322,9 @@ Extraia apenas: {targets}"""
         LOG_SEP('ANÁLISE CONCLUÍDA')
         LOG('tempo',           f"{t_total}s")
         LOG('verbas únicas',   str(len(unique_items_ordered)))
-        LOG('funcionários',    str(len(all_nomes)))
         if erros:
             LOG('páginas sem retorno', str(erros), 'WARN')
+        LOG_TABLE(f"FUNCIONÁRIOS DETECTADOS ({len(all_nomes)})", sorted(list(all_nomes.values())))
         LOG_SEP()
 
         result = {
@@ -294,18 +341,20 @@ Extraia apenas: {targets}"""
     # ── ETAPA 2: Geração do Excel ─────────────────────────────────────────────
     def process_payroll_task(self, pdf_path, pages_range, selected_verbas, user_email=None):
         job       = get_current_job()
-        reader    = PdfReader(pdf_path)
-        pages     = self._parse_range(pages_range, len(reader.pages))
+        pages     = self._parse_range_from_file(pdf_path, pages_range)
         total     = len(pages)
         t_inicio  = time.time()
         worker_pid = os.getpid()
+
+        # Pré-split: abre o PDF 1 vez, extrai bytes de cada página
+        page_buffers, total_pdf = _presplit_pages(pdf_path, pages)
 
         LOG_SEP('HOLERITE — EXTRAÇÃO INICIADA')
         LOG('job_id',          job.id)
         LOG('usuário',         user_email or '?')
         LOG('worker PID',      str(worker_pid))
         LOG('páginas',         f"{total}  ({pages_range})")
-        LOG('verbas selecionadas', str(len(selected_verbas)))
+        LOG_TABLE(f"VERBAS SELECIONADAS ({len(selected_verbas)})", selected_verbas)
         LOG_SEP()
 
         job.meta.update({
@@ -323,10 +372,10 @@ Extraia apenas: {targets}"""
         erros           = []
         completed_count = 0
 
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        with ThreadPoolExecutor(max_workers=min(MAX_GEMINI_WORKERS, total)) as executor:
             futures = {
-                executor.submit(self._process_single_page, pdf_path, p, "process", clean_targets): p
-                for p in pages
+                executor.submit(self._process_single_page, page_buffers[p], p, "process", clean_targets): p
+                for p in pages if p in page_buffers
             }
             for future in as_completed(futures):
                 p_num = futures[future]
@@ -367,7 +416,7 @@ Extraia apenas: {targets}"""
 
         df_full = pd.DataFrame(temp_data)
 
-        # CORREÇÃO: Normalizar nomes para agrupar variações de OCR na mesma aba
+        # Normalizar nomes para agrupar variações de OCR na mesma aba
         df_full['Nome_key'] = df_full['Nome'].apply(normalize_name_key)
 
         # Mapeia cada chave normalizada ao primeiro nome encontrado
@@ -378,6 +427,8 @@ Extraia apenas: {targets}"""
                 name_map[k] = row['Nome']
 
         abas = 0
+        nomes_abas = []   # lista de nomes dos funcionários (para log final)
+
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
             for nome_key, group in df_full.groupby('Nome_key'):
                 nome_display = name_map.get(nome_key, nome_key)
@@ -392,25 +443,26 @@ Extraia apenas: {targets}"""
                     c_norm = super_norm(row['Campo'])
                     target = next((t for t in sorted_targets if super_norm(t) == c_norm), None)
                     if target:
-                        df_aba.at[row['Mês'], (target, 'Ref.')]   = row['Ref']
-                        df_aba.at[row['Mês'], (target, 'Valor')]  = row['Valor']
+                        df_aba.at[row['Mês'], (target, 'Ref.')]  = row['Ref']
+                        df_aba.at[row['Mês'], (target, 'Valor')] = row['Valor']
 
                 sheet_name = re.sub(r'[^a-zA-Z0-9 ]', '', str(nome_display))[:31]
                 df_aba.to_excel(writer, sheet_name=sheet_name, index=True)
                 abas += 1
+                nomes_abas.append(nome_display)
 
         t_total  = round(time.time() - t_inicio, 1)
         xlsx_kb  = round(os.path.getsize(output_path) / 1024, 1)
 
         LOG_SEP('EXTRAÇÃO CONCLUÍDA')
         LOG('tempo',           f"{t_total}s")
-        LOG('funcionários',    f"{abas} aba(s) gerada(s)")
         LOG('arquivo',         f"Folha_{job.id}.xlsx  ({xlsx_kb} KB)")
         if erros:
             LOG('páginas sem retorno', str(erros), 'WARN')
+        LOG_TABLE(f"ABAS GERADAS — {abas} FUNCIONÁRIO(S)", nomes_abas)
         LOG_SEP()
 
-        # ── CORREÇÃO: pages_to_process para /api/download contabilizar ────────
+        # pages_to_process para /api/download contabilizar
         job.meta.update({
             'status':           'completed',
             'file_path':        output_path,
@@ -419,7 +471,13 @@ Extraia apenas: {targets}"""
         job.save_meta()
         return True
 
-    # ── Helper de parse de range ──────────────────────────────────────────────
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _parse_range_from_file(self, pdf_path, pages_str):
+        """Parse de range com leitura do total de páginas do PDF."""
+        reader = PdfReader(pdf_path)
+        total_pages = len(reader.pages)
+        return self._parse_range(pages_str, total_pages)
+
     def _parse_range(self, pages_str, total_pages):
         res = []
         for part in str(pages_str).split(','):
