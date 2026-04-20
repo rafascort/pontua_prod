@@ -11,6 +11,14 @@
 #   6. Formatação brasileira de números nos campos Ref e Valor
 #      (1500.40 → 1.500,40 ; 30 → 30 ; 30.00 → 30,00 ; idempotente)
 #
+# v2.3:
+#   8. Preenchimento de meses faltantes com '0' entre o mais antigo e o mais
+#      recente — sequência cronológica completa mesmo sem dados no PDF
+#      - Prompt da Etapa 2: pede array JSON quando >1 holerite
+#      - safe_parse_json: tenta array antes de objeto único
+#      - Loop de extração: faz extend() quando resposta é lista
+#      - Prompt da Etapa 1: detecta TODOS os funcionários/competências
+#
 # Mantido do original:
 #   - Processamento página a página (garante precisão)
 #   - Retry automático (até 3 tentativas)
@@ -30,6 +38,7 @@ import unicodedata
 from io import BytesIO
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 from google import genai
 from rq import get_current_job
 from pypdf import PdfReader, PdfWriter
@@ -180,11 +189,59 @@ def is_valid_name(name):
 
 
 def safe_parse_json(text):
-    """Parse robusto de JSON — lida com 'Extra data' (dois JSONs concatenados)."""
+    """Parse robusto de JSON — lida com 'Extra data' (dois JSONs concatenados)
+    e detecta quando o Gemini retorna um array (múltiplos holerites/página)."""
     if not text:
         return None
 
-    match = re.search(r'\{.*\}', text, re.DOTALL)
+    # ─── v2.2: Limpa markdown e espaços ───
+    cleaned = text.strip()
+    # Remove ```json ... ``` ou ``` ... ```
+    cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned)
+    cleaned = re.sub(r'\s*```\s*$', '', cleaned)
+    cleaned = cleaned.strip()
+
+    # ─── Tenta parse direto primeiro (cobre objeto único OU array de topo) ───
+    # Se o texto começa com [ → é array de holerites
+    # Se começa com { → é objeto único
+    if cleaned.startswith('['):
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+                return parsed
+        except json.JSONDecodeError:
+            # Tenta limpar trailing commas
+            fixed = re.sub(r',\s*}', '}', cleaned)
+            fixed = re.sub(r',\s*]', ']', fixed)
+            try:
+                parsed = json.loads(fixed)
+                if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+
+    if cleaned.startswith('{'):
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+
+    # ─── Fallback: procura array no meio do texto (raro, mas possível) ───
+    # Balanceamento de colchetes para achar array completo no TOPO do JSON,
+    # não confundindo com arrays internos (como "dados": [...]).
+    arr_match = _find_balanced(cleaned, '[', ']')
+    if arr_match:
+        try:
+            parsed = json.loads(arr_match)
+            if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+                # Confirma que parece array de holerites (tem "nome" ou "periodo")
+                if any('nome' in h or 'periodo' in h for h in parsed if isinstance(h, dict)):
+                    return parsed
+        except json.JSONDecodeError:
+            pass
+
+    # ─── Fallback: objeto único em qualquer posição ───
+    match = re.search(r'\{.*\}', cleaned, re.DOTALL)
     if not match:
         return None
 
@@ -221,13 +278,44 @@ def safe_parse_json(text):
                             break
 
         # Tenta limpar trailing commas
-        cleaned = re.sub(r',\s*}', '}', json_str)
-        cleaned = re.sub(r',\s*]', ']', cleaned)
+        fixed = re.sub(r',\s*}', '}', json_str)
+        fixed = re.sub(r',\s*]', ']', fixed)
         try:
-            return json.loads(cleaned)
+            return json.loads(fixed)
         except json.JSONDecodeError:
             pass
 
+    return None
+
+
+def _find_balanced(text, open_ch, close_ch):
+    """Encontra o primeiro bloco balanceado completo entre open_ch e close_ch.
+    Respeita strings (não conta aspas dentro de strings)."""
+    start = text.find(open_ch)
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escape_next = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == '\\' and in_string:
+            escape_next = True
+            continue
+        if ch == '"' and not escape_next:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                return text[start:i+1]
     return None
 
 
@@ -239,6 +327,30 @@ def normalize_name_key(name):
     # Colapsa letras repetidas consecutivas (ex: 'uiilio' → 'uilio' → mesmo que 'uilio')
     n = re.sub(r'(.)\1+', r'\1', n)
     return n
+
+
+def _generate_full_month_range(meses_list):
+    """
+    Dado uma lista de meses no formato 'MM/AAAA', retorna todos os meses
+    entre o mais antigo e o mais recente (inclusive), em ordem cronológica.
+    Meses sem dados no PDF ficam no Excel com valores '0'.
+    """
+    if not meses_list:
+        return meses_list
+
+    parsed = []
+    for m in meses_list:
+        try:
+            dt = pd.to_datetime(m, format='%m/%Y')
+            parsed.append(dt)
+        except Exception:
+            pass
+
+    if not parsed:
+        return meses_list
+
+    full_range = pd.date_range(start=min(parsed), end=max(parsed), freq='MS')
+    return [dt.strftime('%m/%Y') for dt in full_range]
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -267,10 +379,43 @@ def _presplit_pages(pdf_path, pages):
 
 
 class PayrollExtractorAI:
+    # ── Gemini 2.5 Flash — preço USD por 1M tokens ────────────────────────
+    PRICE_IN_PER_M  = 0.30   # input
+    PRICE_OUT_PER_M = 2.50   # output (inclui thinking)
+    USD_TO_BRL      = 5.70   # taxa aproximada apenas para display
+
     def __init__(self, job=None):
-        self.job    = job
-        self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        self.job      = job
+        self.client   = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
         self.model_id = "gemini-2.5-flash"
+
+        # Acumuladores de tokens (thread-safe — várias páginas em paralelo)
+        self._token_in   = 0
+        self._token_out  = 0
+        self._token_lock = Lock()
+
+    # ── Rastreia tokens de cada resposta Gemini ───────────────────────────
+    def _track_usage(self, response):
+        try:
+            meta      = response.usage_metadata
+            p_in      = getattr(meta, 'prompt_token_count',      0) or 0
+            p_out     = getattr(meta, 'candidates_token_count',  0) or 0
+            p_thought = getattr(meta, 'thoughts_token_count',    0) or 0
+            with self._token_lock:
+                self._token_in  += p_in
+                self._token_out += p_out + p_thought
+        except Exception:
+            pass
+
+    # ── Loga custo total ao final do job ─────────────────────────────────
+    def _log_cost(self):
+        cost_in   = (self._token_in  / 1_000_000) * self.PRICE_IN_PER_M
+        cost_out  = (self._token_out / 1_000_000) * self.PRICE_OUT_PER_M
+        total_usd = cost_in + cost_out
+        total_brl = total_usd * self.USD_TO_BRL
+        LOG('custo Gemini',
+            f"{self._token_in:,} in + {self._token_out:,} out = "
+            f"${total_usd:.4f}  (~R$ {total_brl:.4f})")
 
     # ── Processa uma página via Gemini usando inline base64 (com retry) ──────
     def _process_single_page(self, page_bytes, p_num, prompt_type, targets=None):
@@ -283,9 +428,11 @@ class PayrollExtractorAI:
         for attempt in range(MAX_RETRIES + 1):
             try:
                 if prompt_type == "analyze":
-                    prompt = """Analise o HOLERITE. Ignore o Cartão Ponto.
-1. Extraia o NOME DO FUNCIONÁRIO (ignore empresa).
-2. Liste VERBAS e CAMPOS DE RODAPÉ na ordem de cima para baixo.
+                    prompt = """Analise TODOS os HOLERITES da página. Ignore o Cartão Ponto.
+Uma página pode conter MAIS DE UM holerite (mesmo funcionário em competências diferentes, ou funcionários diferentes).
+
+1. Extraia o NOME DO FUNCIONÁRIO de CADA holerite (ignore empresa). Liste em "nomes".
+2. Liste em "itens" todas as VERBAS e CAMPOS DE RODAPÉ de TODOS os holerites, na ordem de cima para baixo.
 
 REGRAS CRÍTICAS:
 - NÃO CRIE DUPLICADOS. Itens com apenas diferença de espaços ou pontos são o mesmo item.
@@ -295,6 +442,8 @@ JSON: {"nomes": [], "itens": []}"""
                 else:
                     prompt = f"""Ignore o Cartão Ponto. No Holerite, extraia os dados com precisão:
 JSON: {{"nome": "Nome", "periodo": "MM/AAAA", "dados": [{{"campo": "Item", "ref": "Ref", "valor": "Valor"}}]}}
+
+Se a página contiver MAIS DE UM holerite (competências diferentes no mesmo funcionário OU funcionários diferentes), retorne um ARRAY JSON com um objeto completo por holerite (cada um com seu nome, periodo e dados).
 
 DIFERENCIAÇÃO OBRIGATÓRIA:
 - 'Horas Normais' é um item. 'Horas Normais Noturnas' é OUTRO item. Não troque os valores.
@@ -315,6 +464,7 @@ Extraia apenas: {targets}"""
 
                 result = safe_parse_json(response.text)
                 if result:
+                    self._track_usage(response)
                     return result
 
                 last_error = f"JSON inválido (tentativa {attempt+1}/{MAX_RETRIES+1})"
@@ -410,6 +560,7 @@ Extraia apenas: {targets}"""
         if erros:
             LOG('páginas sem retorno', str(erros), 'WARN')
         LOG_TABLE(f"FUNCIONÁRIOS DETECTADOS ({len(all_nomes)})", sorted(list(all_nomes.values())))
+        self._log_cost()
         LOG_SEP()
 
         result = {
@@ -466,8 +617,16 @@ Extraia apenas: {targets}"""
                 p_num = futures[future]
                 data  = future.result()
                 if data:
-                    all_extracted.append(data)
-                    LOG(f'página {p_num}', f"ok — {len(data.get('dados', []))} campos")
+                    # ─── v2.2: suporte a múltiplos holerites por página ───
+                    # Se data for lista, cada elemento é um holerite da página.
+                    # Se for dict, é um único holerite (caso mais comum).
+                    if isinstance(data, list):
+                        all_extracted.extend(data)
+                        total_campos = sum(len(h.get('dados', [])) for h in data if isinstance(h, dict))
+                        LOG(f'página {p_num}', f"ok — {len(data)} holerites, {total_campos} campos")
+                    else:
+                        all_extracted.append(data)
+                        LOG(f'página {p_num}', f"ok — 1 holerite, {len(data.get('dados', []))} campos")
                 else:
                     erros.append(p_num)
                     LOG(f'página {p_num}', 'sem retorno', 'WARN')
@@ -518,10 +677,12 @@ Extraia apenas: {targets}"""
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
             for nome_key, group in df_full.groupby('Nome_key'):
                 nome_display = name_map.get(nome_key, nome_key)
-                meses = sorted(
+                meses_com_dados = sorted(
                     group['Mês'].unique(),
                     key=lambda x: pd.to_datetime(x, format='%m/%Y', errors='coerce')
                 )
+                # Preenche todos os meses do intervalo (sem dados → '0')
+                meses = _generate_full_month_range(meses_com_dados)
                 df_aba           = pd.DataFrame(index=meses, columns=multi_col).fillna('0')
                 df_aba.index.name = 'Mês'
 
@@ -546,6 +707,7 @@ Extraia apenas: {targets}"""
         if erros:
             LOG('páginas sem retorno', str(erros), 'WARN')
         LOG_TABLE(f"ABAS GERADAS — {abas} FUNCIONÁRIO(S)", nomes_abas)
+        self._log_cost()
         LOG_SEP()
 
         # pages_to_process para /api/download contabilizar
