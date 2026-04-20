@@ -7,9 +7,9 @@
 #   4. Logs com tabelas completas: verbas selecionadas, funcionários detectados
 #   5. Abas geradas com nomes dos funcionários no log final
 #
-# CORREÇÕES v3:
-#   6. Suporte a múltiplos holerites por página do PDF
-#   7. Preenchimento de meses faltantes com valores zerados
+# v2.1:
+#   6. Formatação brasileira de números nos campos Ref e Valor
+#      (1500.40 → 1.500,40 ; 30 → 30 ; 30.00 → 30,00 ; idempotente)
 #
 # Mantido do original:
 #   - Processamento página a página (garante precisão)
@@ -29,7 +29,6 @@ import traceback
 import unicodedata
 from io import BytesIO
 from datetime import datetime
-from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from google import genai
 from rq import get_current_job
@@ -91,6 +90,87 @@ def clean_value(val):
         return str(next(iter(val.values()))) if val else "0"
     return str(val).strip() if val is not None else "0"
 
+
+# ─── v2.1: FORMATAÇÃO BRASILEIRA DE NÚMEROS ──────────────────────────────────
+def format_br_number(val):
+    """
+    Formata valor no padrão brasileiro: ponto para milhares, vírgula para decimais.
+
+    Aceita entradas em vários formatos e normaliza:
+        "1500"        → "1.500"
+        "1500.40"     → "1.500,40"   (formato US)
+        "1500,40"     → "1.500,40"
+        "1.500,40"    → "1.500,40"   (já BR — idempotente)
+        "1,500.40"    → "1.500,40"   (US completo → BR)
+        "30,00"       → "30,00"
+        "30.00"       → "30,00"
+        "30"          → "30"
+        "0" / "" / None → "0"
+        "N/A"         → "N/A"        (não-numérico preservado)
+    """
+    if val is None:
+        return "0"
+    s = str(val).strip()
+    if not s or s == "0":
+        return s if s else "0"
+
+    # Se não for puramente numérico (+ separadores + sinal), retorna original
+    m = re.match(r'^(-?)([\d.,]+)$', s)
+    if not m:
+        return s
+
+    negative = bool(m.group(1))
+    num_str  = m.group(2)
+
+    last_dot   = num_str.rfind('.')
+    last_comma = num_str.rfind(',')
+
+    # Determina qual é o separador decimal
+    if last_comma > last_dot:
+        # Vírgula por último → decimal (formato BR)
+        integer_part, decimal_part = num_str.rsplit(',', 1)
+        integer_part = integer_part.replace('.', '').replace(',', '')
+    elif last_dot > last_comma:
+        after = num_str[last_dot+1:]
+        if len(after) <= 2 and ',' not in num_str:
+            # "30.00" / "1500.40" — ponto é decimal (US)
+            integer_part, decimal_part = num_str.rsplit('.', 1)
+            integer_part = integer_part.replace('.', '').replace(',', '')
+        elif len(after) <= 2 and ',' in num_str:
+            # "1,500.40" — ponto é decimal, vírgula é milhar (US completo)
+            integer_part, decimal_part = num_str.rsplit('.', 1)
+            integer_part = integer_part.replace(',', '').replace('.', '')
+        else:
+            # "1.500" com 3+ dígitos após o ponto — ponto é milhar (BR sem decimal)
+            integer_part = num_str.replace('.', '').replace(',', '')
+            decimal_part = ""
+    else:
+        # Sem separadores
+        integer_part = num_str
+        decimal_part = ""
+
+    try:
+        int_val = int(integer_part) if integer_part else 0
+    except ValueError:
+        return s
+
+    # Formata inteiro com ponto de milhar
+    formatted_int = f"{int_val:,}".replace(',', '.')
+
+    # Monta resultado
+    if decimal_part:
+        if len(decimal_part) == 1:
+            decimal_part += '0'
+        elif len(decimal_part) > 2:
+            decimal_part = decimal_part[:2]
+        result = f"{formatted_int},{decimal_part}"
+    else:
+        result = formatted_int
+
+    return ('-' + result) if negative else result
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 def is_valid_name(name):
     if not name or len(name) < 8: return False
     forbidden = ["LTDA", "CNPJ", "CPF", "RUA", "AVENIDA", "ENDERECO", "EMPRESA", "S.A", "EIRELI"]
@@ -100,70 +180,25 @@ def is_valid_name(name):
 
 
 def safe_parse_json(text):
-    """Parse robusto de JSON — lida com objetos, arrays e 'Extra data'."""
+    """Parse robusto de JSON — lida com 'Extra data' (dois JSONs concatenados)."""
     if not text:
         return None
 
-    # ── Tenta array primeiro (para múltiplos holerites por página) ────────
-    match_arr = re.search(r'\[.*\]', text, re.DOTALL)
-    match_obj = re.search(r'\{.*\}', text, re.DOTALL)
-
-    # Se encontrou array que contém objetos, tenta parsear como array
-    if match_arr:
-        arr_str = match_arr.group()
-        try:
-            parsed = json.loads(arr_str)
-            if isinstance(parsed, list) and len(parsed) > 0 and isinstance(parsed[0], dict):
-                return parsed
-        except json.JSONDecodeError:
-            # Tenta limpar trailing commas
-            cleaned = re.sub(r',\s*}', '}', arr_str)
-            cleaned = re.sub(r',\s*]', ']', cleaned)
-            try:
-                parsed = json.loads(cleaned)
-                if isinstance(parsed, list) and len(parsed) > 0 and isinstance(parsed[0], dict):
-                    return parsed
-            except json.JSONDecodeError:
-                pass
-
-    # ── Fallback: tenta objeto único ──────────────────────────────────────
-    if not match_obj:
+    match = re.search(r'\{.*\}', text, re.DOTALL)
+    if not match:
         return None
 
-    json_str = match_obj.group()
+    json_str = match.group()
 
     try:
         return json.loads(json_str)
     except json.JSONDecodeError as e:
         # "Extra data" = mais de um objeto JSON concatenado na resposta
         if "Extra data" in str(e):
-            # Tenta extrair TODOS os objetos JSON concatenados
-            objects = _extract_all_json_objects(json_str)
-            if objects:
-                return objects if len(objects) > 1 else objects[0]
-
-        # Tenta limpar trailing commas
-        cleaned = re.sub(r',\s*}', '}', json_str)
-        cleaned = re.sub(r',\s*]', ']', cleaned)
-        try:
-            return json.loads(cleaned)
-        except json.JSONDecodeError:
-            pass
-
-    return None
-
-
-def _extract_all_json_objects(text):
-    """Extrai múltiplos objetos JSON concatenados de uma string."""
-    objects = []
-    i = 0
-    while i < len(text):
-        if text[i] == '{':
             depth = 0
             in_string = False
             escape_next = False
-            for j in range(i, len(text)):
-                ch = text[j]
+            for i, ch in enumerate(json_str):
                 if escape_next:
                     escape_next = False
                     continue
@@ -181,17 +216,19 @@ def _extract_all_json_objects(text):
                     depth -= 1
                     if depth == 0:
                         try:
-                            obj = json.loads(text[i:j+1])
-                            objects.append(obj)
+                            return json.loads(json_str[:i+1])
                         except json.JSONDecodeError:
-                            pass
-                        i = j + 1
-                        break
-            else:
-                break
-        else:
-            i += 1
-    return objects
+                            break
+
+        # Tenta limpar trailing commas
+        cleaned = re.sub(r',\s*}', '}', json_str)
+        cleaned = re.sub(r',\s*]', ']', cleaned)
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+
+    return None
 
 
 def normalize_name_key(name):
@@ -229,69 +266,11 @@ def _presplit_pages(pdf_path, pages):
     return page_buffers, total_pdf
 
 
-def _generate_full_month_range(meses_list):
-    """
-    Dado uma lista de meses no formato 'MM/AAAA', gera todos os meses
-    entre o primeiro e o último (inclusive), preenchendo lacunas.
-    """
-    if not meses_list:
-        return meses_list
-
-    parsed = []
-    for m in meses_list:
-        try:
-            dt = pd.to_datetime(m, format='%m/%Y')
-            parsed.append(dt)
-        except:
-            pass
-
-    if not parsed:
-        return meses_list
-
-    dt_min = min(parsed)
-    dt_max = max(parsed)
-
-    full_range = pd.date_range(start=dt_min, end=dt_max, freq='MS')
-    return [dt.strftime('%m/%Y') for dt in full_range]
-
-
 class PayrollExtractorAI:
-    # ── Gemini 2.5 Flash — preço USD por 1M tokens ────────────────────────
-    PRICE_IN_PER_M  = 0.30   # input
-    PRICE_OUT_PER_M = 2.50   # output (inclui thinking)
-    USD_TO_BRL      = 5.70   # taxa aproximada apenas para display
-
     def __init__(self, job=None):
         self.job    = job
         self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
         self.model_id = "gemini-2.5-flash"
-
-        # Acumuladores de tokens (thread-safe)
-        self._token_in   = 0
-        self._token_out  = 0
-        self._token_lock = Lock()
-
-    # ── Rastreia uso de tokens da resposta Gemini ────────────────────────
-    def _track_usage(self, response):
-        try:
-            meta = response.usage_metadata
-            p_in      = getattr(meta, 'prompt_token_count', 0) or 0
-            p_out     = getattr(meta, 'candidates_token_count', 0) or 0
-            p_thought = getattr(meta, 'thoughts_token_count', 0) or 0
-            with self._token_lock:
-                self._token_in  += p_in
-                self._token_out += p_out + p_thought
-        except Exception:
-            pass
-
-    # ── Log de custo em UMA linha ────────────────────────────────────────
-    def _log_cost(self):
-        cost_in   = (self._token_in  / 1_000_000) * self.PRICE_IN_PER_M
-        cost_out  = (self._token_out / 1_000_000) * self.PRICE_OUT_PER_M
-        total_usd = cost_in + cost_out
-        total_brl = total_usd * self.USD_TO_BRL
-        LOG('custo Gemini',
-            f"{self._token_in:,} in + {self._token_out:,} out = ${total_usd:.4f}  (~R$ {total_brl:.4f})")
 
     # ── Processa uma página via Gemini usando inline base64 (com retry) ──────
     def _process_single_page(self, page_bytes, p_num, prompt_type, targets=None):
@@ -304,11 +283,9 @@ class PayrollExtractorAI:
         for attempt in range(MAX_RETRIES + 1):
             try:
                 if prompt_type == "analyze":
-                    prompt = """Analise TODOS os HOLERITES desta página. Ignore o Cartão Ponto.
-Uma página pode conter MAIS DE UM holerite (contracheque). Analise TODOS eles.
-
-1. Extraia o NOME DO FUNCIONÁRIO de cada holerite (ignore empresa).
-2. Liste TODAS as VERBAS e CAMPOS DE RODAPÉ de todos os holerites, na ordem de cima para baixo.
+                    prompt = """Analise o HOLERITE. Ignore o Cartão Ponto.
+1. Extraia o NOME DO FUNCIONÁRIO (ignore empresa).
+2. Liste VERBAS e CAMPOS DE RODAPÉ na ordem de cima para baixo.
 
 REGRAS CRÍTICAS:
 - NÃO CRIE DUPLICADOS. Itens com apenas diferença de espaços ou pontos são o mesmo item.
@@ -316,21 +293,11 @@ REGRAS CRÍTICAS:
 - Não confunda 'Horas Normais' com 'Horas Normais Noturnas'.
 JSON: {"nomes": [], "itens": []}"""
                 else:
-                    prompt = f"""Ignore o Cartão Ponto. Esta página pode conter MAIS DE UM holerite (contracheque).
-Extraia os dados de CADA holerite separadamente com precisão.
-
-Se houver APENAS UM holerite na página, retorne UM objeto JSON.
-Se houver DOIS OU MAIS holerites na página, retorne um ARRAY JSON com um objeto por holerite.
-
-Formato para UM holerite:
-{{"nome": "Nome", "periodo": "MM/AAAA", "dados": [{{"campo": "Item", "ref": "Ref", "valor": "Valor"}}]}}
-
-Formato para MÚLTIPLOS holerites:
-[{{"nome": "Nome", "periodo": "MM/AAAA", "dados": [{{"campo": "Item", "ref": "Ref", "valor": "Valor"}}]}}, {{"nome": "Nome", "periodo": "MM/AAAA", "dados": [...]}}]
+                    prompt = f"""Ignore o Cartão Ponto. No Holerite, extraia os dados com precisão:
+JSON: {{"nome": "Nome", "periodo": "MM/AAAA", "dados": [{{"campo": "Item", "ref": "Ref", "valor": "Valor"}}]}}
 
 DIFERENCIAÇÃO OBRIGATÓRIA:
 - 'Horas Normais' é um item. 'Horas Normais Noturnas' é OUTRO item. Não troque os valores.
-- Cada holerite tem seu próprio período (Competência MM/AAAA). Extraia CADA UM separadamente.
 Extraia apenas: {targets}"""
 
                 response = self.client.models.generate_content(
@@ -345,9 +312,6 @@ Extraia apenas: {targets}"""
                         prompt
                     ]
                 )
-
-                # Rastreia tokens consumidos nesta chamada
-                self._track_usage(response)
 
                 result = safe_parse_json(response.text)
                 if result:
@@ -446,7 +410,6 @@ Extraia apenas: {targets}"""
         if erros:
             LOG('páginas sem retorno', str(erros), 'WARN')
         LOG_TABLE(f"FUNCIONÁRIOS DETECTADOS ({len(all_nomes)})", sorted(list(all_nomes.values())))
-        self._log_cost()
         LOG_SEP()
 
         result = {
@@ -503,16 +466,8 @@ Extraia apenas: {targets}"""
                 p_num = futures[future]
                 data  = future.result()
                 if data:
-                    # ── CORREÇÃO v3: suporte a múltiplos holerites por página ─
-                    if isinstance(data, list):
-                        # Gemini retornou array — múltiplos holerites na página
-                        all_extracted.extend(data)
-                        total_campos = sum(len(d.get('dados', [])) for d in data)
-                        LOG(f'página {p_num}', f"ok — {len(data)} holerites, {total_campos} campos")
-                    else:
-                        # Gemini retornou objeto único — um holerite na página
-                        all_extracted.append(data)
-                        LOG(f'página {p_num}', f"ok — {len(data.get('dados', []))} campos")
+                    all_extracted.append(data)
+                    LOG(f'página {p_num}', f"ok — {len(data.get('dados', []))} campos")
                 else:
                     erros.append(p_num)
                     LOG(f'página {p_num}', 'sem retorno', 'WARN')
@@ -540,8 +495,9 @@ Extraia apenas: {targets}"""
                     'Nome':  nome,
                     'Mês':   mes,
                     'Campo': clean_value(item.get('campo')),
-                    'Ref':   clean_value(item.get('ref')),
-                    'Valor': clean_value(item.get('valor')),
+                    # ─── v2.1: valores numéricos sempre em formato BR ───
+                    'Ref':   format_br_number(clean_value(item.get('ref'))),
+                    'Valor': format_br_number(clean_value(item.get('valor'))),
                 })
 
         df_full = pd.DataFrame(temp_data)
@@ -562,15 +518,10 @@ Extraia apenas: {targets}"""
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
             for nome_key, group in df_full.groupby('Nome_key'):
                 nome_display = name_map.get(nome_key, nome_key)
-
-                # ── CORREÇÃO v3: gerar range completo de meses ────────────
-                meses_existentes = sorted(
+                meses = sorted(
                     group['Mês'].unique(),
                     key=lambda x: pd.to_datetime(x, format='%m/%Y', errors='coerce')
                 )
-                meses = _generate_full_month_range(meses_existentes)
-                # ──────────────────────────────────────────────────────────
-
                 df_aba           = pd.DataFrame(index=meses, columns=multi_col).fillna('0')
                 df_aba.index.name = 'Mês'
 
@@ -578,7 +529,7 @@ Extraia apenas: {targets}"""
                     c_norm = super_norm(row['Campo'])
                     target = next((t for t in sorted_targets if super_norm(t) == c_norm), None)
                     if target:
-                        df_aba.at[row['Mês'], (target, 'Ref.')] = row['Ref']
+                        df_aba.at[row['Mês'], (target, 'Ref.')]  = row['Ref']
                         df_aba.at[row['Mês'], (target, 'Valor')] = row['Valor']
 
                 sheet_name = re.sub(r'[^a-zA-Z0-9 ]', '', str(nome_display))[:31]
@@ -595,7 +546,6 @@ Extraia apenas: {targets}"""
         if erros:
             LOG('páginas sem retorno', str(erros), 'WARN')
         LOG_TABLE(f"ABAS GERADAS — {abas} FUNCIONÁRIO(S)", nomes_abas)
-        self._log_cost()
         LOG_SEP()
 
         # pages_to_process para /api/download contabilizar
