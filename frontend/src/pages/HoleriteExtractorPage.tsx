@@ -82,7 +82,7 @@ function VerbaSelectionModal({
   onClose: () => void;
   onConfirm: (taskId: string) => void;
 }) {
-  const [selectedVerbas, setSelectedVerbas] = useState<string[]>(data.verbas || []);
+  const [selectedVerbas, setSelectedVerbas] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
 
   const toggleVerba = (verba: string) => {
