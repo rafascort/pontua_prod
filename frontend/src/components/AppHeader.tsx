@@ -1,6 +1,6 @@
 // frontend/src/components/AppHeader.tsx
 import { useNavigate, Link } from "react-router-dom";
-import { LogOut, CreditCard, ChevronDown, Headset, Settings } from "lucide-react";
+import { LogOut, CreditCard, ChevronDown, Headset, Settings, Users, Gift } from "lucide-react";
 import StatusWidget from "@/components/StatusWidget";
 import { useUserPlan } from "@/hooks/useUserPlan";
 import { useAuth } from "@/contexts/AuthContext";
@@ -139,6 +139,31 @@ const AppHeader = () => {
                   Extras cobrados no próximo ciclo de faturamento.
                 </p>
               )}
+            </div>
+
+            {/* ── NOVOS: Indicações + Promoções ────────────────────── */}
+            <div className="p-2 border-b border-border/30">
+              <Link
+                to="/indicacoes"
+                className="flex items-center gap-2.5 px-3 py-2 rounded-md hover:bg-secondary/60 transition-colors w-full"
+              >
+                <Users className="w-4 h-4 text-emerald-500" />
+                <div className="flex-1 text-left">
+                  <div className="text-sm text-foreground">Minhas Indicações</div>
+                  <div className="text-[10px] text-muted-foreground">Ganhe até 40% OFF</div>
+                </div>
+              </Link>
+
+              <Link
+                to="/promocoes"
+                className="flex items-center gap-2.5 px-3 py-2 rounded-md hover:bg-secondary/60 transition-colors w-full"
+              >
+                <Gift className="w-4 h-4 text-indigo-500" />
+                <div className="flex-1 text-left">
+                  <div className="text-sm text-foreground">Descontos e Promoções</div>
+                  <div className="text-[10px] text-muted-foreground">Ofertas ativas agora</div>
+                </div>
+              </Link>
             </div>
 
             {/* Ações */}

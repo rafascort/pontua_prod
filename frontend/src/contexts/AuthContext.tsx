@@ -23,6 +23,8 @@ interface UserData {
   page_count: number;
   plan_status: string;
   stripe_customer_id: string | null;
+  referral_code: string | null;        
+  discount_credits: number;              
 }
 
 interface AuthContextType {
@@ -30,7 +32,7 @@ interface AuthContextType {
   isAuthenticated: boolean;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string) => Promise<string>;
+  register: (email: string, password: string, refCode?: string | null) => Promise<string>;
   logout: () => void;
   refreshUser: () => Promise<void>;
 }
@@ -105,8 +107,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await refreshUser();
   };
 
-  const register = async (email: string, password: string) => {
-    const result = await api.register(email, password);
+  const register = async (email: string, password: string, refCode?: string | null) => {
+    const result = await api.register(email, password, refCode);
     return result.msg;
   };
 

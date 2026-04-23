@@ -1,7 +1,10 @@
+// frontend/src/pages/ServiceSelectionPage.tsx
 import { motion } from "framer-motion";
-import { FileText, Receipt, ArrowRight } from "lucide-react";
+import { FileText, Receipt, ArrowRight, Gift } from "lucide-react";
 import { Link } from "react-router-dom";
 import AppHeader from "@/components/AppHeader";
+import WeeklyCampaignModal from "@/components/WeeklyCampaignModal";
+import { useWeeklyCampaign } from "@/hooks/useWeeklyCampaign";
 
 const services = [
   {
@@ -23,6 +26,9 @@ const services = [
 ];
 
 const ServiceSelectionPage = () => {
+  // Controla o modal semanal (1x por semana via localStorage)
+  const { shouldShow, dismiss, forceShow } = useWeeklyCampaign();
+
   return (
     <div className="min-h-screen gradient-bg flex flex-col">
       <AppHeader />
@@ -62,8 +68,22 @@ const ServiceSelectionPage = () => {
               </Link>
             ))}
           </div>
+
+          {/* Link discreto para reabrir o modal de campanhas */}
+          <div className="mt-10 text-center">
+            <button
+              onClick={forceShow}
+              className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <Gift className="w-3.5 h-3.5" />
+              Ver campanhas ativas
+            </button>
+          </div>
         </div>
       </main>
+
+      {/* Modal semanal — aparece 1x por semana automaticamente */}
+      <WeeklyCampaignModal open={shouldShow} onClose={dismiss} />
     </div>
   );
 };

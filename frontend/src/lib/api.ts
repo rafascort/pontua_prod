@@ -58,12 +58,18 @@ class ApiClient {
     return data;
   }
 
-  async register(email: string, password: string): Promise<{ msg: string }> {
-    return this.request("/api/register", {
-      method: "POST",
-      body: JSON.stringify({ email, password }),
-    });
-  }
+async register(email: string, password: string, refCode?: string | null, name?: string) {
+  const res = await fetch(`${API_BASE_URL}/api/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email,
+      password,
+      name,
+      ...(refCode ? { ref_code: refCode } : {}),
+    }),
+  });
+}
 
   // User
   async getUserDetails(): Promise<{

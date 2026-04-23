@@ -8,13 +8,15 @@ import ProtectedRoute from "@/components/ProtectedRoute";
 import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
 import CadastroPage from "./pages/CadastroPage";
-import EmailVerificationPage from "./pages/EmailVerificationPage"; // ← NOVO
+import EmailVerificationPage from "./pages/EmailVerificationPage";
 import ServiceSelectionPage from "./pages/ServiceSelectionPage";
 import PontoExtractorPage from "./pages/PontoExtractorPage";
 import HoleriteExtractorPage from "./pages/HoleriteExtractorPage";
 import PaymentSuccessPage from "./pages/PaymentSuccessPage";
 import TermosPage from "./pages/TermosPage";
 import AdminPage from "./pages/AdminPage";
+import MinhasIndicacoes from "./pages/MinhasIndicacoes";     // ← NOVO
+import PromocoesPage from "./pages/PromocoesPage";            // ← NOVO
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -45,6 +47,12 @@ const App = () => (
               element={<ProtectedRoute><PontoExtractorPage /></ProtectedRoute>} />
             <Route path="/app/holerite"
               element={<ProtectedRoute><HoleriteExtractorPage /></ProtectedRoute>} />
+
+            {/* ── NOVAS: Indicações e Promoções ─────────────────────── */}
+            <Route path="/indicacoes"
+              element={<ProtectedRoute><MinhasIndicacoes /></ProtectedRoute>} />
+            <Route path="/promocoes"
+              element={<ProtectedRoute><PromocoesPage /></ProtectedRoute>} />
 
             {/* Stripe: após pagamento bem-sucedido */}
             <Route path="/payment-success"

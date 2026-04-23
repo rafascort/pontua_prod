@@ -1,15 +1,23 @@
 // frontend/src/pages/CadastroPage.tsx
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { motion, AnimatePresence } from "framer-motion";
-import { Mail, Lock, Sparkles, UserPlus, ArrowLeft, MessageCircle, CheckCircle, RefreshCw } from "lucide-react";
+import { motion } from "framer-motion";
+import { Mail, Lock, Sparkles, UserPlus, ArrowLeft, MessageCircle, CheckCircle, RefreshCw, Users } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
+import {
+  useReferralCapture,
+  getStoredReferralCode,
+  clearStoredReferralCode,
+} from "@/hooks/useReferralCapture";
 
 const WHATSAPP_URL =
   "https://wa.me/5554999427282?text=Olá! Tenho dúvidas sobre o Sistema Ponto.";
 
 const CadastroPage = () => {
+  // Captura ?ref=CODIGO da URL se presente
+  useReferralCapture();
+
   const [email,           setEmail]           = useState("");
   const [password,        setPassword]        = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -17,6 +25,7 @@ const CadastroPage = () => {
   const [emailSent,       setEmailSent]       = useState(false);        // estado pós-cadastro
   const [resending,       setResending]       = useState(false);
   const [resendCooldown,  setResendCooldown]  = useState(0);            // segundos restantes
+  const [refCode] = useState<string | null>(() => getStoredReferralCode());
   const { register } = useAuth();
 
   const handleCadastro = async (e: React.FormEvent) => {
@@ -25,7 +34,8 @@ const CadastroPage = () => {
     if (password.length < 6) { toast.error("A senha deve ter pelo menos 6 caracteres."); return; }
     setIsLoading(true);
     try {
-      await register(email, password);
+      await register(email, password, refCode);
+      clearStoredReferralCode();
       // Não faz mais auto-login — aguarda confirmação de email
       setEmailSent(true);
     } catch (err: unknown) {
@@ -160,6 +170,17 @@ const CadastroPage = () => {
             <span className="text-sm text-success font-medium">Ganhe 50 páginas grátis!</span>
           </div>
         </div>
+
+        {/* Banner de indicação — só aparece se tiver ?ref=CODIGO na URL */}
+        {refCode && (
+          <div className="mb-5 px-4 py-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+            <p className="text-xs text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
+              <Users className="w-3.5 h-3.5" />
+              Você foi convidado! Indicação{" "}
+              <strong className="font-mono">{refCode.slice(0, 3)}***</strong>
+            </p>
+          </div>
+        )}
 
         <form onSubmit={handleCadastro} className="flex flex-col gap-4">
           <div>
