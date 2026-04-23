@@ -1,3 +1,4 @@
+// frontend/src/lib/api.ts
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
 class ApiClient {
@@ -58,18 +59,22 @@ class ApiClient {
     return data;
   }
 
-async register(email: string, password: string, refCode?: string | null, name?: string) {
-  const res = await fetch(`${API_BASE_URL}/api/register`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      email,
-      password,
-      name,
-      ...(refCode ? { ref_code: refCode } : {}),
-    }),
-  });
-}
+  async register(
+    email: string,
+    password: string,
+    refCode?: string | null,
+    name?: string,
+  ): Promise<{ msg: string }> {
+    return this.request("/api/register", {
+      method: "POST",
+      body: JSON.stringify({
+        email,
+        password,
+        ...(name ? { name } : {}),
+        ...(refCode ? { ref_code: refCode } : {}),
+      }),
+    });
+  }
 
   // User
   async getUserDetails(): Promise<{
@@ -80,6 +85,8 @@ async register(email: string, password: string, refCode?: string | null, name?: 
     page_count: number;
     plan_status: string;
     stripe_customer_id: string | null;
+    referral_code: string | null;
+    discount_credits: number;
   }> {
     return this.request("/api/user/me");
   }
