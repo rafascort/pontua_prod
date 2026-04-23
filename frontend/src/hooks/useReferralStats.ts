@@ -1,7 +1,8 @@
 // frontend/src/hooks/useReferralStats.ts
 //
 // Busca as estatísticas de indicação do usuário logado.
-// Usa endpoints /api/referral/stats e /api/referral/history.
+// v2: inclui referred_by_code + email mascarado do indicador + can_change_referrer
+// v2: exporta função applyReferralCode() para o endpoint retroativo
 
 import { useState, useEffect, useCallback } from "react";
 
@@ -15,6 +16,10 @@ export interface ReferralStats {
   next_month_discount_pct: number;
   max_monthly_discount_pct: number;
   pct_per_conversion: number;
+  // ── v2: quem indicou o usuário atual ──
+  referred_by_code: string | null;
+  referred_by_email_masked: string | null;
+  can_change_referrer: boolean;
 }
 
 export interface ReferralHistoryItem {
@@ -90,4 +95,40 @@ export function useReferralHistory() {
   }, [fetchHistory]);
 
   return { items, isLoading, refetch: fetchHistory };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v2: Aplicar código de indicação retroativamente
+// ═══════════════════════════════════════════════════════════════════════════
+
+export interface ApplyCodeResult {
+  ok: boolean;
+  msg: string;
+  referred_by_code?: string;
+  referred_by_email_masked?: string;
+  error_code?: string;
+}
+
+export async function applyReferralCode(code: string): Promise<ApplyCodeResult> {
+  const token = getToken();
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/referral/apply-code`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ code: code.trim().toUpperCase() }),
+    });
+    const data = await res.json();
+    return {
+      ok: res.ok,
+      msg: data.msg || (res.ok ? "OK" : "Erro ao aplicar código"),
+      referred_by_code: data.referred_by_code,
+      referred_by_email_masked: data.referred_by_email_masked,
+      error_code: data.error_code,
+    };
+  } catch {
+    return { ok: false, msg: "Erro de rede. Tente novamente." };
+  }
 }

@@ -114,8 +114,24 @@ class User(db.Model):
     email_verified = db.Column(db.Boolean, default=False, nullable=False, server_default='true')
     email_verification_token = db.Column(db.String(128), nullable=True)
     email_verification_sent_at = db.Column(db.DateTime, nullable=True)
-
+# ── Sistema de indicações ────────────────────────────────────────
+    referral_code = db.Column(db.String(20), nullable=True, unique=True)
+    referred_by_code = db.Column(db.String(20), nullable=True)
+    discount_credits = db.Column(db.Integer, nullable=False, default=0, server_default='0')
 # --- Funções Auxiliares JWT e Decorators ---
+
+# ── Módulos de indicação e promoções ────────────────────────────────
+from referral_service import (
+    init_referral_routes,
+    ensure_user_has_referral_code,
+    process_referral_on_signup,
+    on_subscription_created,
+    on_invoice_paid_consume_credits,
+)
+from promotions_service import init_promotions_routes
+
+Referral = init_referral_routes(app, db, User)
+Promotion, PromotionMetric = init_promotions_routes(app, db, User)
 
 @jwt.additional_claims_loader
 def add_claims_to_access_token(identity):
@@ -185,6 +201,7 @@ def register():
     email = request.json.get('email', None)
     password = request.json.get('password', None)
     name = request.json.get('name', None)
+    ref_code = request.json.get('ref_code', None)
     if not email or not password:
         return jsonify({"msg": "Email e senha são obrigatórios"}), 400
     if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
@@ -210,6 +227,10 @@ def register():
     db.session.add(new_user)
     try:
         db.session.commit()
+        ensure_user_has_referral_code(new_user)
+        if ref_code:
+            process_referral_on_signup(new_user, ref_code)
+
         sent = send_verification_email(email, token)
         return jsonify({
             "msg":        "Conta criada! Verifique seu email para ativar.",
@@ -264,6 +285,10 @@ def get_user_details():
     user = User.query.filter_by(email=current_user_email).first()
     if not user:
         return jsonify({"msg": "Usuário não encontrado"}), 404
+
+    # Garante que o usuário tenha um código de indicação (gera se não tiver)
+    ensure_user_has_referral_code(user)
+
     claims = get_jwt()
     return jsonify(
         id=user.id,
@@ -272,7 +297,9 @@ def get_user_details():
         is_active=claims.get('is_active', False),
         page_count=user.page_count,
         plan_status=claims.get('plan_status', 'free'),
-        stripe_customer_id=user.stripe_customer_id
+        stripe_customer_id=user.stripe_customer_id,
+        referral_code=user.referral_code,
+        discount_credits=user.discount_credits or 0,
     ), 200
 
 @app.route('/api/user/password', methods=['PUT'])
@@ -803,9 +830,23 @@ def handle_checkout_session_completed(session):
         try: db.session.commit()
         except Exception as e: db.session.rollback(); print(f"Erro ao salvar customer_id: {e}")
     if subscription_id:
-        try: subscription = stripe.Subscription.retrieve(subscription_id); update_user_plan_from_subscription(user, subscription); sync_user_billing_cycle(user.email)
-        except stripe.StripeError as e: print(f"Erro ao buscar sub {subscription_id}: {e}") # Correção aqui
-    else: print(f"AVISO checkout.comp: Sem subscription_id.")
+        try:
+            subscription = stripe.Subscription.retrieve(subscription_id)
+            update_user_plan_from_subscription(user, subscription)
+            sync_user_billing_cycle(user.email)
+
+            # ── Sistema de indicações: marca conversão ────────────
+            try:
+                on_subscription_created(user, subscription)
+            except Exception as e:
+                print(f"[REFERRAL] Erro no hook on_subscription_created: {e}")
+                traceback.print_exc()
+
+        except stripe.StripeError as e:
+            print(f"Erro ao buscar sub {subscription_id}: {e}")
+    else:
+        print(f"AVISO checkout.comp: Sem subscription_id.")    
+
 
 # --- FUNÇÃO ATUALIZADA ---
 
@@ -817,7 +858,7 @@ def handle_invoice_payment_succeeded(invoice):
     if not user: return
     
     print(f"Webhook: Pagamento OK - User: {user.email}, Razão: {billing_reason}")
-    
+
     if subscription_id and billing_reason == 'subscription_cycle':
         try:
             print(f"Webhook: Zerando contagem para {user.email} (era {user.page_count}).")
@@ -827,6 +868,14 @@ def handle_invoice_payment_succeeded(invoice):
             # ----------------------------------
             subscription = stripe.Subscription.retrieve(subscription_id)
             update_user_plan_from_subscription(user, subscription)
+
+            # ── Sistema de indicações: consome créditos + re-aplica cupom ──
+            try:
+                on_invoice_paid_consume_credits(user, invoice)
+            except Exception as e:
+                print(f"[REFERRAL] Erro no hook on_invoice_paid_consume_credits: {e}")
+                traceback.print_exc()
+
         except stripe.StripeError as e:
             print(f"Erro Stripe zerando contagem {subscription_id}: {e}")
             db.session.rollback()
@@ -834,7 +883,6 @@ def handle_invoice_payment_succeeded(invoice):
             print(f"Erro zerando contagem {user.email}: {e}")
             traceback.print_exc()
             db.session.rollback()
-            
     elif subscription_id and billing_reason in ['subscription_create', 'subscription_update']:
         try:
             subscription = stripe.Subscription.retrieve(subscription_id)

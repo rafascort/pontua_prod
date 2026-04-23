@@ -1,7 +1,7 @@
 // frontend/src/pages/MinhasIndicacoes.tsx
 //
 // Página /indicacoes — visão completa das indicações feitas pelo usuário.
-// Reutiliza ReferralCard (variant full) + tabela de histórico.
+// v2: inclui card para aplicar código retroativamente (se aplicável)
 
 import { motion } from "framer-motion";
 import {
@@ -10,6 +10,7 @@ import {
 import { Link } from "react-router-dom";
 import AppHeader from "@/components/AppHeader";
 import ReferralCard from "@/components/ReferralCard";
+import ApplyReferralCode from "@/components/ApplyReferralCode";
 import { useReferralHistory } from "@/hooks/useReferralStats";
 
 const MinhasIndicacoes = () => {
@@ -70,9 +71,19 @@ const MinhasIndicacoes = () => {
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
-          className="mb-8"
+          className="mb-4"
         >
           <ReferralCard variant="full" />
+        </motion.div>
+
+        {/* ── v2: Aplicar código retroativamente ─────────────── */}
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.15 }}
+          className="mb-8"
+        >
+          <ApplyReferralCode />
         </motion.div>
 
         {/* Histórico */}
@@ -92,29 +103,32 @@ const MinhasIndicacoes = () => {
               </div>
             ) : items.length === 0 ? (
               <div className="p-10 text-center">
-                <Users className="w-8 h-8 text-muted-foreground/50 mx-auto mb-3" />
+                <Users className="w-10 h-10 text-muted-foreground/40 mx-auto mb-3" />
                 <p className="text-sm text-muted-foreground">
-                  Você ainda não indicou ninguém. Compartilhe seu link acima para começar.
+                  Você ainda não indicou ninguém.
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Use o link de indicação acima para começar.
                 </p>
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b border-border/50">
-                      <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        Indicado
+                    <tr className="border-b border-border/50 bg-muted/20">
+                      <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">
+                        Email indicado
                       </th>
-                      <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                      <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">
                         Status
                       </th>
-                      <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                      <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">
                         Plano
                       </th>
-                      <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        Cadastro
+                      <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">
+                        Data
                       </th>
-                      <th className="text-right px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                      <th className="text-right px-4 py-3 text-xs font-medium text-muted-foreground uppercase">
                         Desconto
                       </th>
                     </tr>
@@ -123,15 +137,15 @@ const MinhasIndicacoes = () => {
                     {items.map((item) => (
                       <tr
                         key={item.id}
-                        className="border-b border-border/30 last:border-0 hover:bg-muted/20 transition"
+                        className="border-b border-border/30 last:border-0 hover:bg-muted/20"
                       >
-                        <td className="px-4 py-3 font-mono text-xs text-foreground">
+                        <td className="px-4 py-3 text-foreground text-xs font-mono">
                           {item.referred_email_masked}
                         </td>
                         <td className="px-4 py-3">
                           <StatusBadge status={item.status} />
                         </td>
-                        <td className="px-4 py-3 text-muted-foreground">
+                        <td className="px-4 py-3 text-muted-foreground text-xs">
                           {item.plan ? (planLabel[item.plan] ?? item.plan) : "—"}
                         </td>
                         <td className="px-4 py-3 text-muted-foreground">
