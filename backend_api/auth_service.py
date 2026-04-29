@@ -133,6 +133,10 @@ from promotions_service import init_promotions_routes
 Referral = init_referral_routes(app, db, User)
 Promotion, PromotionMetric = init_promotions_routes(app, db, User)
 
+from announcements_service import init_announcements_routes
+
+Announcement, AnnouncementAck = init_announcements_routes(app, db, User)
+
 @jwt.additional_claims_loader
 def add_claims_to_access_token(identity):
     user = User.query.filter_by(email=identity).first()

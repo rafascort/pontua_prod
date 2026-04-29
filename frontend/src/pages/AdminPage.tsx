@@ -13,12 +13,13 @@ import {
   Edit3, ChevronUp, ChevronDown, ChevronsUpDown, ChevronLeft,
   ChevronRight, Shield, LogOut, LayoutDashboard, X, Check,
   AlertTriangle, RotateCcw, UserCheck, UserX, Loader2,
-  Gift, UserPlus,
+  Gift, UserPlus, Megaphone,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import AdminReferralsTab from "@/components/admin/AdminReferralsTab";
 import AdminPromotionsTab from "@/components/admin/AdminPromotionsTab";
+import AdminAnnouncementsTab from "@/components/admin/AdminAnnouncementsTab";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -543,7 +544,7 @@ function UsersManagementSection({ authUserEmail }: { authUserEmail: string | und
 }
 
 /* ═══════════════════ Main AdminPage (com abas) ═══════════════════ */
-type AdminTab = "users" | "referrals" | "promotions";
+type AdminTab = "users" | "referrals" | "promotions" | "announcements";
 
 export default function AdminPage() {
   const navigate = useNavigate();
@@ -600,6 +601,13 @@ export default function AdminPage() {
             icon={<Gift className="w-4 h-4" />}
           >
             Promoções
+	  </TabButton>
+          <TabButton
+            active={activeTab === "announcements"}
+            onClick={() => setActiveTab("announcements")}
+            icon={<Megaphone className="w-4 h-4" />}
+          >
+            Avisos
           </TabButton>
         </div>
 
@@ -607,6 +615,7 @@ export default function AdminPage() {
         {activeTab === "users"      && <UsersManagementSection authUserEmail={authUser?.email} />}
         {activeTab === "referrals"  && <AdminReferralsTab />}
         {activeTab === "promotions" && <AdminPromotionsTab />}
+	{activeTab === "announcements"  && <AdminAnnouncementsTab />}
       </main>
     </div>
   );
