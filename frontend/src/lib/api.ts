@@ -1,4 +1,7 @@
 // frontend/src/lib/api.ts
+//
+// Cliente API com interceptor para 503 (manutenção) que redireciona pra /maintenance.
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
 class ApiClient {
@@ -19,7 +22,6 @@ class ApiClient {
       headers["Authorization"] = `Bearer ${token}`;
     }
 
-    // Only set Content-Type for non-FormData requests
     if (!(options.body instanceof FormData)) {
       headers["Content-Type"] = "application/json";
     }
@@ -35,12 +37,32 @@ class ApiClient {
       throw new Error("Sessão expirada. Faça login novamente.");
     }
 
+    // ── INTERCEPTOR DE MANUTENÇÃO ─────────────────────────────────
+    // Se backend retornou 503 com flag maintenance, redireciona usuário
+    // para a tela de bloqueio.
+    if (response.status === 503) {
+      try {
+        const errorData = await response.clone().json().catch(() => ({}));
+        if (errorData.maintenance) {
+          // Só redireciona se não estiver já na rota de manutenção
+          if (window.location.pathname !== "/manutencao") {
+            window.location.href = "/manutencao";
+          }
+          throw new Error("Sistema em manutenção.");
+        }
+      } catch (e) {
+        if (e instanceof Error && e.message === "Sistema em manutenção.") {
+          throw e;
+        }
+        // Continua para tratamento normal de erro abaixo
+      }
+    }
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({ msg: "Erro desconhecido" }));
       throw new Error(errorData.msg || `Erro ${response.status}`);
     }
 
-    // Handle file downloads
     const contentType = response.headers.get("content-type");
     if (contentType && !contentType.includes("application/json")) {
       return response.blob() as unknown as T;
@@ -76,7 +98,6 @@ class ApiClient {
     });
   }
 
-  // User
   async getUserDetails(): Promise<{
     id: number;
     email: string;
@@ -91,7 +112,6 @@ class ApiClient {
     return this.request("/api/user/me");
   }
 
-  // Processing
   async processDirectPDF(file: File, pages: string): Promise<{ task_id: string }> {
     const formData = new FormData();
     formData.append("pdf_file", file);
@@ -106,7 +126,6 @@ class ApiClient {
     return this.request<Blob>(`/api/download/${taskId}`);
   }
 
-  // Stripe checkout
   async createCheckoutSession(priceId: string): Promise<{ url: string }> {
     return this.request("/api/create-checkout-session", {
       method: "POST",
@@ -114,7 +133,6 @@ class ApiClient {
     });
   }
 
-  // Admin
   async getAdminUsers(): Promise<Array<{
     id: number;
     email: string;

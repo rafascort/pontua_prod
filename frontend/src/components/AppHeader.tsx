@@ -2,6 +2,7 @@
 import { useNavigate, Link } from "react-router-dom";
 import { LogOut, CreditCard, ChevronDown, Headset, Settings, Users, Gift } from "lucide-react";
 import AnnouncementBlockingModal from "@/components/AnnouncementBlockingModal";
+import AdminMaintenanceBanner from "@/components/AdminMaintenanceBanner";
 import StatusWidget from "@/components/StatusWidget";
 import { useUserPlan } from "@/hooks/useUserPlan";
 import { useAuth } from "@/contexts/AuthContext";
@@ -120,7 +121,6 @@ const AppHeader = () => {
                   </span>
                 </div>
 
-                {/* Extras — só para planos pagos, com tom neutro */}
                 {hasExtras && isPaidPlan && (
                   <div className="flex items-center justify-between">
                     <span className="text-xs text-muted-foreground">Páginas extras</span>
@@ -130,7 +130,6 @@ const AppHeader = () => {
                   </div>
                 )}
 
-                {/* Aviso suave quando limite atingido em plano pago */}
                 {isPaidPlan && plan.pageBalance <= 0 && !hasExtras && (
                   <p className="text-[10px] text-amber-400 pt-1">
                     Limite incluído atingido. Próximas páginas serão cobradas à parte.
@@ -143,7 +142,7 @@ const AppHeader = () => {
                 )}
               </div>
 
-              {/* ── Indicações + Promoções ───────────────────────────── */}
+              {/* Indicações + Promoções */}
               <div className="p-2 border-b border-border/30">
                 <Link
                   to="/indicacoes"
@@ -212,7 +211,10 @@ const AppHeader = () => {
         </div>
       </header>
 
-      {/* Modal bloqueante de avisos — aparece após login com avisos pendentes */}
+      {/* Banner amarelo para admin durante manutenção */}
+      <AdminMaintenanceBanner />
+
+      {/* Modal bloqueante de avisos */}
       <AnnouncementBlockingModal />
     </>
   );

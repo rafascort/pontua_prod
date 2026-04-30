@@ -13,13 +13,14 @@ import {
   Edit3, ChevronUp, ChevronDown, ChevronsUpDown, ChevronLeft,
   ChevronRight, Shield, LogOut, LayoutDashboard, X, Check,
   AlertTriangle, RotateCcw, UserCheck, UserX, Loader2,
-  Gift, UserPlus, Megaphone,
+  Gift, UserPlus, Megaphone, Wrench,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import AdminReferralsTab from "@/components/admin/AdminReferralsTab";
 import AdminPromotionsTab from "@/components/admin/AdminPromotionsTab";
 import AdminAnnouncementsTab from "@/components/admin/AdminAnnouncementsTab";
+import AdminMaintenanceTab from "@/components/admin/AdminMaintenanceTab";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -316,12 +317,16 @@ function UsersManagementSection({ authUserEmail }: { authUserEmail: string | und
     setIsLoading(true);
     try {
       const params = new URLSearchParams({
-        page: String(page), per_page: "10", sort_by: sortField, sort_order: sortOrder,
+        page: String(page), per_page: "50", sort_by: sortField, sort_order: sortOrder,
         ...(search && { search }), ...(filterPlan !== "all" && { plan_status: filterPlan }),
       });
       const res = await adminFetch(`/api/admin/users?${params}`);
       const data: UsersResponse = await res.json();
-      if (res.ok) { setUsers(data.users || []); setTotal(data.total || 0); setTotalPages(data.pages || 1); }
+      if (res.ok) {
+        setUsers(data.users || []);
+        setTotal(data.total_users ?? data.total ?? 0);
+        setTotalPages(data.total_pages ?? data.pages ?? 1);
+      }
       else toast.error("Erro ao carregar usuários.");
     } catch { toast.error("Erro de rede."); }
     finally { setIsLoading(false); }
@@ -544,7 +549,7 @@ function UsersManagementSection({ authUserEmail }: { authUserEmail: string | und
 }
 
 /* ═══════════════════ Main AdminPage (com abas) ═══════════════════ */
-type AdminTab = "users" | "referrals" | "promotions" | "announcements";
+type AdminTab = "users" | "referrals" | "promotions" | "announcements" | "maintenance";
 
 export default function AdminPage() {
   const navigate = useNavigate();
@@ -609,6 +614,13 @@ export default function AdminPage() {
           >
             Avisos
           </TabButton>
+	   <TabButton
+            active={activeTab === "maintenance"}
+            onClick={() => setActiveTab("maintenance")}
+            icon={<Wrench className="w-4 h-4" />}
+          >
+            Manutenções
+          </TabButton>
         </div>
 
         {/* ═══ Conteúdo da aba ativa ═══ */}
@@ -616,6 +628,7 @@ export default function AdminPage() {
         {activeTab === "referrals"  && <AdminReferralsTab />}
         {activeTab === "promotions" && <AdminPromotionsTab />}
 	{activeTab === "announcements"  && <AdminAnnouncementsTab />}
+	{activeTab === "maintenance"   && <AdminMaintenanceTab />}
       </main>
     </div>
   );

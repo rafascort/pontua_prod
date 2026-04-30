@@ -129,13 +129,13 @@ from referral_service import (
     on_invoice_paid_consume_credits,
 )
 from promotions_service import init_promotions_routes
+from announcements_service import init_announcements_routes
+from maintenance_service import init_maintenance_routes
 
 Referral = init_referral_routes(app, db, User)
 Promotion, PromotionMetric = init_promotions_routes(app, db, User)
-
-from announcements_service import init_announcements_routes
-
 Announcement, AnnouncementAck = init_announcements_routes(app, db, User)
+MaintenanceWindow = init_maintenance_routes(app, db, User, Announcement=Announcement)
 
 @jwt.additional_claims_loader
 def add_claims_to_access_token(identity):

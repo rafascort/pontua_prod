@@ -5,6 +5,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider } from "@/contexts/AuthContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
+import MaintenanceGuard from "@/components/MaintenanceGuard";
 import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
 import CadastroPage from "./pages/CadastroPage";
@@ -15,8 +16,9 @@ import HoleriteExtractorPage from "./pages/HoleriteExtractorPage";
 import PaymentSuccessPage from "./pages/PaymentSuccessPage";
 import TermosPage from "./pages/TermosPage";
 import AdminPage from "./pages/AdminPage";
-import MinhasIndicacoes from "./pages/MinhasIndicacoes";     // ← NOVO
-import PromocoesPage from "./pages/PromocoesPage";            // ← NOVO
+import MinhasIndicacoes from "./pages/MinhasIndicacoes";
+import PromocoesPage from "./pages/PromocoesPage";
+import MaintenancePage from "./pages/MaintenancePage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -34,31 +36,69 @@ const App = () => (
             <Route path="/cadastro"  element={<CadastroPage />} />
             <Route path="/termos"    element={<TermosPage />} />
 
+            {/* Tela de manutenção (pública) */}
+            <Route path="/manutencao" element={<MaintenancePage />} />
+
             {/* Verificação de email — chamada pelo link no email */}
             <Route path="/verificar-email" element={<EmailVerificationPage />} />
 
             {/* Stripe: /planos redireciona para a landing com pricing */}
             <Route path="/planos" element={<LandingPage scrollToPricing />} />
 
-            {/* Protegidas */}
+            {/* Protegidas — bloqueadas durante manutenção (exceto admin) */}
             <Route path="/app"
-              element={<ProtectedRoute><ServiceSelectionPage /></ProtectedRoute>} />
+              element={
+                <ProtectedRoute>
+                  <MaintenanceGuard>
+                    <ServiceSelectionPage />
+                  </MaintenanceGuard>
+                </ProtectedRoute>
+              }
+            />
             <Route path="/app/ponto"
-              element={<ProtectedRoute><PontoExtractorPage /></ProtectedRoute>} />
+              element={
+                <ProtectedRoute>
+                  <MaintenanceGuard>
+                    <PontoExtractorPage />
+                  </MaintenanceGuard>
+                </ProtectedRoute>
+              }
+            />
             <Route path="/app/holerite"
-              element={<ProtectedRoute><HoleriteExtractorPage /></ProtectedRoute>} />
+              element={
+                <ProtectedRoute>
+                  <MaintenanceGuard>
+                    <HoleriteExtractorPage />
+                  </MaintenanceGuard>
+                </ProtectedRoute>
+              }
+            />
 
-            {/* ── NOVAS: Indicações e Promoções ─────────────────────── */}
+            {/* Indicações e Promoções — também bloqueadas */}
             <Route path="/indicacoes"
-              element={<ProtectedRoute><MinhasIndicacoes /></ProtectedRoute>} />
+              element={
+                <ProtectedRoute>
+                  <MaintenanceGuard>
+                    <MinhasIndicacoes />
+                  </MaintenanceGuard>
+                </ProtectedRoute>
+              }
+            />
             <Route path="/promocoes"
-              element={<ProtectedRoute><PromocoesPage /></ProtectedRoute>} />
+              element={
+                <ProtectedRoute>
+                  <MaintenanceGuard>
+                    <PromocoesPage />
+                  </MaintenanceGuard>
+                </ProtectedRoute>
+              }
+            />
 
-            {/* Stripe: após pagamento bem-sucedido */}
+            {/* Stripe: após pagamento bem-sucedido (não bloqueia) */}
             <Route path="/payment-success"
               element={<ProtectedRoute><PaymentSuccessPage /></ProtectedRoute>} />
 
-            {/* Admin */}
+            {/* Admin — NÃO usa MaintenanceGuard (admin sempre acessa) */}
             <Route path="/admin" element={<AdminPage />} />
 
             {/* 404 */}
