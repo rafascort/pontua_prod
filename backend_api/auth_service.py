@@ -120,6 +120,10 @@ class User(db.Model):
     discount_credits = db.Column(db.Integer, nullable=False, default=0, server_default='0')
 # --- Funções Auxiliares JWT e Decorators ---
 
+# ── Reset de senha ──────────────────────────────────────────────
+    password_reset_token   = db.Column(db.String(128), nullable=True, index=True)
+    password_reset_sent_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
 # ── Módulos de indicação e promoções ────────────────────────────────
 from referral_service import (
     init_referral_routes,
@@ -1083,5 +1087,297 @@ def resend_verification():
         db.session.rollback()
         print(f"[EMAIL] Erro ao reenviar para {email}: {e}")
         return jsonify({"msg": "Erro ao reenviar email. Tente novamente."}), 500
- 
+
+
+# ════════════════════════════════════════════════════════════════════
+#                     RESET DE SENHA (Forgot Password)
+# ════════════════════════════════════════════════════════════════════
+
+def send_password_reset_email(user_email: str, token: str) -> bool:
+    smtp_host     = os.getenv("SMTP_HOST")
+    smtp_port     = int(os.getenv("SMTP_PORT", "465"))
+    smtp_user     = os.getenv("SMTP_USER")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    from_name     = os.getenv("SMTP_FROM_NAME", "Sistema Ponto")
+    frontend_url  = os.getenv("FRONTEND_URL", "https://sistemaponto.com")
+
+    if not all([smtp_host, smtp_user, smtp_password]):
+        print("[EMAIL] ERRO: variáveis SMTP não configuradas no .env")
+        return False
+
+    reset_url = f"{frontend_url}/redefinir-senha?token={token}"
+
+    html_body = f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#0d1117;font-family:-apple-system,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0d1117;padding:40px 20px;">
+    <tr><td align="center">
+      <table width="560" cellpadding="0" cellspacing="0"
+             style="background:#161b22;border-radius:12px;border:1px solid #30363d;max-width:560px;width:100%;">
+        <tr><td style="background:linear-gradient(135deg,#1a3a5c,#0d2137);padding:32px 40px;text-align:center;">
+          <h1 style="margin:0;color:#4a9eff;font-size:22px;font-weight:700;">Sistema Ponto</h1>
+          <p style="margin:8px 0 0;color:#8b9dc3;font-size:13px;">Redefinição de senha</p>
+        </td></tr>
+        <tr><td style="padding:40px;">
+          <h2 style="margin:0 0 16px;color:#e6edf3;font-size:20px;">Solicitação de redefinição de senha</h2>
+          <p style="margin:0 0 8px;color:#8b949e;font-size:15px;line-height:1.6;">
+            Recebemos uma solicitação para redefinir a senha da sua conta.
+            Clique no botão abaixo para criar uma nova senha.
+          </p>
+          <p style="margin:0 0 32px;color:#6e7681;font-size:13px;">
+            Este link expira em <strong style="color:#8b949e;">1 hora</strong> e só pode ser usado uma vez.
+          </p>
+          <table width="100%" cellpadding="0" cellspacing="0">
+            <tr><td align="center" style="padding:0 0 32px;">
+              <a href="{reset_url}"
+                 style="display:inline-block;background:linear-gradient(135deg,#1a6bd6,#4a9eff);
+                        color:#fff;text-decoration:none;font-weight:700;font-size:15px;
+                        padding:14px 40px;border-radius:8px;">
+                🔑 &nbsp; Redefinir minha senha
+              </a>
+            </td></tr>
+          </table>
+          <div style="background:#0d1117;border-radius:8px;padding:16px;border:1px solid #30363d;">
+            <p style="margin:0 0 8px;color:#6e7681;font-size:12px;">Ou copie este link no navegador:</p>
+            <p style="margin:0;color:#4a9eff;font-size:12px;word-break:break-all;">{reset_url}</p>
+          </div>
+          <div style="margin-top:24px;padding:16px;background:#1c1410;border-radius:8px;border:1px solid #5a3a1f;">
+            <p style="margin:0;color:#d4924a;font-size:13px;line-height:1.5;">
+              ⚠️ <strong>Não foi você?</strong> Ignore este email — sua senha permanecerá a mesma.
+              Ninguém pode redefinir sua senha sem acesso à sua caixa de entrada.
+            </p>
+          </div>
+        </td></tr>
+        <tr><td style="padding:24px 40px;border-top:1px solid #21262d;text-align:center;">
+          <p style="margin:0;color:#6e7681;font-size:12px;">
+            Sistema Ponto · sistemaponto.com<br>
+            Email automático, não responda.
+          </p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+
+    text_body = f"""Redefinição de senha — Sistema Ponto
+
+Recebemos uma solicitação para redefinir sua senha.
+Clique no link abaixo (expira em 1 hora):
+
+{reset_url}
+
+Não foi você? Ignore este email — sua senha permanecerá a mesma.
+"""
+
+    try:
+        msg            = MIMEMultipart("alternative")
+        msg["Subject"] = "🔑 Redefinir senha — Sistema Ponto"
+        msg["From"]    = f"{from_name} <{smtp_user}>"
+        msg["To"]      = user_email
+        msg.attach(MIMEText(text_body, "plain", "utf-8"))
+        msg.attach(MIMEText(html_body, "html",  "utf-8"))
+
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP_SSL(smtp_host, smtp_port, context=ctx) as server:
+            server.login(smtp_user, smtp_password)
+            server.sendmail(smtp_user, user_email, msg.as_string())
+
+        print(f"[EMAIL] Reset de senha enviado para {user_email}")
+        return True
+    except Exception as e:
+        print(f"[EMAIL] ERRO ao enviar reset para {user_email}: {e}")
+        return False
+
+
+def send_password_changed_notification(user_email: str, ip: str = "desconhecido") -> bool:
+    smtp_host     = os.getenv("SMTP_HOST")
+    smtp_port     = int(os.getenv("SMTP_PORT", "465"))
+    smtp_user     = os.getenv("SMTP_USER")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    from_name     = os.getenv("SMTP_FROM_NAME", "Sistema Ponto")
+    frontend_url  = os.getenv("FRONTEND_URL", "https://sistemaponto.com")
+
+    if not all([smtp_host, smtp_user, smtp_password]):
+        return False
+
+    when = datetime.now(timezone.utc).strftime("%d/%m/%Y às %H:%M UTC")
+
+    html_body = f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#0d1117;font-family:-apple-system,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0d1117;padding:40px 20px;">
+    <tr><td align="center">
+      <table width="560" cellpadding="0" cellspacing="0"
+             style="background:#161b22;border-radius:12px;border:1px solid #30363d;max-width:560px;width:100%;">
+        <tr><td style="background:linear-gradient(135deg,#1a3a5c,#0d2137);padding:32px 40px;text-align:center;">
+          <h1 style="margin:0;color:#4a9eff;font-size:22px;font-weight:700;">Sistema Ponto</h1>
+          <p style="margin:8px 0 0;color:#8b9dc3;font-size:13px;">Confirmação de segurança</p>
+        </td></tr>
+        <tr><td style="padding:40px;">
+          <h2 style="margin:0 0 16px;color:#e6edf3;font-size:20px;">✓ Sua senha foi alterada</h2>
+          <p style="margin:0 0 16px;color:#8b949e;font-size:15px;line-height:1.6;">
+            A senha da sua conta foi alterada em <strong style="color:#e6edf3;">{when}</strong>
+            (IP: <code style="color:#8b9dc3;">{ip}</code>).
+          </p>
+          <div style="margin-top:24px;padding:16px;background:#1c1410;border-radius:8px;border:1px solid #5a3a1f;">
+            <p style="margin:0 0 8px;color:#d4924a;font-size:14px;font-weight:600;">⚠️ Não foi você?</p>
+            <p style="margin:0;color:#d4924a;font-size:13px;line-height:1.5;">
+              Sua conta pode ter sido comprometida. Acesse imediatamente
+              <a href="{frontend_url}/esqueci-senha" style="color:#4a9eff;">{frontend_url}/esqueci-senha</a>
+              para criar uma nova senha e entre em contato com o suporte:
+              <strong>contato@sistemaponto.com</strong>.
+            </p>
+          </div>
+        </td></tr>
+        <tr><td style="padding:24px 40px;border-top:1px solid #21262d;text-align:center;">
+          <p style="margin:0;color:#6e7681;font-size:12px;">Sistema Ponto · sistemaponto.com</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+
+    text_body = f"""Sua senha foi alterada em {when} (IP: {ip}).
+
+Não foi você? Acesse {frontend_url}/esqueci-senha imediatamente
+e contate o suporte em contato@sistemaponto.com.
+"""
+
+    try:
+        msg            = MIMEMultipart("alternative")
+        msg["Subject"] = "✓ Sua senha foi alterada — Sistema Ponto"
+        msg["From"]    = f"{from_name} <{smtp_user}>"
+        msg["To"]      = user_email
+        msg.attach(MIMEText(text_body, "plain", "utf-8"))
+        msg.attach(MIMEText(html_body, "html",  "utf-8"))
+
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP_SSL(smtp_host, smtp_port, context=ctx) as server:
+            server.login(smtp_user, smtp_password)
+            server.sendmail(smtp_user, user_email, msg.as_string())
+        return True
+    except Exception as e:
+        print(f"[EMAIL] ERRO ao enviar notificação de senha alterada para {user_email}: {e}")
+        return False
+
+
+@app.route('/api/auth/forgot-password', methods=['POST'])
+def forgot_password():
+    email = (request.json.get('email') or '').strip().lower()
+    if not email:
+        return jsonify({"msg": "Email obrigatório."}), 400
+
+    generic_response = (jsonify({
+        "msg": "Se este email estiver cadastrado, você receberá as instruções de redefinição em instantes."
+    }), 200)
+
+    user = User.query.filter_by(email=email).first()
+
+    if not user:
+        print(f"[RESET] Tentativa para email inexistente: {email}")
+        return generic_response
+
+    if not user.password_hash:
+        print(f"[RESET] Tentativa em conta Google-only: {email}")
+        return generic_response
+
+    if user.password_reset_sent_at:
+        sent_at = user.password_reset_sent_at
+        if sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=timezone.utc)
+        elapsed = (datetime.now(timezone.utc) - sent_at).total_seconds()
+        if elapsed < 60:
+            print(f"[RESET] Rate limit ({int(elapsed)}s) para {email}")
+            return generic_response
+
+    try:
+        token = secrets.token_urlsafe(32)
+        user.password_reset_token   = token
+        user.password_reset_sent_at = datetime.now(timezone.utc)
+        db.session.commit()
+        send_password_reset_email(email, token)
+    except Exception as e:
+        db.session.rollback()
+        print(f"[RESET] Erro ao gerar token para {email}: {e}")
+
+    return generic_response
+
+
+@app.route('/api/auth/verify-reset-token', methods=['GET'])
+def verify_reset_token():
+    token = (request.args.get('token') or '').strip()
+    if not token:
+        return jsonify({"valid": False, "error_code": "NO_TOKEN"}), 400
+
+    user = User.query.filter_by(password_reset_token=token).first()
+    if not user:
+        return jsonify({"valid": False, "error_code": "INVALID_TOKEN"}), 400
+
+    if user.password_reset_sent_at:
+        sent_at = user.password_reset_sent_at
+        if sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - sent_at > timedelta(hours=1):
+            return jsonify({"valid": False, "error_code": "TOKEN_EXPIRED"}), 400
+
+    return jsonify({"valid": True}), 200
+
+
+@app.route('/api/auth/reset-password', methods=['POST'])
+def reset_password():
+    token        = (request.json.get('token') or '').strip()
+    new_password = request.json.get('new_password') or ''
+
+    if not token:
+        return jsonify({"msg": "Token não fornecido."}), 400
+
+    if len(new_password) < 6:
+        return jsonify({"msg": "Senha precisa ter pelo menos 6 caracteres."}), 400
+    if not re.search(r"\d", new_password):
+        return jsonify({"msg": "Senha precisa ter pelo menos 1 número."}), 400
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", new_password):
+        return jsonify({"msg": "Senha precisa ter pelo menos 1 caractere especial."}), 400
+
+    user = User.query.filter_by(password_reset_token=token).first()
+    if not user:
+        return jsonify({"msg": "Link inválido ou já utilizado.", "error_code": "INVALID_TOKEN"}), 400
+
+    if user.password_reset_sent_at:
+        sent_at = user.password_reset_sent_at
+        if sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - sent_at > timedelta(hours=1):
+            return jsonify({
+                "msg": "Link expirado. Solicite um novo email de redefinição.",
+                "error_code": "TOKEN_EXPIRED",
+            }), 400
+
+    if user.password_hash and check_password_hash(user.password_hash, new_password):
+        return jsonify({"msg": "A nova senha deve ser diferente da senha atual."}), 400
+
+    try:
+        user.password_hash          = generate_password_hash(new_password)
+        user.password_reset_token   = None
+        user.password_reset_sent_at = None
+        if not user.email_verified:
+            user.email_verified = True
+            user.is_active      = True
+        db.session.commit()
+        print(f"[RESET] Senha redefinida com sucesso: {user.email}")
+
+        ip = request.headers.get('X-Forwarded-For', request.remote_addr or 'desconhecido').split(',')[0].strip()
+        try:
+            send_password_changed_notification(user.email, ip)
+        except Exception as e:
+            print(f"[RESET] Aviso: falha ao enviar email de notificação: {e}")
+
+        return jsonify({"msg": "Senha redefinida com sucesso! Faça login.", "success": True}), 200
+    except Exception as e:
+        db.session.rollback()
+        print(f"[RESET] Erro ao salvar nova senha para {user.email}: {e}")
+        return jsonify({"msg": "Erro interno ao redefinir senha."}), 500
 # --- FIM DO ARQUIVO auth_service.py ---

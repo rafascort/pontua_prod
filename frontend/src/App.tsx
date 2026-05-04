@@ -9,6 +9,8 @@ import MaintenanceGuard from "@/components/MaintenanceGuard";
 import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
 import CadastroPage from "./pages/CadastroPage";
+import ForgotPasswordPage from "./pages/ForgotPasswordPage";
+import ResetPasswordPage  from "./pages/ResetPasswordPage";
 import EmailVerificationPage from "./pages/EmailVerificationPage";
 import ServiceSelectionPage from "./pages/ServiceSelectionPage";
 import PontoExtractorPage from "./pages/PontoExtractorPage";
@@ -34,6 +36,8 @@ const App = () => (
             <Route path="/"          element={<LandingPage />} />
             <Route path="/login"     element={<LoginPage />} />
             <Route path="/cadastro"  element={<CadastroPage />} />
+            <Route path="/esqueci-senha"    element={<ForgotPasswordPage />} />
+            <Route path="/redefinir-senha"  element={<ResetPasswordPage />} />
             <Route path="/termos"    element={<TermosPage />} />
 
             {/* Tela de manutenção (pública) */}
