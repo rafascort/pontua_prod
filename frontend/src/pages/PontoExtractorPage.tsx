@@ -1,15 +1,12 @@
 // frontend/src/pages/PontoExtractorPage.tsx
 //
-// CORREÇÕES aplicadas vs original:
-//   1. Adicionado useUserPlan + canUseExtras
-//   2. limitReached = !canUseExtras && pageBalance <= 0   (só free bloqueia)
-//   3. hasEnoughPages = canUseExtras || pageBalance >= pagesToConsume
-//   4. handleStart verifica limite ANTES de enviar
-//   5. PeriodConfirmationModal trata 403 do backend com modal de limite
-//   6. handlePeriodConfirm chama refreshUser() após download
-//   7. Aviso contextual no título (suave para pago, bloqueante para free)
-//
-// Todo o resto é IDÊNTICO ao original.
+// ATUALIZAÇÕES DESTA VERSÃO:
+//   1. Suporte a múltiplos períodos por página (quinzenas não-sequenciais)
+//      → Cada página pode ter 1 ou mais regiões com períodos diferentes
+//      → Cada região vira uma linha na tela de confirmação
+//      → Backend processa cada região com filtro de bbox
+//   2. WarningsModal pós-download (avisos de plantão noturno)
+//   3. Checkboxes opcionais "Quinzenas não-sequenciais" e "Plantões noturnos"
 
 import { useState, useRef, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -21,10 +18,11 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import AppHeader from "@/components/AppHeader";
-import { useUserPlan } from "@/hooks/useUserPlan";  // ← ADICIONADO
+import { useUserPlan } from "@/hooks/useUserPlan";
+import WarningsModal, { AvisoItem } from "@/components/WarningsModal";
 
 // ─────────────────────────────────────────────
-// Helpers (idênticos ao original)
+// Helpers
 // ─────────────────────────────────────────────
 function getToken() {
   return localStorage.getItem("access_token") || localStorage.getItem("jwt_token");
@@ -64,36 +62,42 @@ function parsePageRange(range: string): number {
 const DATE_RE = /^\d{2}\/\d{2}\/\d{4}$/;
 
 // ─────────────────────────────────────────────
-// Types (idênticos ao original)
+// Types
 // ─────────────────────────────────────────────
 interface Period {
   start_date: string;
   end_date: string;
+  confidence?: string;
 }
 
+// ALTERAÇÃO: PageInfo agora suporta bbox + label para múltiplas regiões
 interface PageInfo {
   page_number: number;
   page_index: number;
   period: Period | null;
   is_active: boolean;
+  bbox?: number[] | null;        // [x_min, y_min, x_max, y_max] em coords normalizadas
+  label?: string;                // rótulo descritivo da região (ex: "1ª Quinzena")
+  region_id?: number;            // 0, 1, 2... — ordem da região dentro da página
 }
 
 // ─────────────────────────────────────────────
 // Modal de Confirmação de Períodos
 // ─────────────────────────────────────────────
-// ALTERAÇÃO: adicionado onInsufficientBalance para tratar 403 do /api/process
 function PeriodConfirmationModal({
   pages,
   pdfPath,
   onClose,
   onConfirm,
   onInsufficientBalance,
+  turnoNoturnoFlag,
 }: {
   pages: PageInfo[];
   pdfPath: string;
   onClose: () => void;
   onConfirm: (taskId: string) => void;
-  onInsufficientBalance: (requested: number, available: number) => void; // ← ADICIONADO
+  onInsufficientBalance: (requested: number, available: number) => void;
+  turnoNoturnoFlag: boolean;
 }) {
   const [items, setItems] = useState<PageInfo[]>(
     pages.map((p) => ({
@@ -105,6 +109,15 @@ function PeriodConfirmationModal({
   const [loading, setLoading] = useState(false);
 
   const activeCount = items.filter((p) => p.is_active).length;
+
+  // ALTERAÇÃO: detecta se há múltiplas regiões em qualquer página
+  const hasMultipleRegions = useMemo(() => {
+    const counts = new Map<number, number>();
+    for (const item of items) {
+      counts.set(item.page_index, (counts.get(item.page_index) ?? 0) + 1);
+    }
+    return Array.from(counts.values()).some((c) => c > 1);
+  }, [items]);
 
   const handleDateChange = (index: number, field: keyof Period, raw: string) => {
     const val = formatDateInput(raw);
@@ -150,6 +163,8 @@ function PeriodConfirmationModal({
       const next = [...prev];
       for (let i = startIndex + 1; i < next.length; i++) {
         if (!next[i].is_active) continue;
+        // Não aplica se a próxima é uma região da mesma página (multi-quinzena)
+        if (next[i].page_index === next[startIndex].page_index) continue;
         const ns = new Date(lastStart);
         ns.setMonth(ns.getMonth() + 1);
         const ne = endWasLast
@@ -175,11 +190,15 @@ function PeriodConfirmationModal({
     try {
       const res = await apiFetch("/api/process", {
         method: "POST",
-        body: JSON.stringify({ pdf_path: pdfPath, pages_with_periods: valid, model_type: "6" }),
+        body: JSON.stringify({
+          pdf_path: pdfPath,
+          pages_with_periods: valid,
+          model_type: "6",
+          turno_noturno: turnoNoturnoFlag,
+        }),
       });
       const data = await res.json();
 
-      // ← ADICIONADO: trata 403 de saldo insuficiente (só free trial)
       if (res.status === 403) {
         onInsufficientBalance(data.pages_requested ?? valid.length, data.balance ?? 0);
         return;
@@ -212,14 +231,14 @@ function PeriodConfirmationModal({
           exit={{ scale: 0.95, y: 10 }}
           className="glass-card w-full max-w-2xl max-h-[85vh] flex flex-col relative"
         >
-          {/* Header do modal */}
+          {/* Header */}
           <div className="flex items-center justify-between p-6 border-b border-border/50 shrink-0">
             <div className="flex items-center gap-3">
               <Calendar className="w-5 h-5 text-primary" />
               <h3 className="text-lg font-bold text-foreground">Confirmar Períodos</h3>
             </div>
             <div className="flex items-center gap-3">
-              <span className="text-xs text-muted-foreground">{activeCount} página(s) ativa(s)</span>
+              <span className="text-xs text-muted-foreground">{activeCount} região(ões) ativa(s)</span>
               <button
                 onClick={onClose}
                 className="text-muted-foreground hover:text-foreground transition-colors"
@@ -229,77 +248,98 @@ function PeriodConfirmationModal({
             </div>
           </div>
 
-          {/* Lista de páginas */}
+          {/* ALTERAÇÃO: aviso quando há múltiplas regiões */}
+          {hasMultipleRegions && (
+            <div className="px-6 py-2 bg-primary/5 border-b border-border/30 shrink-0">
+              <p className="text-xs text-muted-foreground">
+                Algumas páginas têm múltiplas tabelas detectadas. Cada uma aparece como uma linha separada.
+              </p>
+            </div>
+          )}
+
+          {/* Lista de regiões */}
           <div className="overflow-y-auto flex-1 p-4 space-y-2">
-            {items.map((page, index) => (
-              <motion.div
-                key={page.page_index}
-                initial={{ opacity: 0, x: -10 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: index * 0.03 }}
-                className={`flex items-center gap-3 p-3 rounded-xl border transition-all ${
-                  page.is_active
-                    ? "border-border/50 bg-secondary/20"
-                    : "border-border/20 bg-secondary/5 opacity-45"
-                }`}
-              >
-                <button
-                  onClick={() => handleToggle(index)}
-                  className="flex items-center justify-center text-muted-foreground hover:text-primary transition-colors"
-                  title={page.is_active ? "Desativar" : "Ativar"}
+            {items.map((page, index) => {
+              // Detecta se é uma região "secundária" (mesma página que a anterior)
+              const isMultiRegion = index > 0 && items[index - 1].page_index === page.page_index;
+
+              return (
+                <motion.div
+                  key={`${page.page_index}-${page.region_id ?? 0}`}
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: index * 0.03 }}
+                  className={`flex items-center gap-3 p-3 rounded-xl border transition-all ${
+                    page.is_active
+                      ? "border-border/50 bg-secondary/20"
+                      : "border-border/20 bg-secondary/5 opacity-45"
+                  } ${isMultiRegion ? "ml-6" : ""}`}
                 >
-                  {page.is_active
-                    ? <ToggleRight className="w-5 h-5 text-primary" />
-                    : <ToggleLeft className="w-5 h-5" />}
-                </button>
+                  <button
+                    onClick={() => handleToggle(index)}
+                    className="flex items-center justify-center text-muted-foreground hover:text-primary transition-colors"
+                    title={page.is_active ? "Desativar" : "Ativar"}
+                  >
+                    {page.is_active
+                      ? <ToggleRight className="w-5 h-5 text-primary" />
+                      : <ToggleLeft className="w-5 h-5" />}
+                  </button>
 
-                <span className="text-sm font-semibold text-foreground">
-                  Pág {page.page_number}
-                </span>
+                  <div className="flex flex-col min-w-[80px]">
+                    <span className="text-sm font-semibold text-foreground">
+                      Pág {page.page_number}
+                    </span>
+                    {page.label && (
+                      <span className="text-[10px] text-muted-foreground leading-tight">
+                        {page.label}
+                      </span>
+                    )}
+                  </div>
 
-                <input
-                  type="text"
-                  value={page.period?.start_date ?? ""}
-                  onChange={(e) => handleDateChange(index, "start_date", e.target.value)}
-                  placeholder="DD/MM/AAAA"
-                  maxLength={10}
-                  disabled={!page.is_active}
-                  className={`w-full px-3 py-2 rounded-lg bg-background/60 border text-foreground text-sm focus:outline-none transition-all disabled:opacity-40 ${
-                    page.period?.start_date && DATE_RE.test(page.period.start_date)
-                      ? "border-success/50 focus:border-success/80 focus:ring-1 focus:ring-success/20"
-                      : "border-border/50 focus:border-primary/60 focus:ring-1 focus:ring-primary/20"
-                  }`}
-                />
+                  <input
+                    type="text"
+                    value={page.period?.start_date ?? ""}
+                    onChange={(e) => handleDateChange(index, "start_date", e.target.value)}
+                    placeholder="DD/MM/AAAA"
+                    maxLength={10}
+                    disabled={!page.is_active}
+                    className={`w-full px-3 py-2 rounded-lg bg-background/60 border text-foreground text-sm focus:outline-none transition-all disabled:opacity-40 ${
+                      page.period?.start_date && DATE_RE.test(page.period.start_date)
+                        ? "border-success/50 focus:border-success/80 focus:ring-1 focus:ring-success/20"
+                        : "border-border/50 focus:border-primary/60 focus:ring-1 focus:ring-primary/20"
+                    }`}
+                  />
 
-                <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                  <ChevronRight className="w-4 h-4 text-muted-foreground" />
 
-                <input
-                  type="text"
-                  value={page.period?.end_date ?? ""}
-                  onChange={(e) => handleDateChange(index, "end_date", e.target.value)}
-                  placeholder="DD/MM/AAAA"
-                  maxLength={10}
-                  disabled={!page.is_active}
-                  className={`w-full px-3 py-2 rounded-lg bg-background/60 border text-foreground text-sm focus:outline-none transition-all disabled:opacity-40 ${
-                    page.period?.end_date && DATE_RE.test(page.period.end_date)
-                      ? "border-success/50 focus:border-success/80 focus:ring-1 focus:ring-success/20"
-                      : "border-border/50 focus:border-primary/60 focus:ring-1 focus:ring-primary/20"
-                  }`}
-                />
+                  <input
+                    type="text"
+                    value={page.period?.end_date ?? ""}
+                    onChange={(e) => handleDateChange(index, "end_date", e.target.value)}
+                    placeholder="DD/MM/AAAA"
+                    maxLength={10}
+                    disabled={!page.is_active}
+                    className={`w-full px-3 py-2 rounded-lg bg-background/60 border text-foreground text-sm focus:outline-none transition-all disabled:opacity-40 ${
+                      page.period?.end_date && DATE_RE.test(page.period.end_date)
+                        ? "border-success/50 focus:border-success/80 focus:ring-1 focus:ring-success/20"
+                        : "border-border/50 focus:border-primary/60 focus:ring-1 focus:ring-primary/20"
+                    }`}
+                  />
 
-                <button
-                  onClick={() => handleApplyPattern(index)}
-                  disabled={!page.is_active}
-                  title="Preencher próximas páginas com padrão mensal"
-                  className="text-xs px-2 py-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-all disabled:opacity-30 font-medium whitespace-nowrap"
-                >
-                  Aplicar ↓
-                </button>
-              </motion.div>
-            ))}
+                  <button
+                    onClick={() => handleApplyPattern(index)}
+                    disabled={!page.is_active}
+                    title="Preencher próximas páginas com padrão mensal"
+                    className="text-xs px-2 py-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-all disabled:opacity-30 font-medium whitespace-nowrap"
+                  >
+                    Aplicar ↓
+                  </button>
+                </motion.div>
+              );
+            })}
           </div>
 
-          {/* Footer do modal */}
+          {/* Footer */}
           <div className="flex gap-3 p-6 border-t border-border/50 shrink-0">
             <button
               onClick={onClose}
@@ -328,11 +368,13 @@ function PeriodConfirmationModal({
 // Página Principal
 // ─────────────────────────────────────────────
 const PontoExtractorPage = () => {
-  // ← ADICIONADO: lê canUseExtras para saber se é plano pago
   const { plan, canUseExtras, refreshUser } = useUserPlan();
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [pageRange, setPageRange] = useState("");
+
+  const [quinzenasNaoSequenciais, setQuinzenasNaoSequenciais] = useState(false);
+  const [turnoNoturno, setTurnoNoturno] = useState(false);
 
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState({ current: 0, total: 0, message: "Lendo períodos..." });
@@ -344,22 +386,23 @@ const PontoExtractorPage = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [processProgress, setProcessProgress] = useState({ current: 0, total: 0, message: "Processando..." });
 
-  // ← ADICIONADO: modal de saldo insuficiente (só para free trial)
   const [showLimitAlert, setShowLimitAlert]   = useState(false);
   const [limitAlertData, setLimitAlertData]   = useState({ requested: 0, available: 0 });
+
+  const [warningsData, setWarningsData] = useState<{
+    avisos: AvisoItem[];
+    totalDias: number;
+    pareados: number;
+    filename: string;
+  } | null>(null);
 
   const pollingRef  = useRef<ReturnType<typeof setInterval> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // ← ADICIONADO: cálculo de saldo baseado no range digitado
   const pagesToConsume = useMemo(() => parsePageRange(pageRange), [pageRange]);
 
-  // ── REGRA CENTRAL ──────────────────────────────────────────────────────────
-  // Plano pago: NUNCA bloqueia — extras são cobráveis
-  // Free trial: bloqueia quando saldo = 0
   const limitReached   = !canUseExtras && plan.pageBalance <= 0;
   const hasEnoughPages = canUseExtras   || plan.pageBalance >= pagesToConsume;
-  // ──────────────────────────────────────────────────────────────────────────
 
   const triggerDownload = (blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob);
@@ -404,7 +447,6 @@ const PontoExtractorPage = () => {
       return;
     }
 
-    // ← ADICIONADO: só bloqueia free trial esgotado ou sem saldo suficiente
     if (limitReached || !hasEnoughPages) {
       setLimitAlertData({ requested: pagesToConsume, available: plan.pageBalance });
       setShowLimitAlert(true);
@@ -417,11 +459,12 @@ const PontoExtractorPage = () => {
     const formData = new FormData();
     formData.append("pdf_file", selectedFile);
     formData.append("pages", pageRange);
+    formData.append("quinzenas_nao_sequenciais", String(quinzenasNaoSequenciais));
+    formData.append("turno_noturno", String(turnoNoturno));
 
     try {
       const res = await apiFetch("/api/extract-periods", { method: "POST", body: formData });
 
-      // ← ADICIONADO: trata 403 (free esgotado detectado pelo backend)
       if (res.status === 403) {
         const data = await res.json();
         setIsAnalyzing(false);
@@ -469,14 +512,20 @@ const PontoExtractorPage = () => {
         toast.success("Extração concluída!");
         const downloadRes = await apiFetch(`/api/download/${taskId}`);
         const blob = await downloadRes.blob();
-        triggerDownload(blob, (result.filename as string) || `Ponto_${taskId}.csv`);
-	await refreshUser();
+        const filename = (result.filename as string) || `Ponto_${taskId}.csv`;
+        triggerDownload(blob, filename);
+        setWarningsData({
+          avisos: (result.avisos as AvisoItem[]) || [],
+          totalDias: (result.total_dias as number) || 0,
+          pareados: (result.pareados as number) || 0,
+          filename: filename,
+        });
+        await refreshUser();
       },
       setProcessProgress
     );
   };
 
-  // ← ADICIONADO: callback para quando /api/process retorna 403
   const handleInsufficientBalance = (requested: number, available: number) => {
     setShowPeriodModal(false);
     setLimitAlertData({ requested, available });
@@ -494,7 +543,6 @@ const PontoExtractorPage = () => {
       <AppHeader />
 
       <main className="flex-1 flex items-center justify-center p-6">
-        {/* Layout idêntico ao original (max-w-4xl glass-card) */}
         <div className="glass-card p-8 w-full max-w-4xl">
           <div className="flex items-center gap-3 mb-6">
             <Link
@@ -506,7 +554,6 @@ const PontoExtractorPage = () => {
             <h3 className="text-lg font-semibold text-foreground">Extrator de Ponto</h3>
           </div>
 
-          {/* ← ADICIONADO: avisos contextuais abaixo do título */}
           {canUseExtras && plan.pageBalance <= 0 && (
             <p className="text-xs text-amber-500 mb-4">
               Limite incluído atingido — próximas páginas serão cobradas à parte.
@@ -525,7 +572,6 @@ const PontoExtractorPage = () => {
             </p>
           )}
 
-          {/* Inputs — idênticos ao original */}
           <div className="flex flex-col sm:flex-row gap-4">
             <input
               type="file"
@@ -557,7 +603,6 @@ const PontoExtractorPage = () => {
             />
           </div>
 
-          {/* ← ADICIONADO: feedback de saldo em tempo real ao digitar o range */}
           {pagesToConsume > 0 && !limitReached && (
             <p className={`text-xs mt-2 ${
               canUseExtras
@@ -581,7 +626,40 @@ const PontoExtractorPage = () => {
             </p>
           )}
 
-          {/* Botão principal — idêntico ao original, sem estado "Assinar Plano" para pagos */}
+          <div className="mt-5 mb-1 p-4 rounded-xl bg-muted/20 border border-border/30">
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-3">
+              Casos especiais (opcional)
+            </p>
+
+            <label className="flex items-start gap-3 cursor-pointer mb-3">
+              <input
+                type="checkbox"
+                checked={quinzenasNaoSequenciais}
+                onChange={(e) => setQuinzenasNaoSequenciais(e.target.checked)}
+                disabled={isBusy}
+                className="mt-1 w-4 h-4 rounded border-border accent-primary cursor-pointer"
+              />
+              <div className="flex-1">
+                <p className="text-sm text-foreground">Múltiplas tabelas por página</p>
+                <p className="text-xs text-muted-foreground">Páginas com 2+ tabelas de períodos diferentes (quinzenas invertidas, etc.)</p>
+              </div>
+            </label>
+
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={turnoNoturno}
+                onChange={(e) => setTurnoNoturno(e.target.checked)}
+                disabled={isBusy}
+                className="mt-1 w-4 h-4 rounded border-border accent-primary cursor-pointer"
+              />
+              <div className="flex-1">
+                <p className="text-sm text-foreground">Plantões noturnos</p>
+                <p className="text-xs text-muted-foreground">Marque se há plantões que começam num dia e terminam no outro</p>
+              </div>
+            </label>
+          </div>
+
           <button
             onClick={handleStart}
             disabled={isBusy || !selectedFile || !pageRange.trim() || limitReached}
@@ -596,7 +674,6 @@ const PontoExtractorPage = () => {
         </div>
       </main>
 
-      {/* Modal de progresso — idêntico ao original */}
       <AnimatePresence>
         {isBusy && !showPeriodModal && (
           <motion.div
@@ -632,18 +709,17 @@ const PontoExtractorPage = () => {
         )}
       </AnimatePresence>
 
-      {/* Modal de confirmação de períodos */}
       {showPeriodModal && pagesData && (
         <PeriodConfirmationModal
           pages={pagesData}
           pdfPath={pdfPath}
           onClose={() => { setShowPeriodModal(false); setIsAnalyzing(false); }}
           onConfirm={handlePeriodConfirm}
-          onInsufficientBalance={handleInsufficientBalance} // ← ADICIONADO
+          onInsufficientBalance={handleInsufficientBalance}
+          turnoNoturnoFlag={turnoNoturno}
         />
       )}
 
-      {/* ← ADICIONADO: Modal de saldo insuficiente (só aparece para free trial) */}
       <AnimatePresence>
         {showLimitAlert && (
           <motion.div
@@ -693,6 +769,18 @@ const PontoExtractorPage = () => {
               </div>
             </motion.div>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {warningsData && (
+          <WarningsModal
+            avisos={warningsData.avisos}
+            totalDias={warningsData.totalDias}
+            pareados={warningsData.pareados}
+            filename={warningsData.filename}
+            onClose={() => setWarningsData(null)}
+          />
         )}
       </AnimatePresence>
     </div>

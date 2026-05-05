@@ -24,26 +24,19 @@ from pypdf import PdfReader, PdfWriter
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ExtractorAI")
 
-# ── Suprime logs de bibliotecas externas ─────────────────────────────────────
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("google_genai.models").setLevel(logging.WARNING)
 os.environ.setdefault('GRPC_VERBOSITY', 'ERROR')
 os.environ.setdefault('GRPC_TRACE', '')
-# ─────────────────────────────────────────────────────────────────────────────
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CONFIGURAÇÕES
-# ─────────────────────────────────────────────────────────────────────────────
 MAX_DOCAI_WORKERS  = 120
-MAX_GEMINI_WORKERS = 20           # paralelo para extração de períodos
-DOCAI_RPM_LIMIT    = 220          # margem segura — cota real Google: 120/min
+MAX_GEMINI_WORKERS = 20
+DOCAI_RPM_LIMIT    = 220
 DOCAI_RATE_KEY     = 'docai_sliding_window'
 _redis = redis_lib.Redis(host='localhost', port=6379, db=0)
 
-# Cliente Gemini — mesmo usado pelo payroll_extractor_ai
 _gemini = genai.Client(api_key=os.getenv('GEMINI_API_KEY'))
 GEMINI_MODEL = 'gemini-2.5-flash'
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 # ─── LOG CENTRAL ─────────────────────────────────────────────────────────────
@@ -58,10 +51,9 @@ def LOG_SEP(title=''):
         pad  = max(0, (70 - len(title) - 2) // 2)
         line = '─' * pad + f' {title} ' + '─' * pad
     print(f"[LOG ] {line}", flush=True)
-# ─────────────────────────────────────────────────────────────────────────────
 
 
-# ─── RATE LIMITER GLOBAL (sliding window no Redis) ───────────────────────────
+# ─── RATE LIMITER GLOBAL ─────────────────────────────────────────────────────
 def _get_rpm_usage():
     now = time.time()
     try:
@@ -108,7 +100,6 @@ def _acquire_docai_slot(job_id='?', page_order=0, timeout=300):
 
         time.sleep(0.5)
         waited += 0.5
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 class ExtractorGeralAI:
@@ -141,10 +132,6 @@ class ExtractorGeralAI:
             self.job.save_meta()
 
     def spatial_sort_entities(self, entities):
-        """
-        Ordena entidades tabela_marcacoes pela posição vertical (Y) na página.
-        Vem do código antigo — essencial para saber a ordem física das linhas.
-        """
         rows = [e for e in entities
                 if e.type_.lower() == 'tabela_marcacoes']
 
@@ -157,10 +144,6 @@ class ExtractorGeralAI:
         return sorted(rows, key=get_y)
 
     def _process_single_page(self, pdf_bytes_single: bytes, page_order: int, job_id: str):
-        """
-        Envia UMA página ao DocAI após adquirir slot no rate limiter global.
-        Retorna entidades ordenadas por Y (spatial_sort já aplicado aqui).
-        """
         slot_num, waited = _acquire_docai_slot(job_id=job_id, page_order=page_order)
         if waited > 0:
             LOG(f"  pág {page_order} aguardou",
@@ -181,7 +164,6 @@ class ExtractorGeralAI:
             doc_text = doc.text or ""
             for e in doc.entities:
                 e._shard_text = doc_text
-            # Ordena por Y imediatamente ao receber — cada página já chega ordenada
             sorted_ents = self.spatial_sort_entities(doc.entities)
             return page_order, sorted_ents, doc_text, slot_num, waited
         except Exception as ex:
@@ -189,17 +171,29 @@ class ExtractorGeralAI:
             return page_order, [], "", slot_num, waited
 
     def process_pdf_parallel(self, pdf_path: str, valid_pages: list, job_id: str):
+        """Dedupliça pelo page_index (cada página única é processada UMA vez no DocAI)."""
         self.update_progress(1, 4, "Preparando páginas para envio...")
         reader = PdfReader(pdf_path)
-        total  = len(valid_pages)
+
+        seen_indices = set()
+        unique_pages = []
+        for p in valid_pages:
+            pidx = p['page_index']
+            if pidx not in seen_indices:
+                seen_indices.add(pidx)
+                unique_pages.append(p)
+
+        total = len(unique_pages)
 
         page_pdfs = []
-        for order, p in enumerate(valid_pages):
+        index_to_order = {}
+        for order, p in enumerate(unique_pages):
             writer = PdfWriter()
             writer.add_page(reader.pages[p['page_index']])
             buf = BytesIO()
             writer.write(buf)
             page_pdfs.append((order, buf.getvalue()))
+            index_to_order[p['page_index']] = order
 
         self.update_progress(1, 4, f"Enviando {total} página(s) para o Google...")
 
@@ -223,7 +217,7 @@ class ExtractorGeralAI:
                 )
 
         self.update_progress(3, 4, "Consolidando resultados...")
-        return results, round(total_waited, 1)
+        return results, round(total_waited, 1), index_to_order
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -241,20 +235,109 @@ def get_text_safely(prop, shard_text=""):
     return "0"
 
 
+def _is_valid_time(hh: int, mm: int) -> bool:
+    """Retorna True se HH e MM formam horário válido (00-23 e 00-59)."""
+    return 0 <= hh <= 23 and 0 <= mm <= 59
+
+
 def normalize_time(val):
+    """
+    Normaliza valor para formato HH:MM ou retorna "0" se não conseguir.
+
+    Estratégias (em ordem de prioridade):
+    1. String vazia/None/zero/nan → "0"
+    2. Tem ":" no meio → tenta extrair "HH:MM" via regex
+       - Se inválido, tenta tirar lixo e tentar de novo
+    3. Sem ":", só dígitos:
+       - 4 dígitos: HHMM direto
+       - 3 dígitos: 0HMM
+       - 5+ dígitos: tenta combinações:
+         a) Tira o último dígito → testa HHMM válido
+         b) Tira o primeiro dígito → testa HHMM válido
+         c) Pega 4 do meio → testa HHMM válido
+       - Se nenhuma combinação dá horário válido → "0"
+    4. Valida no final: HH 0-23, MM 0-59. Se inválido → "0"
+    """
     if not val or val == '0' or str(val).lower() == 'nan':
         return "0"
-    d = re.sub(r'[^\d]', '', str(val))
-    if len(d) >= 4: return f"{d[:2]}:{d[2:4]}"
-    if len(d) == 3: return f"0{d[0]}:{d[1:3]}"
+
+    s = str(val).strip()
+    if not s:
+        return "0"
+
+    # Estratégia A: tem ":" — tenta achar "HH:MM" como subpadrão
+    if ':' in s:
+        # Extrai todos os candidatos "DD:DD" possíveis
+        match = re.search(r'(\d{1,2}):(\d{1,2})', s)
+        if match:
+            hh = int(match.group(1))
+            mm_str = match.group(2)
+            # Pad MM se vier com 1 dígito
+            if len(mm_str) == 1:
+                mm = int(mm_str) * 10  # ex: ":4" vira ":40"? não — melhor ignorar
+                return "0"
+            mm = int(mm_str[:2])
+            if _is_valid_time(hh, mm):
+                return f"{hh:02d}:{mm:02d}"
+
+        # Caso "#18\n:" — começa com algo + número + ":" sem MM legível
+        # Tenta ainda extrair só os dígitos
+        digits_only = re.sub(r'[^\d]', '', s)
+        if len(digits_only) == 4:
+            hh, mm = int(digits_only[:2]), int(digits_only[2:])
+            if _is_valid_time(hh, mm):
+                return f"{hh:02d}:{mm:02d}"
+        return "0"
+
+    # Estratégia B: sem ":", só dígitos extraídos
+    digits = re.sub(r'[^\d]', '', s)
+    if not digits:
+        return "0"
+
+    # 4 dígitos: HHMM direto
+    if len(digits) == 4:
+        hh, mm = int(digits[:2]), int(digits[2:])
+        if _is_valid_time(hh, mm):
+            return f"{hh:02d}:{mm:02d}"
+        return "0"
+
+    # 3 dígitos: 0HMM
+    if len(digits) == 3:
+        hh, mm = int(digits[0]), int(digits[1:])
+        if _is_valid_time(hh, mm):
+            return f"{hh:02d}:{mm:02d}"
+        return "0"
+
+    # 5+ dígitos: tenta combinações
+    if len(digits) >= 5:
+        candidates = []
+
+        # Tira o último (lixo no final)
+        c1 = digits[:4]
+        candidates.append(('trunca final', c1))
+
+        # Tira o primeiro (lixo no início)
+        c2 = digits[1:5]
+        candidates.append(('trunca início', c2))
+
+        # Se 6 dígitos, tenta meio
+        if len(digits) == 6:
+            c3 = digits[1:5]
+            candidates.append(('meio', c3))
+
+        for nome, cand in candidates:
+            if len(cand) == 4:
+                hh, mm = int(cand[:2]), int(cand[2:])
+                if _is_valid_time(hh, mm):
+                    return f"{hh:02d}:{mm:02d}"
+
+        return "0"
+
+    # 1 ou 2 dígitos: não dá pra montar HH:MM
     return "0"
 
 
 def normalize_date(date_str, default_year):
-    """
-    Vem do código antigo. Normaliza vários formatos de data para DD/MM/YYYY.
-    Suporta DD/MM, DD/MM/YY, DD/MM/YYYY, separadores ponto e hífen.
-    """
     if not date_str:
         return None
     date_str = re.sub(r'[^\d/.-]', '', str(date_str)).replace('.', '/').replace('-', '/')
@@ -266,7 +349,6 @@ def normalize_date(date_str, default_year):
         if len(str(year)) == 2:
             year = f"20{year}"
         try:
-            # valida se é uma data possível
             datetime.strptime(f"{day}/{month}/{year}", '%d/%m/%Y')
             return f"{day}/{month}/{year}"
         except ValueError:
@@ -275,7 +357,6 @@ def normalize_date(date_str, default_year):
 
 
 def extract_full_date(raw):
-    """Retorna DD/MM/YYYY se o campo já contém data completa, senão None."""
     raw = str(raw or '').strip()
     match = re.match(r'^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$', raw)
     if match:
@@ -289,19 +370,7 @@ def extract_full_date(raw):
 
 
 def infer_date_by_position(data_ia, expected_date, default_year):
-    """
-    Tenta corrigir/inferir a data usando a data esperada por posição Y.
-
-    Casos cobertos:
-    - DocAI retornou vazio/None → usa expected_date diretamente
-    - DocAI leu dígito parcial (ex: "7" quando esperado é "17") → corrige
-    - DocAI leu DD/MM sem ano → valida contra expected_date e completa
-    - DocAI leu data coerente com a esperada → confirma
-
-    Retorna a data corrigida como DD/MM/YYYY, ou expected_date como fallback.
-    """
     if not data_ia:
-        # Cenário 1/2: dado completamente ausente → inferência por posição
         return expected_date
 
     normalized = normalize_date(data_ia, default_year)
@@ -313,41 +382,19 @@ def infer_date_by_position(data_ia, expected_date, default_year):
         ai_day  = normalized.split('/')[0].lstrip('0') or '0'
         exp_day = expected_date.split('/')[0].lstrip('0') or '0'
 
-        # Correção de dígito parcial: DocAI leu "7" mas esperado é "17"
-        # Vem do código antigo — o OCR às vezes perde o primeiro dígito
         if len(ai_day) == 1 and exp_day.endswith(ai_day):
-            ai_rest  = normalized[2:]    # /MM/YYYY ou /MM
+            ai_rest  = normalized[2:]
             exp_rest = expected_date[2:]
-            # mês e ano do esperado devem bater
             if ai_rest.startswith(exp_rest[:3]):
                 return expected_date
 
-        # DocAI leu data completa diferente — confia no DocAI, não na posição
         if len(normalized) == 10:
             return normalized
 
-    # Último recurso: usa posição
     return expected_date
 
 
 def _fill_slots(master_df, target_idx, data):
-    """
-    Preenche os slots de Entrada/Saida no master_df para um dado target_idx.
-    Sempre busca o próximo slot vazio — nunca sobrescreve.
-    Retorna True se pelo menos um slot foi preenchido.
-
-    FIX: Em páginas de continuação (mescla), o DocAI às vezes retorna horários
-    de SAÍDA no campo entrada1 (e.g., a saída do almoço 12:00 vem como entrada1
-    em vez de saida1). Para corrigir isso, quando um e_val chega sem s_val,
-    verificamos se existe uma entrada "órfã" (Entrada{c} preenchida, Saida{c}
-    vazia) cujo horário é menor que e_val — nesse caso o e_val é na verdade
-    uma saída disfarçada e vai para Saida{c}.
-
-    Comportamento:
-    - s_val presente: preenche no próximo Saida slot vazio (independente)
-    - e_val presente + entrada órfã com e_val > entrada_c: preenche Saida{c}
-    - e_val presente + sem órfã elegível: preenche próximo Entrada slot vazio
-    """
     preencheu = False
     for k in range(1, 12):
         e_val = normalize_time(data.get(f'entrada{k}', data.get(f'entrada_{k}', "0")))
@@ -356,7 +403,6 @@ def _fill_slots(master_df, target_idx, data):
         if e_val == "0" and s_val == "0":
             continue
 
-        # Saida explícita: preenche no próximo slot Saida vazio (comportamento original)
         if s_val != "0":
             for c in range(1, 12):
                 if master_df.at[target_idx, f'Saida{c}'] == "0":
@@ -365,21 +411,17 @@ def _fill_slots(master_df, target_idx, data):
                     break
 
         if e_val != "0":
-            # FIX: procura entrada "órfã" (Entrada preenchida, Saida vazia)
-            # onde e_val é posterior — indica que e_val é na verdade uma saída
             colocado_como_saida = False
             for c in range(1, 12):
                 entrada_c = master_df.at[target_idx, f'Entrada{c}']
                 saida_c   = master_df.at[target_idx, f'Saida{c}']
                 if entrada_c != "0" and saida_c == "0" and e_val > entrada_c:
-                    # Horário posterior a uma entrada sem saída → é uma saída
                     master_df.at[target_idx, f'Saida{c}'] = e_val
                     preencheu = True
                     colocado_como_saida = True
                     break
 
             if not colocado_como_saida:
-                # Valor é realmente uma entrada — preenche no próximo slot vazio
                 for c in range(1, 12):
                     if master_df.at[target_idx, f'Entrada{c}'] == "0":
                         master_df.at[target_idx, f'Entrada{c}'] = e_val
@@ -390,10 +432,6 @@ def _fill_slots(master_df, target_idx, data):
 
 
 def _has_empty_slots(master_df, target_idx):
-    """
-    Retorna True se ainda existe algum slot vazio (Entrada ou Saida) na linha.
-    Usado para distinguir continuação de duplicata.
-    """
     for c in range(1, 12):
         if master_df.at[target_idx, f'Entrada{c}'] == "0":
             return True
@@ -403,23 +441,6 @@ def _has_empty_slots(master_df, target_idx):
 
 
 def _is_duplicate_values(master_df, target_idx, data):
-    """
-    Verifica se todos os valores não-zero da entidade entrante já existem
-    nos slots preenchidos da linha.
-
-    Necessário para distinguir dois casos que parecem iguais para _has_empty_slots:
-    - Página dividida (continuação real): entidade tem E2/S2 novos → mescla
-    - Período duplicado (duas páginas com mesmo período): entidade repete
-      E1/S1 que já estão preenchidos → skip, não preenche E3/S3 com lixo
-
-    FIX: Compara e_val contra o conjunto UNIFICADO de entradas + saídas já
-    presentes. Sem este fix, um e_val=12:00 vindo do DocAI (que na verdade é
-    uma saída já registrada em Saida1=12:00) não era reconhecido como duplicata
-    porque a verificação era feita apenas contra existing_entradas, não contra
-    existing_saidas — resultando no valor sendo inserido em Entrada2.
-
-    Retorna True se for duplicata (todos os valores já existem).
-    """
     existing_entradas = {
         master_df.at[target_idx, f'Entrada{c}']
         for c in range(1, 12)
@@ -430,8 +451,6 @@ def _is_duplicate_values(master_df, target_idx, data):
         for c in range(1, 12)
         if master_df.at[target_idx, f'Saida{c}'] != "0"
     }
-    # FIX: união de todos os valores já presentes, independente de serem
-    # entrada ou saída — o DocAI de páginas de continuação mistura os dois
     existing_all = existing_entradas | existing_saidas
 
     has_new_value = False
@@ -445,25 +464,90 @@ def _is_duplicate_values(master_df, target_idx, data):
             has_new_value = True
             break
 
-    return not has_new_value  # True = todos os valores já existem = duplicata
+    return not has_new_value
 
 
-def _gemini_extract_period(pdf_path, page_idx, page_number):
+# ─────────────────────────────────────────────────────────────────────────────
+# Filtro de entidades por região
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _entity_falls_in_period(entity, period_start, period_end, default_year):
     """
-    Envia UMA página ao Gemini e retorna o período (start_date, end_date).
+    Decide se uma entidade do DocAI pertence ao período da região.
 
-    - Sobe a página como PDF de 1 página (não JPEG — qualidade nativa)
-    - Gemini lê a página inteira, não só o cabeçalho
-    - Prompt pede primeira e última data visíveis no cartão de ponto
-    - Retorna dict com start_date/end_date em DD/MM/YYYY, ou None se falhar
+    Estratégia: usa o campo 'data' (dia) extraído pelo DocAI.
+    Se a data extraída cabe no intervalo [period_start, period_end], pertence.
 
-    O page_order é controlado externamente pelo ThreadPoolExecutor —
-    o resultado é sempre vinculado ao page_idx correto no dict de resultados.
+    Funciona porque o DocAI extrai o número do dia (1-31) em cada linha,
+    e cada região tem um período conhecido (definido pelo usuário ou Gemini).
+
+    Como funciona com bbox indisponível: este é o mecanismo PRINCIPAL.
     """
+    raw_data = ''
+    for prop in entity.properties:
+        if prop.type_.lower() in ('data', 'dia'):
+            shard_text = getattr(entity, '_shard_text', '')
+            raw_data = get_text_safely(prop, shard_text)
+            break
+
+    if not raw_data:
+        return None  # sem data → não dá pra decidir
+
+    # Tenta extrair só o dia (número 1-31)
+    raw_clean = re.sub(r'[^\d]', '', str(raw_data).split('/')[0])
+    if not raw_clean:
+        return None
+
+    try:
+        dia_num = int(raw_clean)
+    except ValueError:
+        return None
+
+    if not (1 <= dia_num <= 31):
+        return None
+
+    # Verifica se algum dia desse número cabe no intervalo
+    period_dr = pd.date_range(start=period_start, end=period_end, freq='D')
+    for d in period_dr:
+        if d.day == dia_num:
+            return True
+    return False
+
+
+def _entity_bbox(entity):
+    try:
+        verts = entity.page_anchor.page_refs[0].bounding_poly.normalized_vertices
+        xs = [v.x for v in verts if v.x is not None]
+        ys = [v.y for v in verts if v.y is not None]
+        if not xs or not ys:
+            return None
+        return (min(xs), min(ys), max(xs), max(ys))
+    except Exception:
+        return None
+
+
+def _bbox_overlap_ratio(bbox_a, bbox_b):
+    if not bbox_a or not bbox_b:
+        return 0.0
+    ax_min, ay_min, ax_max, ay_max = bbox_a
+    bx_min, by_min, bx_max, by_max = bbox_b
+    inter_x = max(0.0, min(ax_max, bx_max) - max(ax_min, bx_min))
+    inter_y = max(0.0, min(ay_max, by_max) - max(ay_min, by_min))
+    inter_area = inter_x * inter_y
+    a_area = max(0.0, ax_max - ax_min) * max(0.0, ay_max - ay_min)
+    if a_area <= 0:
+        return 0.0
+    return inter_area / a_area
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Gemini: extração de períodos
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _gemini_extract_period(pdf_path, page_idx, page_number, quinzenas_nao_sequenciais=False):
     tmp_path = None
     uploaded_file = None
     try:
-        # Extrai página como PDF de 1 página
         reader = PdfReader(pdf_path)
         writer = PdfWriter()
         writer.add_page(reader.pages[page_idx])
@@ -472,10 +556,8 @@ def _gemini_extract_period(pdf_path, page_idx, page_number):
             writer.write(tmp.name)
             tmp_path = tmp.name
 
-        # Upload para o Gemini Files API
         uploaded_file = _gemini.files.upload(file=tmp_path)
 
-        # Aguarda o arquivo estar pronto
         f = _gemini.files.get(name=uploaded_file.name)
         waited = 0
         while f.state.name == 'PROCESSING' and waited < 30:
@@ -483,7 +565,24 @@ def _gemini_extract_period(pdf_path, page_idx, page_number):
             waited += 1
             f = _gemini.files.get(name=uploaded_file.name)
 
-        prompt = """Este documento é um cartão de ponto ou relatório de marcações de ponto de funcionário.
+        if quinzenas_nao_sequenciais:
+            prompt = """Este documento é UMA PÁGINA de cartão de ponto que pode conter MAIS DE UMA tabela de marcações com períodos diferentes/não-sequenciais.
+
+Identifique TODAS as tabelas de marcações de ponto visíveis nesta página. Para CADA tabela, retorne:
+- start_date: PRIMEIRA data de registro daquela tabela específica (DD/MM/YYYY)
+- end_date: ÚLTIMA data de registro daquela tabela específica (DD/MM/YYYY)
+- bbox: bounding box da tabela em coordenadas normalizadas [x_min, y_min, x_max, y_max] (valores entre 0.0 e 1.0)
+- label: rótulo curto identificando a tabela (ex: "1ª Quinzena", "Tabela superior", "Período A", etc.)
+
+Se houver SOMENTE 1 tabela na página, retorne array com 1 item.
+Se houver 2+ tabelas com períodos diferentes, retorne todas separadamente.
+
+Retorne APENAS um JSON válido, sem markdown, sem explicações:
+{"periods": [{"start_date": "DD/MM/YYYY", "end_date": "DD/MM/YYYY", "bbox": [0.0, 0.0, 1.0, 0.5], "label": "..."}], "confidence": "high"}
+
+Use confidence "low" se houver datas ilegíveis. Se nenhuma tabela for identificável: {"periods": [], "confidence": "low"}"""
+        else:
+            prompt = """Este documento é um cartão de ponto ou relatório de marcações de ponto de funcionário.
 
 Leia a página inteira de cima para baixo e identifique a PRIMEIRA e a ÚLTIMA data de registro de ponto visíveis nesta folha.
 
@@ -498,26 +597,66 @@ Se não encontrar nenhuma data de ponto, retorne: {"start_date": null, "end_date
             contents=[f, prompt]
         )
 
-        # Extrai JSON da resposta — remove markdown se vier com ```
         raw = response.text.strip()
         raw = re.sub(r'^```[a-z]*\n?', '', raw)
         raw = re.sub(r'\n?```$', '', raw)
         result = json.loads(raw)
 
-        start = result.get('start_date')
-        end   = result.get('end_date')
-        conf  = result.get('confidence', 'low')
+        if quinzenas_nao_sequenciais:
+            periods = result.get('periods', [])
+            conf    = result.get('confidence', 'low')
 
-        if start and end:
-            # Normaliza para DD/MM/YYYY (Gemini às vezes retorna com traço)
-            start = start.replace('-', '/').replace('.', '/')
-            end   = end.replace('-', '/').replace('.', '/')
+            normalized_periods = []
+            for p in periods:
+                start = p.get('start_date')
+                end   = p.get('end_date')
+                bbox  = p.get('bbox')
+                label = p.get('label', '')
+
+                if not start or not end:
+                    continue
+
+                start = start.replace('-', '/').replace('.', '/')
+                end   = end.replace('-', '/').replace('.', '/')
+
+                if not bbox or len(bbox) != 4:
+                    bbox = [0.0, 0.0, 1.0, 1.0]
+                else:
+                    try:
+                        bbox = [float(v) for v in bbox]
+                        bbox = [max(0.0, min(1.0, v)) for v in bbox]
+                    except (TypeError, ValueError):
+                        bbox = [0.0, 0.0, 1.0, 1.0]
+
+                normalized_periods.append({
+                    'start_date': start,
+                    'end_date':   end,
+                    'bbox':       bbox,
+                    'label':      label,
+                })
+
+            if not normalized_periods:
+                return None
+
             return {
-                'start_date': start,
-                'end_date':   end,
-                'confidence': conf
+                'multi':      True,
+                'periods':    normalized_periods,
+                'confidence': conf,
             }
-        return None
+        else:
+            start = result.get('start_date')
+            end   = result.get('end_date')
+            conf  = result.get('confidence', 'low')
+
+            if start and end:
+                start = start.replace('-', '/').replace('.', '/')
+                end   = end.replace('-', '/').replace('.', '/')
+                return {
+                    'start_date': start,
+                    'end_date':   end,
+                    'confidence': conf
+                }
+            return None
 
     except Exception as ex:
         print(f"[ERR ] Gemini período pág {page_number}: {ex}", flush=True)
@@ -539,15 +678,7 @@ Se não encontrar nenhuma data de ponto, retorne: {"start_date": null, "end_date
 # Tarefas RQ
 # ─────────────────────────────────────────────────────────────────────────────
 
-def extract_periods_task(pdf_path, pages, user_id):
-    """
-    Extrai o período (primeira e última data) de cada página selecionada
-    usando Gemini em paralelo.
-
-    Garante ordem correta: cada future é mapeado ao seu page_idx original
-    via dict results{page_idx: period}. Independente da ordem de chegada
-    das respostas, o resultado final é ordenado por page_idx.
-    """
+def extract_periods_task(pdf_path, pages, user_id, quinzenas_nao_sequenciais=False):
     job = get_current_job()
     if not job:
         return None
@@ -560,7 +691,6 @@ def extract_periods_task(pdf_path, pages, user_id):
         reader    = PdfReader(pdf_path)
         total_pdf = len(reader.pages)
 
-        # Monta lista de índices a partir do range recebido
         indices_set = set()
         if pages:
             for part in str(pages).split(','):
@@ -582,6 +712,8 @@ def extract_periods_task(pdf_path, pages, user_id):
         LOG('total págs pdf',   f"{total_pdf} páginas")
         LOG('páginas selecionadas', f"{total_selected}")
         LOG('modelo',           f"Gemini {GEMINI_MODEL}  (paralelo, max {MAX_GEMINI_WORKERS} workers)")
+        if quinzenas_nao_sequenciais:
+            LOG('modo especial', 'múltiplas tabelas por página ativado')
 
         job.meta.update({
             'status': 'processing',
@@ -591,38 +723,44 @@ def extract_periods_task(pdf_path, pages, user_id):
         })
         job.save_meta()
 
-        # ── Processamento paralelo ────────────────────────────────────────────
-        # Chave do dict = page_idx (número real da página no PDF, base 0)
-        # Isso garante que page 255 sempre mapeia para o resultado de page 255,
-        # independente da ordem em que o Gemini responde.
-        results = {}   # {page_idx: period_dict | None}
+        results = {}
         completed_count = 0
 
         with ThreadPoolExecutor(max_workers=min(MAX_GEMINI_WORKERS, total_selected)) as executor:
-            # Mapeia future → page_idx para saber qual página cada future representa
             futures = {
                 executor.submit(
                     _gemini_extract_period,
                     pdf_path,
                     page_idx,
-                    page_idx + 1      # page_number legível para logs
+                    page_idx + 1,
+                    quinzenas_nao_sequenciais
                 ): page_idx
                 for page_idx in indices
             }
 
             for future in as_completed(futures):
-                page_idx = futures[future]   # garante mapeamento correto
+                page_idx = futures[future]
                 period   = future.result()
                 results[page_idx] = period
 
                 completed_count += 1
-                conf_tag = ''
-                if period:
+
+                if period is None:
+                    LOG(f"pág {page_idx + 1}", "sem período identificado", 'WARN')
+                elif period.get('multi'):
+                    n_periods = len(period.get('periods', []))
+                    conf      = period.get('confidence', 'low')
+                    conf_tag  = '' if conf == 'high' else '  ⚠ low confidence'
+                    LOG(f"pág {page_idx + 1}",
+                        f"{n_periods} tabela(s) detectada(s){conf_tag}")
+                    for i, p in enumerate(period['periods'], start=1):
+                        LOG(f"  tabela {i}",
+                            f"{p['start_date']} → {p['end_date']}  "
+                            f"bbox={[round(v,2) for v in p['bbox']]}  '{p.get('label','')}'")
+                else:
                     conf_tag = '' if period.get('confidence') == 'high' else '  ⚠ low confidence'
                     LOG(f"pág {page_idx + 1}",
                         f"{period['start_date']} → {period['end_date']}{conf_tag}")
-                else:
-                    LOG(f"pág {page_idx + 1}", "sem período identificado", 'WARN')
 
                 job.meta.update({
                     'message': f'Gemini processou {completed_count}/{total_selected} páginas...',
@@ -630,29 +768,59 @@ def extract_periods_task(pdf_path, pages, user_id):
                 })
                 job.save_meta()
 
-        # ── Monta resultado final em ordem de page_idx ────────────────────────
-        # sorted(indices) garante que a lista final está na mesma ordem
-        # que o usuário selecionou, independente da chegada paralela.
         res = []
         sem_periodo = []
         low_conf    = []
 
         for page_idx in sorted(indices):
             period = results.get(page_idx)
-            if period is None:
-                sem_periodo.append(page_idx + 1)
-            elif period.get('confidence') == 'low':
-                low_conf.append(page_idx + 1)
+            page_number = page_idx + 1
 
-            res.append({
-                'page_number': page_idx + 1,
-                'page_index':  page_idx,
-                'period':      period
-            })
+            if period is None:
+                sem_periodo.append(page_number)
+                res.append({
+                    'page_number': page_number,
+                    'page_index':  page_idx,
+                    'period':      None,
+                    'bbox':        None,
+                    'label':       '',
+                    'region_id':   0,
+                })
+                continue
+
+            if period.get('multi'):
+                conf = period.get('confidence', 'low')
+                if conf == 'low':
+                    low_conf.append(page_number)
+                for i, p in enumerate(period['periods']):
+                    res.append({
+                        'page_number': page_number,
+                        'page_index':  page_idx,
+                        'period':      {
+                            'start_date': p['start_date'],
+                            'end_date':   p['end_date'],
+                            'confidence': conf,
+                        },
+                        'bbox':        p['bbox'],
+                        'label':       p.get('label', ''),
+                        'region_id':   i,
+                    })
+            else:
+                if period.get('confidence') == 'low':
+                    low_conf.append(page_number)
+                res.append({
+                    'page_number': page_number,
+                    'page_index':  page_idx,
+                    'period':      period,
+                    'bbox':        None,
+                    'label':       '',
+                    'region_id':   0,
+                })
 
         t_total = round(time.time() - t_inicio, 1)
         LOG_SEP('RESULTADO')
-        LOG('páginas com período',    f"{total_selected - len(sem_periodo)} de {total_selected}")
+        LOG('páginas processadas',    f"{total_selected - len(sem_periodo)} de {total_selected}")
+        LOG('total de regiões',       f"{len(res)} entrada(s) (cada região conta separadamente)")
         if sem_periodo:
             LOG('sem período identificado', str(sem_periodo), 'WARN')
         if low_conf:
@@ -686,7 +854,6 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
     try:
         valid_pages = pages_json
 
-        # ── informações do PDF ────────────────────────────────────────────────
         pdf_size_mb    = round(os.path.getsize(pdf_path) / (1024 * 1024), 1)
         pdf_nome       = job.meta.get('original_filename', os.path.basename(pdf_path))
         reader_info    = PdfReader(pdf_path)
@@ -696,6 +863,9 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
         rpm_uso_agora  = _get_rpm_usage()
         slots_livres   = DOCAI_RPM_LIMIT - rpm_uso_agora
 
+        unique_pages = len({p['page_index'] for p in valid_pages})
+        total_regioes = len(valid_pages)
+
         LOG_SEP('JOB INICIADO')
         LOG('job_id',             job.id)
         LOG('usuário',            user_id)
@@ -704,7 +874,11 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
         LOG('arquivo',            pdf_nome)
         LOG('tamanho do pdf',     f"{pdf_size_mb} MB")
         LOG('total págs pdf',     f"{pdf_total_pags} páginas")
-        LOG('range selecionado',  f"{len(valid_pages)} páginas recebidas do frontend")
+        LOG('regiões a processar', f"{total_regioes} região(ões) em {unique_pages} página(s)")
+        if job.meta.get('turno_noturno'):
+            LOG('modo especial',  'turno noturno ativado')
+        if total_regioes > unique_pages:
+            LOG('modo especial',  'múltiplas regiões por página (filtro por data)')
         LOG_SEP('Limite DocAI')
         LOG('limite configurado', f"{DOCAI_RPM_LIMIT} req/min  (margem segura — cota Google: 240)")
         LOG('uso global agora',
@@ -712,43 +886,44 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
             + ("  ⚠ próximo do limite" if rpm_uso_agora >= DOCAI_RPM_LIMIT * 0.8 else ""))
         LOG('slots disponíveis',
             f"{slots_livres} livres  — "
-            + ("sem espera prevista" if slots_livres >= len(valid_pages)
-               else f"pode aguardar: {len(valid_pages)} necessários, {slots_livres} livres agora"))
+            + ("sem espera prevista" if slots_livres >= unique_pages
+               else f"pode aguardar: {unique_pages} necessários, {slots_livres} livres agora"))
 
-        # ── 1. Validação e ordenação cronológica ──────────────────────────────
-        LOG_SEP('Períodos digitados pelo usuário')
+        # ── 1. Validação ──────────────────────────────────────────────────────
+        LOG_SEP('Períodos confirmados pelo usuário')
 
         pages_validas   = []
         pages_ignoradas = []
 
         for p in valid_pages:
             pnum = p.get('page_number', '?')
+            label_extra = f"  [{p.get('label','')}]" if p.get('label') else ""
             try:
                 start_dt = datetime.strptime(p['period']['start_date'], '%d/%m/%Y')
                 end_dt   = datetime.strptime(p['period']['end_date'],   '%d/%m/%Y')
                 if end_dt < start_dt:
                     motivo = (f"end_date '{p['period']['end_date']}' < start_date "
-                              f"'{p['period']['start_date']}' — ano provavelmente errado")
-                    LOG(f"pág {pnum}",
+                              f"'{p['period']['start_date']}'")
+                    LOG(f"pág {pnum}{label_extra}",
                         f"{p['period']['start_date']} → {p['period']['end_date']}  "
                         f"IGNORADA: {motivo}", 'WARN')
                     pages_ignoradas.append((pnum, motivo))
                     continue
                 dias = len(pd.date_range(start=start_dt, end=end_dt, freq='D'))
-                LOG(f"pág {pnum}",
+                LOG(f"pág {pnum}{label_extra}",
                     f"{p['period']['start_date']} → {p['period']['end_date']}  ({dias} dias)")
                 p['start_dt'] = start_dt
                 p['end_dt']   = end_dt
                 pages_validas.append(p)
-            except ValueError as ve:
+            except (ValueError, TypeError, KeyError) as ve:
                 motivo = f"data inválida: {ve}"
-                LOG(f"pág {pnum}", f"IGNORADA: {motivo}", 'WARN')
+                LOG(f"pág {pnum}{label_extra}", f"IGNORADA: {motivo}", 'WARN')
                 pages_ignoradas.append((pnum, motivo))
 
-        LOG('páginas válidas', f"{len(pages_validas)} de {len(valid_pages)}")
+        LOG('regiões válidas', f"{len(pages_validas)} de {len(valid_pages)}")
 
         if not pages_validas:
-            raise ValueError("Nenhuma página com período válido após validação.")
+            raise ValueError("Nenhuma região com período válido após validação.")
 
         pages_validas = sorted(pages_validas, key=lambda p: p['start_dt'])
         global_start  = min(p['start_dt'] for p in pages_validas)
@@ -772,23 +947,21 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
             f"{len(master_df)} dias  "
             f"({master_df['Dia'].iloc[0]} → {master_df['Dia'].iloc[-1]})")
 
-        # ── 3. Document AI paralelo ───────────────────────────────────────────
+        # ── 3. Document AI ────────────────────────────────────────────────────
         LOG_SEP('Document AI')
         LOG('requisições a enviar',
-            f"{len(pages_validas)} páginas  "
-            f"(max_workers={min(MAX_DOCAI_WORKERS, len(pages_validas))})")
+            f"{unique_pages} páginas únicas  "
+            f"(max_workers={min(MAX_DOCAI_WORKERS, unique_pages)})")
 
         t_docai_inicio = time.time()
-        results_by_order, total_waited = extractor.process_pdf_parallel(
+        results_by_order, total_waited, index_to_order = extractor.process_pdf_parallel(
             pdf_path, pages_validas, job.id
         )
         t_docai_seg = round(time.time() - t_docai_inicio, 1)
 
         LOG('tempo de resposta DocAI', f"{t_docai_seg}s")
         if total_waited > 0:
-            LOG('aguardou rate limit',
-                f"{total_waited}s no total  "
-                f"(slots ocupados por outros jobs simultâneos)", 'WARN')
+            LOG('aguardou rate limit', f"{total_waited}s no total", 'WARN')
         else:
             LOG('espera por rate limit', 'nenhuma — limite não atingido')
 
@@ -798,13 +971,13 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
 
         ent_por_pag_partes  = []
         paginas_sem_retorno = []
-        for order in sorted(results_by_order.keys()):
+        for page_idx_unique in sorted(index_to_order.keys()):
+            order = index_to_order[page_idx_unique]
             entities_pag, _ = results_by_order[order]
             n    = len(entities_pag)
-            pnum = pages_validas[order]['page_number']
-            ent_por_pag_partes.append(f"pág {pnum}: {n}")
+            ent_por_pag_partes.append(f"pág {page_idx_unique + 1}: {n}")
             if n == 0:
-                paginas_sem_retorno.append(pnum)
+                paginas_sem_retorno.append(page_idx_unique + 1)
 
         LOG('entidades por página', ' · '.join(ent_por_pag_partes))
         if paginas_sem_retorno:
@@ -813,13 +986,6 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
                 'WARN')
 
         # ── 4. Preenchimento do CSV ───────────────────────────────────────────
-        # Processamento por página, em ordem cronológica.
-        # Para cada página:
-        #   - Entidades já chegam ordenadas por Y (feito no _process_single_page)
-        #   - Mantemos um ponteiro page_row_ptr para a linha física esperada
-        #   - Quando a data está borrada/ausente, inferimos pela posição Y
-        #   - Quando a data já está preenchida no master_df, verificamos se é
-        #     continuação (slots vazios → mescla) ou duplicata real (tudo cheio → skip)
         extractor.update_progress(4, 4, "Finalizando planilha...")
 
         filled_count          = 0
@@ -831,23 +997,55 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
         full_date_hits        = 0
         day_month_hits        = 0
         fallback_day_hits     = 0
-       
+        regioes_filtradas     = 0
+        valores_invalidos     = 0  # contador de horários impossíveis rejeitados
+
         _infer_warn: dict[int, list] = {}
 
-        for page_idx, p_info in enumerate(pages_validas):
-            entities_pag, _ = results_by_order.get(page_idx, ([], ""))
+        for region_idx, p_info in enumerate(pages_validas):
+            page_idx = p_info['page_index']
+            order = index_to_order.get(page_idx)
+            if order is None:
+                continue
 
-            # Sequência de datas do período desta página — base do tracker Y
+            entities_pag_all, _ = results_by_order.get(order, ([], ""))
+
+            # ── ALTERAÇÃO: filtra por DATA do dia (não por bbox) ──────────────
+            # Se a página tem múltiplas regiões (mesma page_index aparece >1 vez),
+            # filtramos as entidades pelo dia (1-31) que cabe no período da região.
+            page_idx_count = sum(1 for pp in pages_validas if pp['page_index'] == page_idx)
+
+            if page_idx_count > 1:
+                # Múltiplas regiões nesta página → filtra por data
+                entities_pag = []
+                descartadas = 0
+                for ent in entities_pag_all:
+                    pertence = _entity_falls_in_period(
+                        ent, p_info['start_dt'], p_info['end_dt'], p_info['start_dt'].year
+                    )
+                    if pertence is True:
+                        entities_pag.append(ent)
+                    elif pertence is False:
+                        descartadas += 1
+                    else:
+                        # None = sem data extraível → inclui (vai cair em skip_no_date)
+                        entities_pag.append(ent)
+                regioes_filtradas += descartadas
+                label_extra = f"  [{p_info.get('label','')}]" if p_info.get('label') else ""
+                LOG(f"pág {page_idx+1}{label_extra}",
+                    f"{len(entities_pag)} entidades dentro do período "
+                    f"(de {len(entities_pag_all)} totais — {descartadas} descartadas por data)")
+            else:
+                # Página com região única → usa todas as entidades
+                entities_pag = entities_pag_all
+
             page_dr    = pd.date_range(start=p_info['start_dt'], end=p_info['end_dt'], freq='D')
             page_dates = [d.strftime('%d/%m/%Y') for d in page_dr]
             default_year = p_info['start_dt'].year
 
-            # Ponteiro para a linha física esperada dentro do período desta página
             page_row_ptr = 0
 
             for entity in entities_pag:
-                # entities_pag já está ordenada por Y (spatial_sort aplicado no _process_single_page)
-
                 shard_text = getattr(entity, '_shard_text', '')
                 data = {
                     prop.type_.lower(): get_text_safely(prop, shard_text)
@@ -856,22 +1054,19 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
 
                 raw_dia = data.get('dia', data.get('data', ''))
 
-                # ── Resolução de data em 4 etapas ────────────────────────────
-
                 target_date = None
 
-                # Etapa 1: data completa DD/MM/YYYY no campo (PontoMais, etc.)
+                # Etapa 1: data completa
                 full_date = extract_full_date(raw_dia)
                 if full_date and full_date in date_to_row:
                     target_date = full_date
                     full_date_hits += 1
-                    # Avança o ponteiro Y até esta data dentro do período da página
                     if full_date in page_dates:
                         new_ptr = page_dates.index(full_date)
                         if new_ptr >= page_row_ptr:
                             page_row_ptr = new_ptr + 1
 
-                # Etapa 2: DD/MM sem ano → usa o ano do período da página (Murici, etc.)
+                # Etapa 2: DD/MM
                 if target_date is None and raw_dia:
                     match_dm = re.match(r'^(\d{1,2})[/.-](\d{1,2})$', str(raw_dia).strip())
                     if match_dm:
@@ -880,24 +1075,76 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
                                                   p_info['end_dt'].year + 1))
                         for year in years_range:
                             candidate = f"{d.zfill(2)}/{m.zfill(2)}/{year}"
-                            if candidate in date_to_row:
+                            if candidate in date_to_row and candidate in page_dates:
                                 target_date = candidate
                                 day_month_hits += 1
-                                if candidate in page_dates:
-                                    new_ptr = page_dates.index(candidate)
-                                    if new_ptr >= page_row_ptr:
-                                        page_row_ptr = new_ptr + 1
+                                new_ptr = page_dates.index(candidate)
+                                if new_ptr >= page_row_ptr:
+                                    page_row_ptr = new_ptr + 1
+                                break
+                
+                raw_dia = data.get('dia', data.get('data', ''))
+
+                target_date = None
+
+                # Etapa 1: data completa DD/MM/YYYY (raro mas se vier, é confiável)
+                full_date = extract_full_date(raw_dia)
+                if full_date and full_date in date_to_row:
+                    target_date = full_date
+                    full_date_hits += 1
+                    if full_date in page_dates:
+                        new_ptr = page_dates.index(full_date)
+                        if new_ptr >= page_row_ptr:
+                            page_row_ptr = new_ptr + 1
+
+                # Etapa 2: DD/MM com ano da página
+                if target_date is None and raw_dia:
+                    match_dm = re.match(r'^(\d{1,2})[/.-](\d{1,2})$', str(raw_dia).strip())
+                    if match_dm:
+                        d, m = match_dm.groups()
+                        years_range = list(range(p_info['start_dt'].year,
+                                                  p_info['end_dt'].year + 1))
+                        for year in years_range:
+                            candidate = f"{d.zfill(2)}/{m.zfill(2)}/{year}"
+                            if candidate in date_to_row and candidate in page_dates:
+                                target_date = candidate
+                                day_month_hits += 1
+                                new_ptr = page_dates.index(candidate)
+                                if new_ptr >= page_row_ptr:
+                                    page_row_ptr = new_ptr + 1
                                 break
 
-                # Etapa 3: data borrada/ausente → inferência por posição Y
-                # Usa page_row_ptr para saber qual dia esperamos nesta linha física
+                # Etapa 3 (NOVA PRIORIDADE): número do dia (1-31) extraído pelo DocAI
+                # Esta etapa vem ANTES da inferência por Y porque é mais confiável.
+                # O DocAI extrai o número do dia em quase todas as linhas — usar isso
+                # evita problemas quando as entidades vêm fora de ordem.
+                if target_date is None and raw_dia:
+                    raw_clean = re.sub(r'[^\d]', '', str(raw_dia).split('/')[0])
+                    if raw_clean:
+                        try:
+                            n = int(raw_clean)
+                            if 1 <= n <= 31:
+                                day_str   = f"{n:02d}"
+                                # Procura primeira data do período da página com esse dia
+                                day_match = next(
+                                    (d for d in page_dates if d.startswith(day_str + '/')),
+                                    None
+                                )
+                                if day_match and day_match in date_to_row:
+                                    target_date = day_match
+                                    fallback_day_hits += 1
+                                    new_ptr = page_dates.index(day_match)
+                                    if new_ptr >= page_row_ptr:
+                                        page_row_ptr = new_ptr + 1
+                        except (ValueError, OverflowError):
+                            pass
+
+                # Etapa 4 (ÚLTIMO FALLBACK): inferência por posição Y
+                # Só usa quando nem o número do dia foi extraído (raro)
                 if target_date is None:
                     if page_row_ptr < len(page_dates):
                         expected_date = page_dates[page_row_ptr]
-
-                        # Tenta ainda corrigir dígito parcial se raw_dia não está vazio
                         inferred = infer_date_by_position(raw_dia or None, expected_date, default_year)
-
                         if inferred in date_to_row:
                             target_date = inferred
                             inferidas_por_y += 1
@@ -908,31 +1155,10 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
                             else:
                                 _infer_warn.setdefault(pn, []).append(f"ausente→'{inferred}'")
 
-                # Etapa 4: fallback — só o número do dia dentro do período da página
-                if target_date is None and raw_dia:
-                    raw_clean = re.sub(r'[^\d]', '', str(raw_dia).split('/')[0])
-                    if raw_clean:
-                        n = int(raw_clean)
-                        if 1 <= n <= 31:
-                            day_str   = f"{n:02d}"
-                            day_match = next(
-                                (d for d in page_dates if d.startswith(day_str + '/')),
-                                None
-                            )
-                            if day_match and day_match in date_to_row:
-                                idx_cand = date_to_row[day_match]
-                                if master_df.at[idx_cand, 'Entrada1'] == "0":
-                                    target_date = day_match
-                                    fallback_day_hits += 1
-                                    if day_match in page_dates:
-                                        new_ptr = page_dates.index(day_match)
-                                        if new_ptr >= page_row_ptr:
-                                            page_row_ptr = new_ptr + 1
-
-                # ── Sem data após todas as etapas ────────────────────────────
                 if target_date is None:
                     skip_no_date += 1
-                    page_row_ptr += 1  # avança mesmo sem data para não desalinhar
+                    # Não avança o ponteiro Y aqui — entidades sem data não devem
+                    # corromper o tracker para as próximas
                     continue
 
                 target_idx = date_to_row.get(target_date)
@@ -940,36 +1166,55 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
                     skip_no_row += 1
                     continue
 
-                # ── Preenchimento ou mescla ───────────────────────────────────
+                # Conta horários inválidos antes de preencher
+                for k in range(1, 12):
+                    raw_e = data.get(f'entrada{k}', "0")
+                    raw_s = data.get(f'saida{k}', "0")
+                    if raw_e and raw_e != "0" and normalize_time(raw_e) == "0":
+                        valores_invalidos += 1
+                    if raw_s and raw_s != "0" and normalize_time(raw_s) == "0":
+                        valores_invalidos += 1
+
                 if master_df.at[target_idx, 'Entrada1'] == "0":
-                    # Linha vazia — preenche normalmente
                     preencheu = _fill_slots(master_df, target_idx, data)
                     if preencheu:
                         filled_count += 1
                 else:
-                    # Linha já tem dados — três possibilidades:
-                    # 1. Período duplicado (duas páginas com mesmo período) → skip
-                    # 2. Página dividida (continuação real com valores novos) → mescla
-                    # 3. Todos os slots cheios → skip
                     if _is_duplicate_values(master_df, target_idx, data):
-                        # Todos os valores da entidade já existem na linha
-                        # → período duplicado ou virada simples → ignora
                         skip_duplicado += 1
                     elif _has_empty_slots(master_df, target_idx):
-                        # Há slots vazios E há valores novos → continuação real
                         preencheu = _fill_slots(master_df, target_idx, data)
                         if preencheu:
                             continuacoes_mescladas += 1
-                            LOG(f"  mescla pág {p_info['page_number']}",
-                                f"continuação mesclada em '{target_date}' "
-                                f"(marcações de página dividida)")
                     else:
-                        # Slots cheios com valores diferentes — situação inesperada
                         skip_duplicado += 1
+
         for _pn, _itens in sorted(_infer_warn.items()):
             LOG(f"  inferência Y pág {_pn}",
                 f"{len(_itens)} datas corrigidas/inferidas por posição  "
                 f"(ex: {_itens[0]})", 'WARN')
+
+        if regioes_filtradas > 0:
+            LOG('entidades fora dos períodos', f"{regioes_filtradas} (filtradas por data)")
+        if valores_invalidos > 0:
+            LOG('horários inválidos rejeitados',
+                f"{valores_invalidos} (OCR retornou valores impossíveis tipo 20:70, 40:74)", 'WARN')
+
+        # ── 4.5. Pareamento noturno ───────────────────────────────────────────
+        avisos_noturno = []
+        pareados_noturno = 0
+        if job.meta.get('turno_noturno'):
+            try:
+                from noturno_pareamento import aplicar_pareamento_noturno
+                LOG_SEP('Pareamento de plantões noturnos')
+                resultado_noturno = aplicar_pareamento_noturno(master_df, log_fn=LOG)
+                avisos_noturno = resultado_noturno.get('avisos', [])
+                pareados_noturno = resultado_noturno.get('pareados', 0)
+                LOG('plantões pareados', str(pareados_noturno))
+                LOG('avisos gerados',   str(len(avisos_noturno)))
+            except Exception as e:
+                LOG('erro no pareamento noturno', str(e), 'WARN')
+
         # ── 5. Salvar CSV ─────────────────────────────────────────────────────
         random_id      = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
         final_filename = f"Ponto_Extraido_{random_id}.csv"
@@ -977,30 +1222,24 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
         master_df.to_csv(out_path, index=False, sep=';', encoding='utf-8-sig')
         csv_size_kb = round(os.path.getsize(out_path) / 1024, 1)
 
-        # ── LOG: resultado ────────────────────────────────────────────────────
         dias_preenchidos = int((master_df['Entrada1'] != "0").sum())
-        taxa       = round((dias_preenchidos / len(master_df)) * 100, 1) if len(master_df) > 0 else 0
-        taxa_aviso = taxa < 30 and dias_preenchidos > 0
+        # Inclui dias com só Saida1 (caso do dia 01 com saída órfã)
+        dias_com_alguma_marcacao = int(((master_df['Entrada1'] != "0") | (master_df['Saida1'] != "0")).sum())
+        taxa       = round((dias_com_alguma_marcacao / len(master_df)) * 100, 1) if len(master_df) > 0 else 0
+        taxa_aviso = taxa < 30 and dias_com_alguma_marcacao > 0
 
         LOG_SEP('Resultado do preenchimento')
-        LOG('dias preenchidos',
-            f"{dias_preenchidos} / {len(master_df)}  (taxa: {taxa}%)"
+        LOG('dias com marcação',
+            f"{dias_com_alguma_marcacao} / {len(master_df)}  (taxa: {taxa}%)"
             + ("  ⚠ ABAIXO DO LIMIAR (30%)" if taxa_aviso else ""))
-        LOG('resolução data completa',
-            f"{full_date_hits}  (DD/MM/YYYY direto do DocAI)")
-        LOG('resolução DD/MM + ano página',
-            f"{day_month_hits}  (ano inferido do período digitado)")
-        LOG('inferidas por posição Y',
-            f"{inferidas_por_y}  (data borrada/ausente recuperada por ordem física)")
-        LOG('resolução fallback dia',
-            f"{fallback_day_hits}  (número do dia apenas)")
-        LOG('continuações mescladas',
-            f"{continuacoes_mescladas}  (marcações de página dividida unificadas)")
-        LOG('duplicados ignorados',
-            f"{skip_duplicado}  (virada de página simples — linha idêntica)")
-        LOG('skip fora do range',    str(skip_no_row))
-        LOG('skip sem data',         str(skip_no_date))
-
+        LOG('resolução data completa', f"{full_date_hits}")
+        LOG('resolução DD/MM + ano página', f"{day_month_hits}")
+        LOG('resolução nº do dia (DocAI)', f"{fallback_day_hits}  (campo `data` extraído pelo DocAI)")
+        LOG('inferidas por posição Y', f"{inferidas_por_y}  (último fallback, quando DocAI não extraiu nº)")
+        LOG('continuações mescladas', f"{continuacoes_mescladas}")
+        LOG('duplicados ignorados', f"{skip_duplicado}")
+        LOG('skip fora do range',   str(skip_no_row))
+        LOG('skip sem data',        str(skip_no_date))
         if taxa_aviso:
             LOG('avaliação',
                 'taxa baixa — verifique se as datas informadas correspondem ao PDF',
@@ -1023,10 +1262,14 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
         LOG('arquivo',     f"{final_filename}  ({csv_size_kb} KB)")
         LOG_SEP()
 
+        total_dias = len(master_df)
         job.meta.update({
-            'status':    'completed',
-            'file_path': out_path,
-            'filename':  final_filename
+            'status':     'completed',
+            'file_path':  out_path,
+            'filename':   final_filename,
+            'avisos':     avisos_noturno,
+            'total_dias': total_dias,
+            'pareados':   pareados_noturno,
         })
         job.save()
         return out_path

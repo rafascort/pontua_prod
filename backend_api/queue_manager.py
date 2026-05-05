@@ -295,6 +295,11 @@ def extract_periods():
             return jsonify({'error': 'PDF não enviado.'}), 400
         file  = request.files['pdf_file']
         pages = request.form.get('pages', '')
+        # ALTERAÇÃO: aceita flag de quinzenas não-sequenciais (opcional, padrão False)
+        quinzenas_nao_sequenciais = request.form.get('quinzenas_nao_sequenciais', 'false').lower() == 'true'
+        # ALTERAÇÃO: aceita flag de turno noturno (opcional, padrão False) — guarda para próxima etapa
+        turno_noturno = request.form.get('turno_noturno', 'false').lower() == 'true'
+
         if file.filename == '':
             return jsonify({'error': 'Nenhum ficheiro selecionado.'}), 400
 
@@ -315,11 +320,17 @@ def extract_periods():
             'extractor_geral_ai.extract_periods_task',
             pdf_path, pages,
             user_id=current_user_email,
+            quinzenas_nao_sequenciais=quinzenas_nao_sequenciais,   # ALTERAÇÃO
             job_timeout='15m', result_ttl=1800,
-            meta={'user_id': current_user_email, 'pdf_path': pdf_path, 'step': 'period_extraction'}
+            meta={
+                'user_id': current_user_email,
+                'pdf_path': pdf_path,
+                'step': 'period_extraction',
+                'turno_noturno': turno_noturno,                     # ALTERAÇÃO: guarda flag pra etapa 2
+                'quinzenas_nao_sequenciais': quinzenas_nao_sequenciais,
+            }
         )
         return jsonify({'task_id': job.id, 'status': 'queued', 'step': 'period_extraction'})
-
     except Exception as e:
         print(f"Erro /extract-periods: {e}")
         traceback.print_exc()
@@ -349,6 +360,7 @@ def process_pdf():
         pages_with_periods = data.get('pages_with_periods')
         pdf_path           = data.get('pdf_path')
         model_type         = data.get('model_type', '6')
+        turno_noturno      = bool(data.get('turno_noturno', False))
 
         if not pages_with_periods or not pdf_path:
             return jsonify({'error': 'Dados incompletos.'}), 400
@@ -380,6 +392,7 @@ def process_pdf():
                 'step':             'full_processing',
                 'pages_to_process': num_pages_to_process,
                 'usage_counted':    False,
+                'turno_noturno':    turno_noturno,
             }
         )
         return jsonify({'task_id': job.id, 'status': 'queued', 'step': 'full_processing'})
