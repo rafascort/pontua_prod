@@ -299,16 +299,16 @@ def get_user_details():
 
     claims = get_jwt()
     return jsonify(
-        id=user.id,
-        email=user.email,
-        role=claims.get('role', 'user'),
-        is_active=claims.get('is_active', False),
-        page_count=user.page_count,
-        plan_status=claims.get('plan_status', 'free'),
-        stripe_customer_id=user.stripe_customer_id,
-        referral_code=user.referral_code,
-        discount_credits=user.discount_credits or 0,
-    ), 200
+    id=user.id,
+    email=user.email,
+    role=user.role,                      # DB
+    is_active=user.is_active,            # DB
+    page_count=user.page_count,
+    plan_status=user.plan_status or 'free',   # DB — sempre atualizado
+    stripe_customer_id=user.stripe_customer_id,
+    referral_code=user.referral_code,
+    discount_credits=user.discount_credits or 0,
+), 200
 
 @app.route('/api/user/password', methods=['PUT'])
 @jwt_required()
@@ -893,6 +893,9 @@ def handle_invoice_payment_succeeded(invoice):
             db.session.rollback()
     elif subscription_id and billing_reason in ['subscription_create', 'subscription_update']:
         try:
+            if billing_reason == 'subscription_create' and user.plan_status == 'free':
+                print(f"Webhook: Zerando contagem free→pago para {user.email} (era {user.page_count}).")
+                user.page_count = 0
             subscription = stripe.Subscription.retrieve(subscription_id)
             update_user_plan_from_subscription(user, subscription)
             # --- GARANTE A DATA NO NOVO PLANO ---
