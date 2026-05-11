@@ -471,44 +471,6 @@ def _is_duplicate_values(master_df, target_idx, data):
 # Filtro de entidades por região
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _parse_day_number(raw_str):
-    """
-    Extrai número do dia (1-31) de uma string bruta do DocAI,
-    tolerando o artefato OCR onde um "1" adjacente é lido junto
-    com o número do dia (ex: "102" para dia 2, "120" para dia 20).
-
-    Regra de correção (segura):
-      Se o número extraído > 31, tenta os últimos 2 dígitos.
-      Códigos de jornada (684, 795, 796…) têm últimos 2 dígitos
-      acima de 31 e continuam sendo rejeitados corretamente.
-
-    Retorna int entre 1 e 31, ou None se não for possível extrair
-    um dia válido. Nunca lança exceção.
-    """
-    if not raw_str:
-        return None
-    raw_clean = re.sub(r'[^\d]', '', str(raw_str).split('/')[0])
-    if not raw_clean:
-        return None
-    try:
-        n = int(raw_clean)
-    except (ValueError, OverflowError):
-        return None
-
-    # Caso normal: já é um dia válido
-    if 1 <= n <= 31:
-        return n
-
-    # Artefato OCR: "1" prefixado — tenta últimos 2 dígitos
-    # Exemplo: "102" → 02 = 2 ✓  |  "120" → 20 ✓  |  "684" → 84 > 31 ✗
-    if n > 31 and len(raw_clean) >= 3:
-        tail = int(raw_clean[-2:])
-        if 1 <= tail <= 31:
-            return tail
-
-    return None
-
-
 def _entity_falls_in_period(entity, period_start, period_end, default_year):
     """
     Decide se uma entidade do DocAI pertence ao período da região.
@@ -531,10 +493,17 @@ def _entity_falls_in_period(entity, period_start, period_end, default_year):
     if not raw_data:
         return None  # sem data → não dá pra decidir
 
-    # Extrai o número do dia usando helper que trata artefato OCR '1XX'
-    # Ex: '102' → 2, '120' → 20; códigos de jornada (684, 795) → None
-    dia_num = _parse_day_number(raw_data)
-    if dia_num is None:
+    # Tenta extrair só o dia (número 1-31)
+    raw_clean = re.sub(r'[^\d]', '', str(raw_data).split('/')[0])
+    if not raw_clean:
+        return None
+
+    try:
+        dia_num = int(raw_clean)
+    except ValueError:
+        return None
+
+    if not (1 <= dia_num <= 31):
         return None
 
     # Verifica se algum dia desse número cabe no intervalo
@@ -1149,22 +1118,26 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
                 # Esta etapa vem ANTES da inferência por Y porque é mais confiável.
                 # O DocAI extrai o número do dia em quase todas as linhas — usar isso
                 # evita problemas quando as entidades vêm fora de ordem.
-                # Etapa 3: nº do dia pelo DocAI — helper trata artefato OCR '1XX'
                 if target_date is None and raw_dia:
-                    n = _parse_day_number(raw_dia)
-                    if n is not None:
-                        day_str   = f"{n:02d}"
-                        # Procura primeira data do período da página com esse dia
-                        day_match = next(
-                            (d for d in page_dates if d.startswith(day_str + '/')),
-                            None
-                        )
-                        if day_match and day_match in date_to_row:
-                            target_date = day_match
-                            fallback_day_hits += 1
-                            new_ptr = page_dates.index(day_match)
-                            if new_ptr >= page_row_ptr:
-                                page_row_ptr = new_ptr + 1
+                    raw_clean = re.sub(r'[^\d]', '', str(raw_dia).split('/')[0])
+                    if raw_clean:
+                        try:
+                            n = int(raw_clean)
+                            if 1 <= n <= 31:
+                                day_str   = f"{n:02d}"
+                                # Procura primeira data do período da página com esse dia
+                                day_match = next(
+                                    (d for d in page_dates if d.startswith(day_str + '/')),
+                                    None
+                                )
+                                if day_match and day_match in date_to_row:
+                                    target_date = day_match
+                                    fallback_day_hits += 1
+                                    new_ptr = page_dates.index(day_match)
+                                    if new_ptr >= page_row_ptr:
+                                        page_row_ptr = new_ptr + 1
+                        except (ValueError, OverflowError):
+                            pass
 
                 # Etapa 4 (ÚLTIMO FALLBACK): inferência por posição Y
                 # Só usa quando nem o número do dia foi extraído (raro)

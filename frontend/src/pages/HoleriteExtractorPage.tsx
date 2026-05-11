@@ -107,6 +107,7 @@ function VerbaSelectionModal({
           pdf_path: data.pdf_path,
           pages: data.pages,
           selected_verbas: selectedVerbas,
+	  known_names: data.nomes ?? [],
         }),
       });
       const resData = await res.json();

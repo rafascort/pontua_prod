@@ -267,11 +267,12 @@ def payroll_process():
         can_process, error_response = check_user_page_balance(current_user_email, pages_requested)
         if not can_process:
             return error_response
- 
+
+    known_names = data.get('known_names', [])
     q   = QUEUES.get('payroll')
     job = q.enqueue(
         'payroll_extractor_ai.process_payroll_final_task',
-        data['pdf_path'], pages, data['selected_verbas'], current_user_email,
+        data['pdf_path'], pages, data['selected_verbas'], current_user_email, known_names,
         job_timeout='1h', result_ttl=1800,
         meta={'user_id': current_user_email, 'usage_counted': False}
     )

@@ -3,20 +3,60 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!-- Canonical — impede Google de indexar /login como página principal -->
+    <link rel="canonical" href="https://sistemaponto.com.br/" />
+
     <link rel="icon" type="image/png" href="/favicon.png" />
-    <title>Sistema Ponto</title>
-    <meta name="description" content="Extração inteligente de dados com IA para perícias trabalhistas e contábeis." />
+
+    <!-- SEO primário -->
+    <title>Sistema Ponto — Extração de Cartão de Ponto e Holerite com IA</title>
+    <meta name="description" content="Automatize a extração de dados de cartões de ponto e holerites com Inteligência Artificial. Gere planilhas prontas em segundos. Ideal para peritos trabalhistas e contábeis." />
+    <meta name="keywords" content="sistema ponto, cartão de ponto, extração de ponto, holerite, perícia trabalhista, automação RH" />
     <meta name="author" content="Sistema Ponto" />
+    <meta name="robots" content="index, follow" />
 
-    <meta property="og:title" content="Sistema Ponto" />
-    <meta property="og:description" content="Extração inteligente de dados com IA para perícias trabalhistas e contábeis." />
+    <!-- Open Graph (WhatsApp, LinkedIn, Facebook) -->
     <meta property="og:type" content="website" />
-    <meta property="og:image" content="/favicon.png" />
+    <meta property="og:url" content="https://sistemaponto.com.br/" />
+    <meta property="og:site_name" content="Sistema Ponto" />
+    <meta property="og:title" content="Sistema Ponto — Extração de Cartão de Ponto com IA" />
+    <meta property="og:description" content="Automatize a extração de dados de cartões de ponto e holerites. Gere planilhas prontas em segundos para perícias trabalhistas." />
+    <meta property="og:image" content="https://sistemaponto.com.br/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:locale" content="pt_BR" />
 
-    <meta name="twitter:card" content="summary" />
-    <meta name="twitter:image" content="/favicon.png" />
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Sistema Ponto — Extração com IA" />
+    <meta name="twitter:description" content="Automatize a extração de cartões de ponto e holerites com IA." />
+    <meta name="twitter:image" content="https://sistemaponto.com.br/og-image.png" />
+
+    <!-- JSON-LD: Schema.org para o Google entender o produto -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "Sistema Ponto",
+      "url": "https://sistemaponto.com.br",
+      "description": "Plataforma SaaS que usa IA para extrair dados de cartões de ponto e holerites, gerando planilhas automaticamente para perícias trabalhistas.",
+      "applicationCategory": "BusinessApplication",
+      "operatingSystem": "Web",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "BRL",
+        "description": "50 páginas grátis no cadastro"
+      },
+      "provider": {
+        "@type": "Organization",
+        "name": "Sistema Ponto",
+        "url": "https://sistemaponto.com.br"
+      }
+    }
+    </script>
   </head>
-
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
