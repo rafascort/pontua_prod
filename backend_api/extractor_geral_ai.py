@@ -279,6 +279,14 @@ def normalize_time(val):
             mm = int(mm_str[:2])
             if _is_valid_time(hh, mm):
                 return f"{hh:02d}:{mm:02d}"
+            # OCR leu "0" como "3" na dezena da hora (ex: "36:25" → "06:25")
+            # Se a hora tem 2 dígitos e é > 23, tenta só o segundo dígito
+            if hh > 23 and len(match.group(1)) == 2:
+                hh_alt = int(match.group(1)[1])
+                if _is_valid_time(hh_alt, mm):
+                    return f"{hh_alt:02d}:{mm:02d}"
+
+        # Caso "#18\n:" — começa com algo + número + ":" sem MM legível
 
         # Caso "#18\n:" — começa com algo + número + ":" sem MM legível
         # Tenta ainda extrair só os dígitos
@@ -287,6 +295,12 @@ def normalize_time(val):
             hh, mm = int(digits_only[:2]), int(digits_only[2:])
             if _is_valid_time(hh, mm):
                 return f"{hh:02d}:{mm:02d}"
+        elif len(digits_only) >= 5:
+            # Tira o excesso do final ou do início (mesma lógica da Estratégia B)
+            for cand in [digits_only[:4], digits_only[1:5]]:
+                hh, mm = int(cand[:2]), int(cand[2:])
+                if _is_valid_time(hh, mm):
+                    return f"{hh:02d}:{mm:02d}"
         return "0"
 
     # Estratégia B: sem ":", só dígitos extraídos

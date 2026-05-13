@@ -2,11 +2,9 @@
 //
 // ATUALIZAÇÕES DESTA VERSÃO:
 //   1. Suporte a múltiplos períodos por página (quinzenas não-sequenciais)
-//      → Cada página pode ter 1 ou mais regiões com períodos diferentes
-//      → Cada região vira uma linha na tela de confirmação
-//      → Backend processa cada região com filtro de bbox
 //   2. WarningsModal pós-download (avisos de plantão noturno)
 //   3. Checkboxes opcionais "Quinzenas não-sequenciais" e "Plantões noturnos"
+//   4. Detecção de sobreposição de períodos com aviso visual em tempo real
 
 import { useState, useRef, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -70,15 +68,14 @@ interface Period {
   confidence?: string;
 }
 
-// ALTERAÇÃO: PageInfo agora suporta bbox + label para múltiplas regiões
 interface PageInfo {
   page_number: number;
   page_index: number;
   period: Period | null;
   is_active: boolean;
-  bbox?: number[] | null;        // [x_min, y_min, x_max, y_max] em coords normalizadas
-  label?: string;                // rótulo descritivo da região (ex: "1ª Quinzena")
-  region_id?: number;            // 0, 1, 2... — ordem da região dentro da página
+  bbox?: number[] | null;
+  label?: string;
+  region_id?: number;
 }
 
 // ─────────────────────────────────────────────
@@ -110,13 +107,49 @@ function PeriodConfirmationModal({
 
   const activeCount = items.filter((p) => p.is_active).length;
 
-  // ALTERAÇÃO: detecta se há múltiplas regiões em qualquer página
+  // Detecta se há múltiplas regiões em qualquer página
   const hasMultipleRegions = useMemo(() => {
     const counts = new Map<number, number>();
     for (const item of items) {
       counts.set(item.page_index, (counts.get(item.page_index) ?? 0) + 1);
     }
     return Array.from(counts.values()).some((c) => c > 1);
+  }, [items]);
+
+  // Detecta sobreposição de períodos entre páginas ativas diferentes
+  const overlapPairs = useMemo(() => {
+    const parseD = (s: string): Date | null => {
+      if (!DATE_RE.test(s)) return null;
+      const [d, m, y] = s.split("/");
+      return new Date(+y, +m - 1, +d);
+    };
+    const active = items
+      .map((item, idx) => ({ item, idx }))
+      .filter(
+        ({ item }) =>
+          item.is_active &&
+          item.period &&
+          DATE_RE.test(item.period.start_date) &&
+          DATE_RE.test(item.period.end_date)
+      );
+    const pairs: Array<{ aPag: number; bPag: number }> = [];
+    for (let i = 0; i < active.length; i++) {
+      for (let j = i + 1; j < active.length; j++) {
+        const a = active[i];
+        const b = active[j];
+        // Mesma página física (multi-região) — sobreposição é esperada, ignora
+        if (a.item.page_index === b.item.page_index) continue;
+        const aS = parseD(a.item.period!.start_date)!;
+        const aE = parseD(a.item.period!.end_date)!;
+        const bS = parseD(b.item.period!.start_date)!;
+        const bE = parseD(b.item.period!.end_date)!;
+        // Dois intervalos se sobrepõem se: aS <= bE && bS <= aE
+        if (aS <= bE && bS <= aE) {
+          pairs.push({ aPag: a.item.page_number, bPag: b.item.page_number });
+        }
+      }
+    }
+    return pairs;
   }, [items]);
 
   const handleDateChange = (index: number, field: keyof Period, raw: string) => {
@@ -163,7 +196,6 @@ function PeriodConfirmationModal({
       const next = [...prev];
       for (let i = startIndex + 1; i < next.length; i++) {
         if (!next[i].is_active) continue;
-        // Não aplica se a próxima é uma região da mesma página (multi-quinzena)
         if (next[i].page_index === next[startIndex].page_index) continue;
         const ns = new Date(lastStart);
         ns.setMonth(ns.getMonth() + 1);
@@ -248,7 +280,7 @@ function PeriodConfirmationModal({
             </div>
           </div>
 
-          {/* ALTERAÇÃO: aviso quando há múltiplas regiões */}
+          {/* Aviso multi-região */}
           {hasMultipleRegions && (
             <div className="px-6 py-2 bg-primary/5 border-b border-border/30 shrink-0">
               <p className="text-xs text-muted-foreground">
@@ -260,7 +292,6 @@ function PeriodConfirmationModal({
           {/* Lista de regiões */}
           <div className="overflow-y-auto flex-1 p-4 space-y-2">
             {items.map((page, index) => {
-              // Detecta se é uma região "secundária" (mesma página que a anterior)
               const isMultiRegion = index > 0 && items[index - 1].page_index === page.page_index;
 
               return (
@@ -273,90 +304,109 @@ function PeriodConfirmationModal({
                     page.is_active
                       ? "border-border/50 bg-secondary/20"
                       : "border-border/20 bg-secondary/5 opacity-45"
-                  } ${isMultiRegion ? "ml-6" : ""}`}
+                  } ${isMultiRegion ? "ml-6 border-dashed" : ""}`}
                 >
+                  {/* Toggle */}
                   <button
                     onClick={() => handleToggle(index)}
-                    className="flex items-center justify-center text-muted-foreground hover:text-primary transition-colors"
-                    title={page.is_active ? "Desativar" : "Ativar"}
+                    className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
                   >
                     {page.is_active
                       ? <ToggleRight className="w-5 h-5 text-primary" />
                       : <ToggleLeft className="w-5 h-5" />}
                   </button>
 
-                  <div className="flex flex-col min-w-[80px]">
-                    <span className="text-sm font-semibold text-foreground">
+                  {/* Número da página */}
+                  <div className="shrink-0 min-w-[56px]">
+                    <p className="text-xs font-semibold text-foreground leading-tight">
                       Pág {page.page_number}
-                    </span>
+                    </p>
                     {page.label && (
-                      <span className="text-[10px] text-muted-foreground leading-tight">
-                        {page.label}
-                      </span>
+                      <p className="text-[10px] text-muted-foreground leading-tight">{page.label}</p>
                     )}
                   </div>
 
-                  <input
-                    type="text"
-                    value={page.period?.start_date ?? ""}
-                    onChange={(e) => handleDateChange(index, "start_date", e.target.value)}
-                    placeholder="DD/MM/AAAA"
-                    maxLength={10}
-                    disabled={!page.is_active}
-                    className={`w-full px-3 py-2 rounded-lg bg-background/60 border text-foreground text-sm focus:outline-none transition-all disabled:opacity-40 ${
-                      page.period?.start_date && DATE_RE.test(page.period.start_date)
-                        ? "border-success/50 focus:border-success/80 focus:ring-1 focus:ring-success/20"
-                        : "border-border/50 focus:border-primary/60 focus:ring-1 focus:ring-primary/20"
-                    }`}
-                  />
-
-                  <ChevronRight className="w-4 h-4 text-muted-foreground" />
-
-                  <input
-                    type="text"
-                    value={page.period?.end_date ?? ""}
-                    onChange={(e) => handleDateChange(index, "end_date", e.target.value)}
-                    placeholder="DD/MM/AAAA"
-                    maxLength={10}
-                    disabled={!page.is_active}
-                    className={`w-full px-3 py-2 rounded-lg bg-background/60 border text-foreground text-sm focus:outline-none transition-all disabled:opacity-40 ${
-                      page.period?.end_date && DATE_RE.test(page.period.end_date)
-                        ? "border-success/50 focus:border-success/80 focus:ring-1 focus:ring-success/20"
-                        : "border-border/50 focus:border-primary/60 focus:ring-1 focus:ring-primary/20"
-                    }`}
-                  />
-
-                  <button
-                    onClick={() => handleApplyPattern(index)}
-                    disabled={!page.is_active}
-                    title="Preencher próximas páginas com padrão mensal"
-                    className="text-xs px-2 py-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-all disabled:opacity-30 font-medium whitespace-nowrap"
-                  >
-                    Aplicar ↓
-                  </button>
+                  {/* Inputs de data + botão aplicar */}
+                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                    <input
+                      type="text"
+                      value={page.period?.start_date ?? ""}
+                      onChange={(e) => handleDateChange(index, "start_date", e.target.value)}
+                      placeholder="DD/MM/AAAA"
+                      maxLength={10}
+                      disabled={!page.is_active}
+                      className={`w-full px-3 py-2 rounded-lg bg-background/60 border text-foreground text-sm focus:outline-none transition-all disabled:opacity-40 ${
+                        page.period?.start_date && DATE_RE.test(page.period.start_date)
+                          ? "border-success/50 focus:border-success/80 focus:ring-1 focus:ring-success/20"
+                          : "border-border/50 focus:border-primary/60 focus:ring-1 focus:ring-primary/20"
+                      }`}
+                    />
+                    <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
+                    <input
+                      type="text"
+                      value={page.period?.end_date ?? ""}
+                      onChange={(e) => handleDateChange(index, "end_date", e.target.value)}
+                      placeholder="DD/MM/AAAA"
+                      maxLength={10}
+                      disabled={!page.is_active}
+                      className={`w-full px-3 py-2 rounded-lg bg-background/60 border text-foreground text-sm focus:outline-none transition-all disabled:opacity-40 ${
+                        page.period?.end_date && DATE_RE.test(page.period.end_date)
+                          ? "border-success/50 focus:border-success/80 focus:ring-1 focus:ring-success/20"
+                          : "border-border/50 focus:border-primary/60 focus:ring-1 focus:ring-primary/20"
+                      }`}
+                    />
+                    <button
+                      onClick={() => handleApplyPattern(index)}
+                      disabled={!page.is_active}
+                      title="Preencher próximas páginas com padrão mensal"
+                      className="text-xs px-2 py-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-all disabled:opacity-30 font-medium whitespace-nowrap"
+                    >
+                      Aplicar ↓
+                    </button>
+                  </div>
                 </motion.div>
               );
             })}
           </div>
 
           {/* Footer */}
-          <div className="flex gap-3 p-6 border-t border-border/50 shrink-0">
-            <button
-              onClick={onClose}
-              disabled={loading}
-              className="flex-1 py-3 rounded-lg border border-border text-foreground text-sm font-medium hover:bg-surface-hover transition-all disabled:opacity-50"
-            >
-              Cancelar
-            </button>
-            <button
-              onClick={handleConfirm}
-              disabled={loading || activeCount === 0}
-              className="flex-1 py-3 rounded-xl gradient-primary text-primary-foreground text-sm font-bold flex items-center justify-center gap-2 hover:shadow-lg hover:shadow-primary/25 transition-all disabled:opacity-50"
-            >
-              {loading
-                ? <><Loader2 className="w-4 h-4 animate-spin" /> Iniciando...</>
-                : <><Play className="w-4 h-4" /> Confirmar e Extrair</>}
-            </button>
+          <div className="p-6 border-t border-border/50 shrink-0">
+            {/* Aviso de sobreposição — aparece em tempo real */}
+            {overlapPairs.length > 0 && (
+              <div className="mb-3 rounded-lg border border-yellow-500/50 bg-yellow-500/10 px-4 py-3">
+                <p className="text-sm font-semibold text-yellow-600 dark:text-yellow-400 mb-1">
+                  ⚠ Sobreposição de períodos detectada
+                </p>
+                <p className="text-xs text-yellow-700 dark:text-yellow-300 mb-2">
+                  Os pares abaixo cobrem datas em comum. Isso mistura dados de páginas diferentes
+                  no mesmo dia e gera resultados incorretos. Corrija os períodos antes de processar.
+                </p>
+                <ul className="text-xs text-yellow-700 dark:text-yellow-300 space-y-0.5">
+                  {overlapPairs.map(({ aPag, bPag }, i) => (
+                    <li key={i}>• Página {aPag} e Página {bPag}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div className="flex gap-3">
+              <button
+                onClick={onClose}
+                disabled={loading}
+                className="flex-1 py-3 rounded-lg border border-border text-foreground text-sm font-medium hover:bg-surface-hover transition-all disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleConfirm}
+                disabled={loading || activeCount === 0}
+                className="flex-1 py-3 rounded-xl gradient-primary text-primary-foreground text-sm font-bold flex items-center justify-center gap-2 hover:shadow-lg hover:shadow-primary/25 transition-all disabled:opacity-50"
+              >
+                {loading
+                  ? <><Loader2 className="w-4 h-4 animate-spin" /> Iniciando...</>
+                  : <><Play className="w-4 h-4" /> Confirmar e Extrair</>}
+              </button>
+            </div>
           </div>
         </motion.div>
       </motion.div>
@@ -386,8 +436,8 @@ const PontoExtractorPage = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [processProgress, setProcessProgress] = useState({ current: 0, total: 0, message: "Processando..." });
 
-  const [showLimitAlert, setShowLimitAlert]   = useState(false);
-  const [limitAlertData, setLimitAlertData]   = useState({ requested: 0, available: 0 });
+  const [showLimitAlert, setShowLimitAlert] = useState(false);
+  const [limitAlertData, setLimitAlertData] = useState({ requested: 0, available: 0 });
 
   const [warningsData, setWarningsData] = useState<{
     avisos: AvisoItem[];
@@ -400,9 +450,10 @@ const PontoExtractorPage = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const pagesToConsume = useMemo(() => parsePageRange(pageRange), [pageRange]);
-
+  const isBusy         = isAnalyzing || isProcessing;
   const limitReached   = !canUseExtras && plan.pageBalance <= 0;
-  const hasEnoughPages = canUseExtras   || plan.pageBalance >= pagesToConsume;
+  const hasEnoughPages = canUseExtras || plan.pageBalance >= pagesToConsume;
+  const currentProgress = isAnalyzing ? analysisProgress : processProgress;
 
   const triggerDownload = (blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob);
@@ -426,7 +477,11 @@ const PontoExtractorPage = () => {
         const res = await apiFetch(`/api/progress/${taskId}`);
         const data = await res.json();
         if (data.current_step !== undefined) {
-          setProgress({ current: data.current_step, total: data.total_steps || 1, message: data.message || "Processando..." });
+          setProgress({
+            current: data.current_step,
+            total: data.total_steps || 1,
+            message: data.message || "Processando...",
+          });
         }
         if (data.status === "completed") {
           clearInterval(pollingRef.current!);
@@ -437,7 +492,7 @@ const PontoExtractorPage = () => {
           setIsAnalyzing(false);
           setIsProcessing(false);
         }
-      } catch { /* rede instável */ }
+      } catch { /* rede instável, continua tentando */ }
     }, 2000);
   };
 
@@ -446,7 +501,6 @@ const PontoExtractorPage = () => {
       toast.warning("Selecione um PDF e informe as páginas.");
       return;
     }
-
     if (limitReached || !hasEnoughPages) {
       setLimitAlertData({ requested: pagesToConsume, available: plan.pageBalance });
       setShowLimitAlert(true);
@@ -480,7 +534,7 @@ const PontoExtractorPage = () => {
           (result) => {
             setIsAnalyzing(false);
             const pages = result.result as PageInfo[] | undefined;
-            const path = result.pdf_path as string | undefined;
+            const path  = result.pdf_path as string | undefined;
             if (pages && path) {
               setPagesData(pages);
               setPdfPath(path);
@@ -509,18 +563,29 @@ const PontoExtractorPage = () => {
       taskId,
       async (result) => {
         setIsProcessing(false);
-        toast.success("Extração concluída!");
-        const downloadRes = await apiFetch(`/api/download/${taskId}`);
-        const blob = await downloadRes.blob();
-        const filename = (result.filename as string) || `Ponto_${taskId}.csv`;
-        triggerDownload(blob, filename);
-        setWarningsData({
-          avisos: (result.avisos as AvisoItem[]) || [],
-          totalDias: (result.total_dias as number) || 0,
-          pareados: (result.pareados as number) || 0,
-          filename: filename,
-        });
-        await refreshUser();
+        const filename = (result.filename as string) || "Ponto_Extraido.csv";
+        toast.success("Extração concluída! Baixando arquivo...");
+        try {
+          const downloadRes = await apiFetch(`/api/download/${taskId}`);
+          if (downloadRes.ok) {
+            const blob = await downloadRes.blob();
+            triggerDownload(blob, filename);
+            const warnings = result.warnings as AvisoItem[] | undefined;
+            if (warnings?.length) {
+              setWarningsData({
+                avisos: warnings,
+                totalDias: (result.total_dias as number) || 0,
+                pareados: (result.pareados as number) || 0,
+                filename,
+              });
+            }
+            setTimeout(() => refreshUser(), 1500);
+          } else {
+            toast.error("Erro ao baixar o arquivo.");
+          }
+        } catch {
+          toast.error("Erro ao baixar o arquivo.");
+        }
       },
       setProcessProgress
     );
@@ -532,106 +597,115 @@ const PontoExtractorPage = () => {
     setShowLimitAlert(true);
   };
 
-  const isBusy = isAnalyzing || isProcessing;
-  const currentProgress = isProcessing ? processProgress : analysisProgress;
-  const progressPct = currentProgress.total > 0
-    ? Math.round((currentProgress.current / currentProgress.total) * 100)
-    : 0;
+  const handleFileSelect = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file?.type === "application/pdf") {
+      setSelectedFile(file);
+      toast.success(`PDF "${file.name}" importado.`);
+    } else if (file) {
+      toast.error("Selecione um arquivo PDF válido.");
+    }
+    e.target.value = "";
+  };
 
   return (
-    <div className="min-h-screen gradient-bg flex flex-col">
+    <div className="min-h-screen bg-background flex flex-col">
       <AppHeader />
 
-      <main className="flex-1 flex items-center justify-center p-6">
-        <div className="glass-card p-8 w-full max-w-4xl">
-          <div className="flex items-center gap-3 mb-6">
-            <Link
-              to="/app"
-              className="text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <ArrowLeft className="w-5 h-5" />
-            </Link>
-            <h3 className="text-lg font-semibold text-foreground">Extrator de Ponto</h3>
-          </div>
+      <main className="flex-1 container max-w-2xl mx-auto px-4 py-8">
+        {/* Voltar */}
+        <Link
+          to="/app"
+          className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors mb-6"
+        >
+          <ArrowLeft className="w-4 h-4" /> Voltar
+        </Link>
 
-          {canUseExtras && plan.pageBalance <= 0 && (
-            <p className="text-xs text-amber-500 mb-4">
-              Limite incluído atingido — próximas páginas serão cobradas à parte.
+        {/* Título */}
+        <div className="mb-8">
+          <h1 className="text-2xl font-bold text-foreground mb-1">Extrator de Ponto</h1>
+          <p className="text-muted-foreground text-sm">
+            Faça o upload do PDF com os cartões de ponto para extrair as marcações automaticamente.
+          </p>
+        </div>
+
+        {/* Upload */}
+        <div className="glass-card p-6 mb-4">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".pdf"
+            className="hidden"
+            onChange={handleFileChange}
+          />
+          <button
+            onClick={handleFileSelect}
+            disabled={isBusy}
+            className="w-full border-2 border-dashed border-border/50 rounded-xl p-8 flex flex-col items-center gap-3 hover:border-primary/50 hover:bg-primary/5 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {selectedFile ? (
+              <>
+                <FileText className="w-10 h-10 text-primary" />
+                <div className="text-center">
+                  <p className="text-sm font-semibold text-foreground">{selectedFile.name}</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {(selectedFile.size / 1024 / 1024).toFixed(1)} MB — clique para trocar
+                  </p>
+                </div>
+              </>
+            ) : (
+              <>
+                <Upload className="w-10 h-10 text-muted-foreground" />
+                <div className="text-center">
+                  <p className="text-sm font-semibold text-foreground">Selecionar PDF</p>
+                  <p className="text-xs text-muted-foreground mt-1">Clique para importar o arquivo</p>
+                </div>
+              </>
+            )}
+          </button>
+        </div>
+
+        {/* Páginas */}
+        <div className="glass-card p-6 mb-4">
+          <label className="block text-sm font-medium text-foreground mb-2">
+            Páginas a processar
+          </label>
+          <input
+            type="text"
+            value={pageRange}
+            onChange={(e) => setPageRange(e.target.value)}
+            placeholder="Ex: 1-10, 15, 20-25"
+            disabled={isBusy}
+            className="w-full px-4 py-3 rounded-xl bg-background/60 border border-border/50 text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/60 focus:ring-1 focus:ring-primary/20 transition-all disabled:opacity-50"
+          />
+          {pagesToConsume > 0 && (
+            <div className="mt-3 flex items-center justify-between text-xs">
+              <span className="text-muted-foreground">
+                {pagesToConsume} página(s) selecionada(s)
+              </span>
+              {!canUseExtras && (
+                <span className={`font-medium ${plan.pageBalance < pagesToConsume ? "text-destructive" : "text-muted-foreground"}`}>
+                  Saldo: {plan.pageBalance} páginas
+                </span>
+              )}
+            </div>
+          )}
+          {!canUseExtras && plan.pageBalance <= 5 && plan.pageBalance > 0 && (
+            <p className="mt-2 text-xs text-warning font-medium">
+              ⚠ Saldo baixo — {plan.pageBalance} página(s) restante(s)
             </p>
           )}
-          {!canUseExtras && plan.pageBalance > 0 && plan.pageBalance <= 5 && (
-            <p className="text-xs text-amber-500 mb-4">
-              ⚠ Apenas {plan.pageBalance} página(s) restante(s) no plano gratuito.
-            </p>
-          )}
-          {limitReached && (
-            <p className="text-xs text-destructive mb-4">
-              Saldo esgotado.{" "}
-              <a href="/#pricing" className="underline font-medium">Assine um plano</a>{" "}
-              para continuar.
-            </p>
-          )}
+        </div>
 
-          <div className="flex flex-col sm:flex-row gap-4">
-            <input
-              type="file"
-              accept=".pdf"
-              ref={fileInputRef}
-              style={{ display: "none" }}
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) { setSelectedFile(file); toast.success(`PDF "${file.name}" importado.`); }
-              }}
-            />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isBusy}
-              className="flex-1 flex items-center justify-center gap-2 py-3 rounded-lg border border-border bg-secondary/50 text-foreground text-sm font-medium hover:bg-surface-hover transition-all disabled:opacity-50"
-            >
-              <Upload className="w-4 h-4 text-primary" />
-              {selectedFile
-                ? selectedFile.name.substring(0, 30) + (selectedFile.name.length > 30 ? "…" : "")
-                : "Importar PDF"}
-            </button>
-            <input
-              type="text"
-              value={pageRange}
-              onChange={(e) => setPageRange(e.target.value)}
-              placeholder="Páginas (ex: 1-5, 8, 10-12)"
-              disabled={isBusy}
-              className="flex-1 px-4 py-3 bg-background/60 border border-border rounded-lg text-foreground placeholder:text-muted-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all disabled:opacity-50"
-            />
-          </div>
-
-          {pagesToConsume > 0 && !limitReached && (
-            <p className={`text-xs mt-2 ${
-              canUseExtras
-                ? plan.pageBalance <= 0
-                  ? "text-amber-500"
-                  : plan.pageBalance >= pagesToConsume
-                    ? "text-muted-foreground"
-                    : "text-amber-500"
-                : hasEnoughPages ? "text-muted-foreground" : "text-destructive"
-            }`}>
-              {canUseExtras
-                ? plan.pageBalance <= 0
-                  ? `${pagesToConsume} pág. — serão cobradas como extras`
-                  : plan.pageBalance >= pagesToConsume
-                    ? `${pagesToConsume} pág. incluídas · restam ${plan.pageBalance - pagesToConsume} após`
-                    : `${plan.pageBalance} incluídas + ${pagesToConsume - plan.pageBalance} extras`
-                : hasEnoughPages
-                  ? `${pagesToConsume} pág. · restam ${plan.pageBalance - pagesToConsume} após`
-                  : `Saldo insuficiente: precisa de ${pagesToConsume}, tem ${plan.pageBalance}`
-              }
-            </p>
-          )}
-
-          <div className="mt-5 mb-1 p-4 rounded-xl bg-muted/20 border border-border/30">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-3">
-              Casos especiais (opcional)
-            </p>
-
-            <label className="flex items-start gap-3 cursor-pointer mb-3">
+        {/* Casos especiais */}
+        <div className="glass-card p-6 mb-6">
+          <p className="text-sm font-medium text-foreground mb-4">Casos especiais (opcional)</p>
+          <div className="space-y-1">
+            <label className="flex items-start gap-3 cursor-pointer">
               <input
                 type="checkbox"
                 checked={quinzenasNaoSequenciais}
@@ -640,12 +714,14 @@ const PontoExtractorPage = () => {
                 className="mt-1 w-4 h-4 rounded border-border accent-primary cursor-pointer"
               />
               <div className="flex-1">
-                <p className="text-sm text-foreground">Múltiplas tabelas por página</p>
-                <p className="text-xs text-muted-foreground">Páginas com 2+ tabelas de períodos diferentes (quinzenas invertidas, etc.)</p>
+                <p className="text-sm text-foreground">Quinzenas não-sequenciais</p>
+                <p className="text-xs text-muted-foreground">
+                  Marque se uma mesma página contém duas tabelas de períodos diferentes
+                </p>
               </div>
             </label>
 
-            <label className="flex items-start gap-3 cursor-pointer">
+            <label className="flex items-start gap-3 cursor-pointer mt-3">
               <input
                 type="checkbox"
                 checked={turnoNoturno}
@@ -655,15 +731,20 @@ const PontoExtractorPage = () => {
               />
               <div className="flex-1">
                 <p className="text-sm text-foreground">Plantões noturnos</p>
-                <p className="text-xs text-muted-foreground">Marque se há plantões que começam num dia e terminam no outro</p>
+                <p className="text-xs text-muted-foreground">
+                  Marque se há plantões que começam num dia e terminam no outro
+                </p>
               </div>
             </label>
           </div>
+        </div>
 
+        {/* Botão */}
+        <div className="flex justify-end">
           <button
             onClick={handleStart}
-            disabled={isBusy || !selectedFile || !pageRange.trim() || limitReached}
-            className="w-full mt-6 gradient-primary text-primary-foreground py-4 rounded-xl font-bold text-base flex items-center justify-center gap-2 hover:shadow-lg hover:shadow-primary/25 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+            disabled={isBusy || !selectedFile || !pageRange.trim()}
+            className="px-8 py-3 rounded-xl gradient-primary text-primary-foreground text-sm font-bold flex items-center gap-2 hover:shadow-lg hover:shadow-primary/25 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isBusy ? (
               <><Loader2 className="w-5 h-5 animate-spin" /> {currentProgress.message}</>
@@ -674,6 +755,7 @@ const PontoExtractorPage = () => {
         </div>
       </main>
 
+      {/* Loading overlay */}
       <AnimatePresence>
         {isBusy && !showPeriodModal && (
           <motion.div
@@ -686,52 +768,48 @@ const PontoExtractorPage = () => {
             >
               <Loader2 className="w-12 h-12 animate-spin text-primary mx-auto mb-4" />
               <h3 className="text-lg font-bold text-foreground mb-2">
-                {isAnalyzing ? "Identificando Períodos" : "Extraindo Ponto"}
+                {isAnalyzing ? "Identificando Períodos" : "Processando Ponto"}
               </h3>
-              <p className="text-muted-foreground text-sm mb-5">{currentProgress.message}</p>
+              <p className="text-muted-foreground text-sm mb-4">{currentProgress.message}</p>
               {currentProgress.total > 0 && (
-                <div className="space-y-2">
-                  <div className="flex justify-between text-xs text-muted-foreground">
-                    <span>Página {currentProgress.current} de {currentProgress.total}</span>
-                    <span>{progressPct}%</span>
-                  </div>
-                  <div className="w-full bg-secondary rounded-full h-2 overflow-hidden">
-                    <motion.div
-                      className="h-full gradient-primary rounded-full"
-                      animate={{ width: `${progressPct}%` }}
-                      transition={{ duration: 0.4 }}
+                <>
+                  <div className="w-full bg-secondary/60 rounded-full h-2 mb-2">
+                    <div
+                      className="h-2 rounded-full gradient-primary transition-all duration-500"
+                      style={{ width: `${Math.round((currentProgress.current / currentProgress.total) * 100)}%` }}
                     />
                   </div>
-                </div>
+                  <p className="text-xs text-muted-foreground">
+                    Página {currentProgress.current} de {currentProgress.total}
+                  </p>
+                </>
               )}
             </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
 
+      {/* Modal de confirmação de períodos */}
       {showPeriodModal && pagesData && (
         <PeriodConfirmationModal
           pages={pagesData}
           pdfPath={pdfPath}
-          onClose={() => { setShowPeriodModal(false); setIsAnalyzing(false); }}
+          onClose={() => setShowPeriodModal(false)}
           onConfirm={handlePeriodConfirm}
           onInsufficientBalance={handleInsufficientBalance}
           turnoNoturnoFlag={turnoNoturno}
         />
       )}
 
+      {/* Modal de saldo insuficiente */}
       <AnimatePresence>
         {showLimitAlert && (
           <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 backdrop-blur-sm p-4"
           >
             <motion.div
-              initial={{ scale: 0.95, y: 10 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.95, y: 10 }}
+              initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }}
               className="glass-card p-8 max-w-md w-full relative"
             >
               <button
@@ -746,9 +824,9 @@ const PontoExtractorPage = () => {
                 </div>
                 <h3 className="text-xl font-bold text-foreground mb-2">Saldo Insuficiente</h3>
                 <p className="text-muted-foreground text-sm mb-2">
-                  {limitAlertData.requested > 0
-                    ? `Você precisa de ${limitAlertData.requested} página(s), mas tem apenas ${limitAlertData.available} disponível(is).`
-                    : "Suas páginas grátis foram totalmente utilizadas."}
+                  {limitAlertData.available === 0
+                    ? "Suas páginas grátis foram totalmente utilizadas."
+                    : `Você precisa de ${limitAlertData.requested} página(s), mas tem apenas ${limitAlertData.available} disponível(is).`}
                 </p>
                 <p className="text-muted-foreground text-xs mb-6">
                   Assine um plano para continuar processando seus cartões de ponto.
@@ -772,6 +850,7 @@ const PontoExtractorPage = () => {
         )}
       </AnimatePresence>
 
+      {/* Modal de avisos pós-extração */}
       <AnimatePresence>
         {warningsData && (
           <WarningsModal

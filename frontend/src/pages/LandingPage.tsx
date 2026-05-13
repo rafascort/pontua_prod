@@ -9,6 +9,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
+import FaqSection from "@/components/FaqSection";
 
 const ACTIVE_PLANS = ["basic", "standard", "premium"];
 const FREE_PAGE_LIMIT = 50;
@@ -143,12 +144,14 @@ const REASON_MESSAGES: Record<string, string> = {
 interface LandingPageProps {
   /** Quando true (rota /planos), faz scroll automático para #pricing */
   scrollToPricing?: boolean;
+  /** Quando true (rota /faq), faz scroll automático para #faq */
+  scrollToFaq?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────
 // Componente principal
 // ─────────────────────────────────────────────────────────────
-const LandingPage = ({ scrollToPricing }: LandingPageProps) => {
+const LandingPage = ({ scrollToPricing, scrollToFaq }: LandingPageProps) => {
   const { isAuthenticated, isLoading: authLoading } = useAuth();
   const { plan } = useUserPlan();
   const [searchParams] = useSearchParams();
@@ -169,6 +172,16 @@ const LandingPage = ({ scrollToPricing }: LandingPageProps) => {
       return () => clearTimeout(t);
     }
   }, [scrollToPricing]);
+
+  // Scroll automático para #faq quando vindo de /faq
+  useEffect(() => {
+    if (scrollToFaq) {
+      const t = setTimeout(() => {
+        document.getElementById("faq")?.scrollIntoView({ behavior: "smooth" });
+      }, 300);
+      return () => clearTimeout(t);
+    }
+  }, [scrollToFaq]);
 
   // Monta os planos para a seção de preços
   const plans = [
@@ -249,9 +262,9 @@ const LandingPage = ({ scrollToPricing }: LandingPageProps) => {
 
       {/* ══════════════════════════════════════════════════════
           HEADER
-          Não logado:  [Planos]  [Login]  [Cadastro]
-          Logado c/ acesso: [Ver Planos]  [Avatar ▾]
-          Logado s/ acesso: [Ver Planos]  [Avatar ▾]
+          Não logado:  [Planos]  [FAQ]  [Login]  [Cadastro]
+          Logado c/ acesso: [Ver Planos]  [FAQ]  [Avatar ▾]
+          Logado s/ acesso: [Ver Planos]  [FAQ]  [Avatar ▾]
       ══════════════════════════════════════════════════════ */}
       <header className="sticky top-0 z-50 bg-background/60 backdrop-blur-xl border-b border-border/30">
         <div className="container mx-auto flex items-center justify-between py-4 px-6">
@@ -264,6 +277,14 @@ const LandingPage = ({ scrollToPricing }: LandingPageProps) => {
               className="text-muted-foreground hover:text-foreground transition-colors text-sm"
             >
               Ver Planos
+            </a>
+
+            {/* Âncora para seção de FAQ — sempre visível */}
+            <a
+              href="#faq"
+              className="text-muted-foreground hover:text-foreground transition-colors text-sm"
+            >
+              FAQ
             </a>
 
             {!authLoading && (
@@ -485,6 +506,11 @@ const LandingPage = ({ scrollToPricing }: LandingPageProps) => {
         </div>
       </section>
 
+      {/* ══════════════════════════════════════════════════════
+          FAQ  —  id="faq" obrigatório para âncoras
+      ══════════════════════════════════════════════════════ */}
+      <FaqSection />
+
       {/* Footer */}
       <footer className="py-8 px-6 border-t border-border/30 text-center">
         <p className="text-muted-foreground text-sm">
@@ -499,3 +525,4 @@ const LandingPage = ({ scrollToPricing }: LandingPageProps) => {
 };
 
 export default LandingPage;
+
