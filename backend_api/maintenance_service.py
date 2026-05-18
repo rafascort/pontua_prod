@@ -1,6 +1,6 @@
 # /opt/pontua/AutoPonto/backend_api/maintenance_service.py
 """
-Sistema de Modo Manutenção — Sistema Ponto v13.4.0
+Sistema de Modo Manutenção — Sistema Ponto v13.4.1
 
 Gerencia janelas de manutenção programadas e emergenciais.
 
@@ -13,6 +13,22 @@ Funcionalidades:
   - Status `scheduled` → `active` → `completed` (transição automática)
 
 Convenção: o módulo NÃO cria o `app`; ele recebe referências do auth_service.py.
+
+═══════════════════════════════════════════════════════════════════════════
+CORREÇÃO v13.4.1 — Bug de horário no frontend
+═══════════════════════════════════════════════════════════════════════════
+Os datetimes naive (datetime.utcnow()) eram serializados via .isoformat() SEM
+o sufixo 'Z', resultando em strings como "2026-05-18T00:36:00". O JavaScript
+interpretava essas strings como horário LOCAL e exibia tudo com offset do
+fuso (3h adiantado no Brasil/BRT).
+
+Fix: helper `_iso_utc()` adiciona o sufixo 'Z' para marcar explicitamente
+como UTC. O frontend (new Date(...).toLocaleString) então converte
+corretamente para o fuso local do usuário.
+
+A lógica interna (comparações, queries no banco) continua usando datetime
+naive em UTC — só a serialização para o cliente mudou.
+═══════════════════════════════════════════════════════════════════════════
 """
 from __future__ import annotations
 
@@ -98,6 +114,27 @@ def _admin_required():
 # HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _iso_utc(dt: Optional[datetime]) -> Optional[str]:
+    """
+    Serializa um datetime para ISO 8601 marcando explicitamente como UTC (Z).
+
+    Importante: os datetimes no banco são naive em UTC (gravados via
+    datetime.utcnow()). Sem o sufixo 'Z', o JavaScript no frontend interpreta
+    essas strings como horário LOCAL, causando offset visual incorreto.
+
+    Esta função:
+      - retorna None se dt for None
+      - se dt for naive, assume UTC e adiciona 'Z'
+      - se dt for aware, converte para UTC e adiciona 'Z'
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    # microsegundos não fazem falta para o cliente — encurta a string
+    return dt.replace(microsecond=0).isoformat() + "Z"
+
+
 def _parse_iso(value):
     """Converte string ISO para datetime naive (UTC)."""
     if value is None or value == "":
@@ -160,16 +197,14 @@ def _maintenance_to_dict(m, include_announcement: bool = False) -> dict[str, Any
     data = {
         "id": m.id,
         "announcement_id": m.announcement_id,
-        "starts_at": m.starts_at.isoformat() if m.starts_at else None,
-        "ends_at": m.ends_at.isoformat() if m.ends_at else None,
-        "actually_ended_at": (
-            m.actually_ended_at.isoformat() if m.actually_ended_at else None
-        ),
+        "starts_at": _iso_utc(m.starts_at),
+        "ends_at": _iso_utc(m.ends_at),
+        "actually_ended_at": _iso_utc(m.actually_ended_at),
         "message": m.message,
         "status": m.status,
         "is_emergency": m.is_emergency,
-        "created_at": m.created_at.isoformat() if m.created_at else None,
-        "updated_at": m.updated_at.isoformat() if m.updated_at else None,
+        "created_at": _iso_utc(m.created_at),
+        "updated_at": _iso_utc(m.updated_at),
         "created_by_admin": m.created_by_admin,
     }
 
@@ -180,8 +215,8 @@ def _maintenance_to_dict(m, include_announcement: bool = False) -> dict[str, Any
                 "id": ann.id,
                 "title": ann.title,
                 "active": ann.active,
-                "starts_at": ann.starts_at.isoformat() if ann.starts_at else None,
-                "ends_at": ann.ends_at.isoformat() if ann.ends_at else None,
+                "starts_at": _iso_utc(ann.starts_at),
+                "ends_at": _iso_utc(ann.ends_at),
             }
 
     return data
@@ -310,8 +345,8 @@ def maintenance_middleware():
     # Usuário comum → bloqueia
     response = jsonify({
         'maintenance': True,
-        'starts_at': active.starts_at.isoformat() if active.starts_at else None,
-        'ends_at': active.ends_at.isoformat() if active.ends_at else None,
+        'starts_at': _iso_utc(active.starts_at),
+        'ends_at': _iso_utc(active.ends_at),
         'message': active.message,
         'msg': 'Sistema em manutenção.',
     })
@@ -341,8 +376,8 @@ def register_public_endpoints(app):
         if active:
             return jsonify({
                 'active': True,
-                'starts_at': active.starts_at.isoformat(),
-                'ends_at': active.ends_at.isoformat(),
+                'starts_at': _iso_utc(active.starts_at),
+                'ends_at': _iso_utc(active.ends_at),
                 'message': active.message,
                 'is_emergency': active.is_emergency,
             }), 200
@@ -361,8 +396,8 @@ def register_public_endpoints(app):
                 return jsonify({
                     'active': False,
                     'upcoming': True,
-                    'starts_at': upcoming.starts_at.isoformat(),
-                    'ends_at': upcoming.ends_at.isoformat(),
+                    'starts_at': _iso_utc(upcoming.starts_at),
+                    'ends_at': _iso_utc(upcoming.ends_at),
                     'message': upcoming.message,
                 }), 200
 
