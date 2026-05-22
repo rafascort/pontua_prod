@@ -100,6 +100,10 @@ def check_user_page_balance(user_email: str, pages_requested: int):
     # Admin não tem limite de páginas
     if user.role == 'admin':
         return True, None
+# ── NOVO: usuario de empresa (multi-tenancy) ──────────────
+    if user.organization_id:
+        from stripe_org_service import check_org_can_process
+        return check_org_can_process(user)
 
     plan_status = user.plan_status or 'free'
 
@@ -150,6 +154,12 @@ def report_usage_to_stripe(user, pages_processed_this_job, new_total_page_count)
     Só reporta páginas que ultrapassaram o limite do plano (extras cobráveis).
     """
     print(f"[DIAGNOSTICO] Iniciando 'report_usage_to_stripe' para {user.email if user else 'N/A'}...")
+
+# ── NOVO: usuario de empresa (multi-tenancy) ──────────────
+    if user and user.organization_id:
+        from stripe_org_service import report_org_usage_to_stripe
+        report_org_usage_to_stripe(user, pages_processed_this_job)
+        return
 
     if not user or not user.stripe_customer_id:
         print(f"[ERRO] Usuário {user.email if user else 'N/A'} não possui stripe_customer_id.")

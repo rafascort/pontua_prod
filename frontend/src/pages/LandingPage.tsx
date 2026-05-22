@@ -153,6 +153,21 @@ interface LandingPageProps {
 // ─────────────────────────────────────────────────────────────
 const LandingPage = ({ scrollToPricing, scrollToFaq }: LandingPageProps) => {
   const { isAuthenticated, isLoading: authLoading } = useAuth();
+
+// Empresa users: redireciona pra /app (nao deve ver a landing)
+  useEffect(() => {
+    if (!authLoading && isAuthenticated) {
+      try {
+        const token = localStorage.getItem("access_token");
+        if (token) {
+          const claims = JSON.parse(atob(token.split(".")[1]));
+          if (claims.organization_id) {
+            navigate("/app", { replace: true });
+          }
+        }
+      } catch {}
+    }
+  }, [authLoading, isAuthenticated, navigate]);
   const { plan } = useUserPlan();
   const [searchParams] = useSearchParams();
 

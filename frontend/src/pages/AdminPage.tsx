@@ -13,7 +13,7 @@ import {
   Edit3, ChevronUp, ChevronDown, ChevronsUpDown, ChevronLeft,
   ChevronRight, Shield, LogOut, LayoutDashboard, X, Check,
   AlertTriangle, RotateCcw, UserCheck, UserX, Loader2,
-  Gift, UserPlus, Megaphone, Wrench,
+  Gift, UserPlus, Megaphone, Wrench, Building,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
@@ -21,6 +21,7 @@ import AdminReferralsTab from "@/components/admin/AdminReferralsTab";
 import AdminPromotionsTab from "@/components/admin/AdminPromotionsTab";
 import AdminAnnouncementsTab from "@/components/admin/AdminAnnouncementsTab";
 import AdminMaintenanceTab from "@/components/admin/AdminMaintenanceTab";
+import AdminOrganizationsTab from "@/components/admin/AdminOrganizationsTab";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -549,7 +550,7 @@ function UsersManagementSection({ authUserEmail }: { authUserEmail: string | und
 }
 
 /* ═══════════════════ Main AdminPage (com abas) ═══════════════════ */
-type AdminTab = "users" | "referrals" | "promotions" | "announcements" | "maintenance";
+type AdminTab = "users" | "referrals" | "promotions" | "announcements" | "maintenance" | "organizations";
 
 export default function AdminPage() {
   const navigate = useNavigate();
@@ -621,6 +622,13 @@ export default function AdminPage() {
           >
             Manutenções
           </TabButton>
+	  <TabButton
+            active={activeTab === "organizations"}
+            onClick={() => setActiveTab("organizations")}
+            icon={<Building className="w-4 h-4" />}
+          >
+            Empresas
+          </TabButton>
         </div>
 
         {/* ═══ Conteúdo da aba ativa ═══ */}
@@ -629,6 +637,7 @@ export default function AdminPage() {
         {activeTab === "promotions" && <AdminPromotionsTab />}
 	{activeTab === "announcements"  && <AdminAnnouncementsTab />}
 	{activeTab === "maintenance"   && <AdminMaintenanceTab />}
+	{activeTab === "organizations" && <AdminOrganizationsTab />}
       </main>
     </div>
   );

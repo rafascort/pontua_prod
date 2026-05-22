@@ -195,7 +195,7 @@ class ExtractorGeralAI:
             page_pdfs.append((order, buf.getvalue()))
             index_to_order[p['page_index']] = order
 
-        self.update_progress(1, 4, f"Enviando {total} página(s) para o Google...")
+        self.update_progress(1, 4, f"Enviando {total} página(s) para processamento...")
 
         results      = {}
         total_waited = 0.0
@@ -213,7 +213,7 @@ class ExtractorGeralAI:
                 completed     += 1
                 self.update_progress(
                     1 + int(completed / total * 2), 4,
-                    f"Google processou {completed}/{total} página(s)..."
+                    f"Processando {completed}/{total} página(s)..."
                 )
 
         self.update_progress(3, 4, "Consolidando resultados...")
@@ -762,7 +762,7 @@ def extract_periods_task(pdf_path, pages, user_id, quinzenas_nao_sequenciais=Fal
 
         job.meta.update({
             'status': 'processing',
-            'message': f'Enviando {total_selected} páginas ao Gemini...',
+            'message': f'Enviando {total_selected} páginas para análise...',
             'current_step': 0,
             'total_steps': total_selected
         })
@@ -808,7 +808,7 @@ def extract_periods_task(pdf_path, pages, user_id, quinzenas_nao_sequenciais=Fal
                         f"{period['start_date']} → {period['end_date']}{conf_tag}")
 
                 job.meta.update({
-                    'message': f'Gemini processou {completed_count}/{total_selected} páginas...',
+                    'message': f'Processando {completed_count}/{total_selected} páginas...',
                     'current_step': completed_count
                 })
                 job.save_meta()

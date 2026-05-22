@@ -18,6 +18,9 @@ import HoleriteExtractorPage from "./pages/HoleriteExtractorPage";
 import PaymentSuccessPage from "./pages/PaymentSuccessPage";
 import TermosPage from "./pages/TermosPage";
 import AdminPage from "./pages/AdminPage";
+import EmpresaPage from "./pages/EmpresaPage";
+import DefinirSenhaPage from "./pages/DefinirSenhaPage";
+import EmpresaPaymentSuccessPage from "./pages/EmpresaPaymentSuccessPage";
 import MinhasIndicacoes from "./pages/MinhasIndicacoes";
 import PromocoesPage from "./pages/PromocoesPage";
 import MaintenancePage from "./pages/MaintenancePage";
@@ -103,6 +106,25 @@ const App = () => (
               element={<ProtectedRoute><PaymentSuccessPage /></ProtectedRoute>} />
 
             {/* Admin — NÃO usa MaintenanceGuard (admin sempre acessa) */}
+{/* Área da empresa — admin da empresa (org_role='admin') */}
+            <Route path="/empresa"
+              element={
+                <ProtectedRoute>
+                  <EmpresaPage />
+                </ProtectedRoute>
+              }
+            />
+	   {/* Pos-checkout Stripe da empresa */}
+            <Route path="/empresa/payment-success"
+              element={
+                <ProtectedRoute>
+                  <EmpresaPaymentSuccessPage />
+                </ProtectedRoute>
+              }
+            />
+
+            {/* Aceite de convite (publico - token e a credencial) */}
+            <Route path="/definir-senha" element={<DefinirSenhaPage />} /> 
             <Route path="/admin" element={<AdminPage />} />
 
             {/* 404 */}

@@ -124,6 +124,80 @@ class User(db.Model):
     password_reset_token   = db.Column(db.String(128), nullable=True, index=True)
     password_reset_sent_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
+# ── Empresa (multi-tenancy) ─────────────────────────────────────
+    organization_id = db.Column(db.Integer,
+                                db.ForeignKey('organization.id', ondelete='SET NULL'),
+                                nullable=True, index=True)
+    org_role        = db.Column(db.String(20), nullable=True)   # 'admin' | 'member' | None
+    can_process     = db.Column(db.Boolean, nullable=False, default=True)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Classe Organization (multi-tenancy / empresas)
+# ═══════════════════════════════════════════════════════════════════════════
+class Organization(db.Model):
+    __tablename__ = 'organization'
+
+    id                           = db.Column(db.Integer, primary_key=True)
+    name                         = db.Column(db.String(120), nullable=False)
+    legal_name                   = db.Column(db.String(180), nullable=True)
+    cnpj                         = db.Column(db.String(18), nullable=True, unique=True)
+    billing_email                = db.Column(db.String(120), nullable=False)
+    is_active                    = db.Column(db.Boolean, nullable=False, default=True)
+
+    # Stripe
+    stripe_customer_id           = db.Column(db.String(120), nullable=True, unique=True)
+    stripe_subscription_id       = db.Column(db.String(120), nullable=True)
+    stripe_price_id              = db.Column(db.String(120), nullable=True)
+
+    # Plano e cobrança
+    # plan_status: 'awaiting_setup' | 'active' | 'past_due' | 'suspended' | 'inactive'
+    plan_status                  = db.Column(db.String(50), nullable=False,
+                                             default='awaiting_setup')
+    price_per_page_cents         = db.Column(db.Integer, nullable=False, default=62)
+    pending_price_per_page_cents = db.Column(db.Integer, nullable=True)
+    page_count                   = db.Column(db.Integer, nullable=False, default=0)
+    next_reset_date              = db.Column(db.Date, nullable=True)
+
+    # Auditoria
+    created_at                   = db.Column(db.DateTime, nullable=False,
+                                             default=datetime.utcnow)
+    updated_at                   = db.Column(db.DateTime, nullable=False,
+                                             default=datetime.utcnow,
+                                             onupdate=datetime.utcnow)
+    created_by_admin_id          = db.Column(db.Integer,
+                                             db.ForeignKey('user.id', ondelete='SET NULL'),
+                                             nullable=True)
+
+    # Relacionamento reverso: org.members retorna query de usuários
+    members = db.relationship(
+        'User',
+        backref='organization',
+        foreign_keys='User.organization_id',
+        lazy='dynamic'
+    )
+
+    def __repr__(self):
+        return f'<Organization {self.id} {self.name}>'
+
+    def to_dict(self):
+        """Serializacao basica usada por endpoints."""
+        return {
+            'id': self.id,
+            'name': self.name,
+            'legal_name': self.legal_name,
+            'cnpj': self.cnpj,
+            'billing_email': self.billing_email,
+            'is_active': self.is_active,
+            'plan_status': self.plan_status,
+            'price_per_page_cents': self.price_per_page_cents,
+            'pending_price_per_page_cents': self.pending_price_per_page_cents,
+            'page_count': self.page_count,
+            'next_reset_date': self.next_reset_date.isoformat() if self.next_reset_date else None,
+            'stripe_customer_id': self.stripe_customer_id,
+            'stripe_subscription_id': self.stripe_subscription_id,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
 # ── Módulos de indicação e promoções ────────────────────────────────
 from referral_service import (
     init_referral_routes,
@@ -135,6 +209,7 @@ from referral_service import (
 from promotions_service import init_promotions_routes
 from announcements_service import init_announcements_routes
 from maintenance_service import init_maintenance_routes
+from organization_service import init_organization_routes
 
 Referral = init_referral_routes(app, db, User)
 Promotion, PromotionMetric = init_promotions_routes(app, db, User)
@@ -146,12 +221,17 @@ def add_claims_to_access_token(identity):
     user = User.query.filter_by(email=identity).first()
     if user:
         return {
-            'role': user.role,
-            'is_active': user.is_active,
-            'plan_status': user.plan_status or 'free',
-            'user_id': user.id
+            'role':            user.role,
+            'is_active':       user.is_active,
+            'plan_status':     user.plan_status or 'free',
+            'user_id':         user.id,
+            # ── Multi-tenancy ────────────────────────────────────────
+            'organization_id': user.organization_id,
+            'org_role':        user.org_role,
+            'can_process':     user.can_process if user.can_process is not None else True,
         }
     return {}
+
 
 def admin_required():
     def wrapper(fn):
@@ -163,6 +243,42 @@ def admin_required():
                 return fn(*args, **kwargs)
             else:
                 return jsonify(msg="Acesso restrito a administradores!"), 403
+        return decorator
+    return wrapper
+
+
+def org_admin_required():
+    """
+    Permite acesso se o usuario for:
+      - admin do sistema (claims['role'] == 'admin'), OU
+      - admin de uma empresa (claims['org_role'] == 'admin' e tem org_id).
+    """
+    def wrapper(fn):
+        @wraps(fn)
+        @jwt_required()
+        def decorator(*args, **kwargs):
+            claims = get_jwt()
+            if claims.get('role') == 'admin':
+                return fn(*args, **kwargs)
+            if claims.get('org_role') == 'admin' and claims.get('organization_id'):
+                return fn(*args, **kwargs)
+            return jsonify(msg="Acesso restrito a administradores."), 403
+        return decorator
+    return wrapper
+
+
+def org_member_required():
+    """
+    Permite acesso se o usuario pertence a alguma empresa (admin ou membro).
+    """
+    def wrapper(fn):
+        @wraps(fn)
+        @jwt_required()
+        def decorator(*args, **kwargs):
+            claims = get_jwt()
+            if not claims.get('organization_id'):
+                return jsonify(msg="Esta rota e exclusiva de usuarios de empresa."), 403
+            return fn(*args, **kwargs)
         return decorator
     return wrapper
 
@@ -764,6 +880,15 @@ def stripe_webhook():
             event_type = event['type']
             event_data = event['data']['object']
             print(f"Webhook recebido: {event_type}")
+# ── NOVO: route org events to org handlers ─────────────
+            try:
+                from stripe_org_service import route_org_webhook_if_applicable
+                if route_org_webhook_if_applicable(event):
+                    print(f"[ORG-WEBHOOK] routed: {event_type}")
+                    return jsonify(success=True)
+            except Exception as _org_route_err:
+                print(f"[ORG-WEBHOOK ERRO] routing falhou: {_org_route_err}")
+                traceback.print_exc()
             if event_type == 'checkout.session.completed': handle_checkout_session_completed(event_data)
             elif event_type == 'invoice.payment_succeeded': handle_invoice_payment_succeeded(event_data)
             elif event_type == 'invoice.payment_failed': handle_invoice_payment_failed(event_data)
@@ -1384,3 +1509,6 @@ def reset_password():
         print(f"[RESET] Erro ao salvar nova senha para {user.email}: {e}")
         return jsonify({"msg": "Erro interno ao redefinir senha."}), 500
 # --- FIM DO ARQUIVO auth_service.py ---
+
+# ─── Multi-tenancy: registrar APOS admin_required estar definido ───
+init_organization_routes(app, db, User, Organization, admin_required, org_admin_required)

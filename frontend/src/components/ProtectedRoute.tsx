@@ -1,19 +1,27 @@
 // frontend/src/components/ProtectedRoute.tsx
 //
-// Regras de acesso:
-//   admin           → sempre passa
-//   basic / standard / premium (plano ativo) → sempre passa, mesmo sem saldo
-//                     (páginas extras são cobráveis, não devem ser bloqueadas)
-//   free com saldo  → passa (pageCount < 50)
-//   free esgotado   → redireciona para /#pricing
-//   past_due        → redireciona para /#pricing com aviso de pagamento pendente
-//   inactive        → redireciona para /#pricing
+// Regras:
+//   admin do sistema             → sempre passa
+//   usuário de empresa           → sempre passa (backend bloqueia se empresa suspensa)
+//   plano pago (basic/std/prem)  → sempre passa
+//   free com saldo               → passa
+//   free esgotado / past_due     → redireciona para /#pricing
 
 import { Navigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 
-const ACTIVE_PLANS   = ["basic", "standard", "premium"];
+const ACTIVE_PLANS = ["basic", "standard", "premium"];
 const FREE_PAGE_LIMIT = 50;
+
+// Le claims diretamente do JWT (mais confiavel que /api/user/me)
+function jwtClaims(): any {
+  try {
+    const token = localStorage.getItem("access_token");
+    if (!token) return {};
+    const payload = token.split(".")[1];
+    return JSON.parse(atob(payload));
+  } catch { return {}; }
+}
 
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   const { isAuthenticated, isLoading, user } = useAuth();
@@ -33,26 +41,29 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
     return <Navigate to="/login" replace />;
   }
 
-  // Admin passa sem restrição alguma
+  // ── Admin do sistema sempre passa ─────────────────────────────────────
   if (user?.role === "admin") {
+    return <>{children}</>;
+  }
+
+  // ── Usuário de empresa sempre passa ───────────────────────────────────
+  // Empresa em past_due/suspended/etc é tratada no backend (retorna 403 ao processar)
+  const claims = jwtClaims();
+  if (claims.organization_id) {
     return <>{children}</>;
   }
 
   const planStatus = user?.plan_status ?? "free";
   const pageCount  = user?.page_count  ?? 0;
 
-  // ── Plano pago ativo → sempre permite (extras são cobráveis) ──────────
   if (ACTIVE_PLANS.includes(planStatus)) {
     return <>{children}</>;
   }
 
-  // ── Free trial com saldo disponível → permite ─────────────────────────
   if (planStatus === "free" && pageCount < FREE_PAGE_LIMIT) {
     return <>{children}</>;
   }
 
-  // ── Todos os outros casos → redireciona para pricing ──────────────────
-  // free esgotado, past_due, inactive, etc.
   const reason =
     planStatus === "past_due" ? "past_due"
     : planStatus === "free"   ? "free_exhausted"
