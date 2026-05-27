@@ -25,6 +25,7 @@ interface UserData {
   stripe_customer_id: string | null;
   referral_code: string | null;        
   discount_credits: number;              
+  extras_reported: number;
 }
 
 interface AuthContextType {

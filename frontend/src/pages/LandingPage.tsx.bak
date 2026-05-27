@@ -153,7 +153,6 @@ interface LandingPageProps {
 // ─────────────────────────────────────────────────────────────
 const LandingPage = ({ scrollToPricing, scrollToFaq }: LandingPageProps) => {
   const { isAuthenticated, isLoading: authLoading } = useAuth();
-  const navigate = useNavigate();
 
 // Empresa users: redireciona pra /app (nao deve ver a landing)
   useEffect(() => {

@@ -10,6 +10,10 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { toast } from "sonner";
+import { api } from "@/lib/api";
+import PlanManagerModal from "@/components/PlanManagerModal";
+import ScheduledChangeBanner from "@/components/ScheduledChangeBanner";
+
 
 const WHATSAPP_URL =
   "https://wa.me/5554999427282?text=Ol%C3%A1! Preciso de suporte no Sistema Ponto.";
@@ -33,6 +37,17 @@ const AppHeader = () => {
   const orgId   = claims.organization_id;
   const orgRole = claims.org_role;
   const [orgName, setOrgName] = useState<string | null>(null);
+  const [planModalOpen, setPlanModalOpen] = useState(false);
+  const [subStatus, setSubStatus] = useState<{
+    current_plan: string;
+    scheduled_change: { plan: string; effective_date: number } | null;
+  } | null>(null);
+
+  const loadSubStatus = () => {
+    if (!ACTIVE_PLANS.includes(plan.planStatus)) return;
+    api.getSubscriptionStatus().then(setSubStatus).catch(() => {});
+  };
+  useEffect(() => { loadSubStatus(); /* eslint-disable-next-line */ }, [plan.planStatus]);
 
   useEffect(() => {
     if (!orgId) return;
@@ -82,6 +97,13 @@ const AppHeader = () => {
 
   return (
     <>
+      {subStatus?.scheduled_change && (
+        <ScheduledChangeBanner
+          scheduledPlan={subStatus.scheduled_change.plan}
+          effectiveDate={subStatus.scheduled_change.effective_date}
+          onCancelled={loadSubStatus}
+        />
+      )}
       <header className="sticky top-0 z-40 bg-background/80 backdrop-blur-xl border-b border-border/30">
         <div className="container mx-auto flex items-center justify-between h-14 px-4 gap-3">
 
@@ -230,11 +252,20 @@ const AppHeader = () => {
                 <div className="p-2">
                   {!orgId && (
                     <button
-                      onClick={handleManageSubscription}
+                      onClick={() => { isPaidPlan ? setPlanModalOpen(true) : handleManageSubscription(); }}
                       className="flex items-center gap-2.5 px-3 py-2 rounded-md hover:bg-secondary/60 transition-colors w-full text-left"
                     >
                       <CreditCard className="w-4 h-4 text-muted-foreground" />
                       <span className="text-sm text-foreground">{manageLabel}</span>
+                    </button>
+                  )}
+                  {!orgId && isPaidPlan && (
+                    <button
+                      onClick={handleManageSubscription}
+                      className="flex items-center gap-2.5 px-3 py-2 rounded-md hover:bg-secondary/60 transition-colors w-full text-left"
+                    >
+                      <CreditCard className="w-4 h-4 text-muted-foreground opacity-60" />
+                      <span className="text-xs text-muted-foreground">Forma de pagamento / faturas</span>
                     </button>
                   )}
 
@@ -284,6 +315,14 @@ const AppHeader = () => {
 
         </div>
       </header>
+
+      <PlanManagerModal
+        open={planModalOpen}
+        onOpenChange={setPlanModalOpen}
+        currentPlan={subStatus?.current_plan ?? plan.planStatus}
+        scheduledPlan={subStatus?.scheduled_change?.plan ?? null}
+        onChanged={loadSubStatus}
+      />
 
       <AdminMaintenanceBanner />
       <AnnouncementBlockingModal />

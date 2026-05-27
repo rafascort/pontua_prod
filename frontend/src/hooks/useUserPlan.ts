@@ -27,7 +27,7 @@ export function useUserPlan() {
     planName:        getPlanDisplayName(planStatus),
     pageBalance,
     pageLimit,
-    extraPages:      Math.max(0, pageCount - pageLimit),
+    extraPages:      user?.extras_reported ?? Math.max(0, pageCount - pageLimit),
     email:           user?.email || "",
     role:            (user?.role as "user" | "admin") || "user",
     pageCount,

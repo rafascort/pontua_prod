@@ -108,6 +108,7 @@ class ApiClient {
     stripe_customer_id: string | null;
     referral_code: string | null;
     discount_credits: number;
+    extras_reported: number;
   }> {
     return this.request("/api/user/me");
   }
@@ -131,6 +132,28 @@ class ApiClient {
       method: "POST",
       body: JSON.stringify({ priceId }),
     });
+  }
+  async changePlan(priceId: string): Promise<{
+    msg: string;
+    type: "upgrade" | "downgrade";
+    plan: string;
+    effective: "now" | "period_end";
+  }> {
+    return this.request("/api/change-plan", {
+      method: "POST",
+      body: JSON.stringify({ priceId }),
+    });
+  }
+
+  async getSubscriptionStatus(): Promise<{
+    current_plan: string;
+    scheduled_change: { plan: string; effective_date: number } | null;
+  }> {
+    return this.request("/api/subscription-status");
+  }
+
+  async cancelScheduledChange(): Promise<{ msg: string }> {
+    return this.request("/api/cancel-scheduled-change", { method: "POST" });
   }
 
   async getAdminUsers(): Promise<Array<{

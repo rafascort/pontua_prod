@@ -199,6 +199,10 @@ def report_usage_to_stripe(user, pages_processed_this_job, new_total_page_count)
             )
             print(f"SUCESSO: Reportado {pages_to_report} pgs extras para {user.email} "
                   f"via Meter '{event_name}' (Event ID: {meter_event.identifier}).")
+            # ── NOVO: rastreia extras já reportados ao medidor (display fiel) ──
+            user.extras_reported = (user.extras_reported or 0) + pages_to_report
+            db.session.commit()
+            print(f"[EXTRAS] {user.email}: extras_reported acumulado = {user.extras_reported}")
         except stripe.StripeError as e:
             print(f"ERRO STRIPE ao reportar uso (Meter) para {user.email}: {getattr(e, 'user_message', str(e))}")
             traceback.print_exc()
