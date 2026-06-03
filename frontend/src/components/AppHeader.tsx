@@ -9,9 +9,7 @@ import { useUserPlan } from "@/hooks/useUserPlan";
 import { useAuth } from "@/contexts/AuthContext";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { toast } from "sonner";
 import { api } from "@/lib/api";
-import PlanManagerModal from "@/components/PlanManagerModal";
 import ScheduledChangeBanner from "@/components/ScheduledChangeBanner";
 
 
@@ -37,7 +35,6 @@ const AppHeader = () => {
   const orgId   = claims.organization_id;
   const orgRole = claims.org_role;
   const [orgName, setOrgName] = useState<string | null>(null);
-  const [planModalOpen, setPlanModalOpen] = useState(false);
   const [subStatus, setSubStatus] = useState<{
     current_plan: string;
     scheduled_change: { plan: string; effective_date: number } | null;
@@ -63,26 +60,6 @@ const AppHeader = () => {
   const initials   = userEmail.substring(0, 2).toUpperCase();
   const isPaidPlan = ACTIVE_PLANS.includes(plan.planStatus);
   const hasExtras  = plan.extraPages > 0;
-
-  const handleManageSubscription = async () => {
-    if (!isPaidPlan) {
-      window.location.href = `/#pricing?reason=${plan.planStatus === "past_due" ? "past_due" : "free_exhausted"}`;
-      return;
-    }
-    try {
-      const token    = localStorage.getItem("access_token");
-      const response = await fetch("/api/create-portal-session", {
-        method:  "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      });
-      if (!response.ok) { toast.error("Erro ao abrir portal de assinatura."); return; }
-      const data = await response.json();
-      if (data.url) window.location.href = data.url;
-      else toast.error("URL do portal nao retornada.");
-    } catch {
-      toast.error("Erro de conexao ao abrir portal de assinatura.");
-    }
-  };
 
   if (planLoading) {
     return (
@@ -251,22 +228,13 @@ const AppHeader = () => {
 
                 <div className="p-2">
                   {!orgId && (
-                    <button
-                      onClick={() => { isPaidPlan ? setPlanModalOpen(true) : handleManageSubscription(); }}
+                    <Link
+                      to="/assinatura"
                       className="flex items-center gap-2.5 px-3 py-2 rounded-md hover:bg-secondary/60 transition-colors w-full text-left"
                     >
                       <CreditCard className="w-4 h-4 text-muted-foreground" />
                       <span className="text-sm text-foreground">{manageLabel}</span>
-                    </button>
-                  )}
-                  {!orgId && isPaidPlan && (
-                    <button
-                      onClick={handleManageSubscription}
-                      className="flex items-center gap-2.5 px-3 py-2 rounded-md hover:bg-secondary/60 transition-colors w-full text-left"
-                    >
-                      <CreditCard className="w-4 h-4 text-muted-foreground opacity-60" />
-                      <span className="text-xs text-muted-foreground">Forma de pagamento / faturas</span>
-                    </button>
+                    </Link>
                   )}
 
                   {orgId && orgRole === "admin" && (
@@ -315,14 +283,6 @@ const AppHeader = () => {
 
         </div>
       </header>
-
-      <PlanManagerModal
-        open={planModalOpen}
-        onOpenChange={setPlanModalOpen}
-        currentPlan={subStatus?.current_plan ?? plan.planStatus}
-        scheduledPlan={subStatus?.scheduled_change?.plan ?? null}
-        onChanged={loadSubStatus}
-      />
 
       <AdminMaintenanceBanner />
       <AnnouncementBlockingModal />

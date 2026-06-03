@@ -1256,6 +1256,18 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
             except Exception as e:
                 LOG('erro no pareamento noturno', str(e), 'WARN')
 
+        # 4.6. Avisos gerais de validacao (rodam em TODOS os jobs)
+        try:
+            from avisos_ponto import coletar_avisos, ordenar_avisos
+            datas_ja_sinalizadas = {a.get('data') for a in avisos_noturno}
+            avisos_gerais = coletar_avisos(master_df, datas_ignorar=datas_ja_sinalizadas)
+            avisos = ordenar_avisos(avisos_noturno + avisos_gerais)
+            LOG('avisos de jornada', str(len(avisos_gerais)))
+            LOG('avisos totais',     str(len(avisos)))
+        except Exception as e:
+            LOG('erro ao coletar avisos gerais', str(e), 'WARN')
+            avisos = list(avisos_noturno)
+
         # ── 5. Salvar CSV ─────────────────────────────────────────────────────
         random_id      = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
         final_filename = f"Ponto_Extraido_{random_id}.csv"
@@ -1308,7 +1320,7 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
             'status':     'completed',
             'file_path':  out_path,
             'filename':   final_filename,
-            'avisos':     avisos_noturno,
+            'avisos':     avisos,
             'total_dias': total_dias,
             'pareados':   pareados_noturno,
         })

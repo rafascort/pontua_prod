@@ -428,6 +428,7 @@ def get_user_details():
     stripe_customer_id=user.stripe_customer_id,
     referral_code=user.referral_code,
     discount_credits=user.discount_credits or 0,
+    extras_reported=user.extras_reported or 0,
 ), 200
 
 @app.route('/api/user/password', methods=['PUT'])
@@ -893,15 +894,24 @@ def change_plan():
 
         new_items = [{'price': new_price_id, 'quantity': 1}, {'price': new_extra}]
 
-        stripe.SubscriptionSchedule.modify(
-            schedule.id,
-            end_behavior='release',
-            phases=[
-                {'items': cur_items, 'start_date': phase0['start_date'],
-                 'end_date': phase0['end_date'], 'proration_behavior': 'none'},
-                {'items': new_items, 'iterations': 1, 'proration_behavior': 'none'},
-            ],
-        )
+        try:
+            stripe.SubscriptionSchedule.modify(
+                schedule.id,
+                end_behavior='release',
+                phases=[
+                    {'items': cur_items, 'start_date': phase0['start_date'],
+                     'end_date': phase0['end_date'], 'proration_behavior': 'none'},
+                    {'items': new_items, 'proration_behavior': 'none'},
+                ],
+            )
+        except stripe.StripeError:
+            # modify falhou -> libera o schedule recem-criado para nao
+            # deixar um schedule orfao travando o usuario em 409.
+            try:
+                stripe.SubscriptionSchedule.release(schedule.id)
+            except stripe.StripeError:
+                pass
+            raise
         return jsonify({"msg": f"Downgrade para {new_plan} agendado para o fim do ciclo atual.",
                         "type": "downgrade", "plan": new_plan, "effective": "period_end"})
 
@@ -911,6 +921,75 @@ def change_plan():
     except Exception as e:
         print(f"Erro change-plan: {e}"); traceback.print_exc()
         return jsonify({"msg": "Erro interno ao trocar plano."}), 500
+
+
+@app.route('/api/subscription-status', methods=['GET'])
+@jwt_required()
+def subscription_status():
+    """ Plano atual + troca agendada (downgrade pendente), se houver. """
+    email = get_jwt_identity()
+    user  = User.query.filter_by(email=email).first()
+    if not user or not user.stripe_customer_id:
+        return jsonify({"current_plan": (user.plan_status if user else "free"),
+                        "scheduled_change": None})
+    try:
+        subs = stripe.Subscription.list(
+            customer=user.stripe_customer_id, status='active', limit=1
+        )
+        if not subs.data:
+            return jsonify({"current_plan": user.plan_status, "scheduled_change": None})
+        sub = subs.data[0]
+
+        lic = next((it for it in sub['items']['data']
+                    if (it['price'].get('recurring') or {}).get('usage_type') != 'metered'), None)
+        current_plan = PRICE_ID_TO_PLAN_NAME.get(lic['price']['id']) if lic else user.plan_status
+
+        scheduled = None
+        sched_id = sub.get('schedule')
+        if sched_id:
+            sched  = stripe.SubscriptionSchedule.retrieve(sched_id)
+            phases = sched.get('phases') or []
+            if len(phases) >= 2:
+                future = phases[1]
+                target_plan = None
+                for it in future.get('items', []):
+                    pid = it['price'] if isinstance(it['price'], str) else it['price'].get('id')
+                    if pid in PRICE_ID_TO_PLAN_NAME:
+                        target_plan = PRICE_ID_TO_PLAN_NAME[pid]
+                        break
+                effective_ts = phases[0].get('end_date') or future.get('start_date')
+                scheduled = {"plan": target_plan, "effective_date": effective_ts}
+        return jsonify({"current_plan": current_plan, "scheduled_change": scheduled})
+    except stripe.StripeError as e:
+        print(f"Stripe Error subscription-status: {e}")
+        return jsonify({"current_plan": user.plan_status, "scheduled_change": None})
+
+
+@app.route('/api/cancel-scheduled-change', methods=['POST'])
+@jwt_required()
+def cancel_scheduled_change():
+    """ Cancela um downgrade agendado (libera o schedule). Mantém o plano atual. """
+    email = get_jwt_identity()
+    user  = User.query.filter_by(email=email).first()
+    if not user or not user.stripe_customer_id:
+        return jsonify({"msg": "Cliente Stripe não encontrado."}), 404
+    try:
+        subs = stripe.Subscription.list(
+            customer=user.stripe_customer_id, status='active', limit=1
+        )
+        if not subs.data:
+            return jsonify({"msg": "Nenhuma assinatura ativa."}), 404
+        sched_id = subs.data[0].get('schedule')
+        if not sched_id:
+            return jsonify({"msg": "Nenhuma troca agendada para cancelar."}), 400
+        stripe.SubscriptionSchedule.release(sched_id)
+        return jsonify({"msg": "Troca de plano cancelada. Você permanece no plano atual."})
+    except stripe.StripeError as e:
+        print(f"Stripe Error cancel-scheduled: {e}"); traceback.print_exc()
+        return jsonify({"msg": f"Erro: {getattr(e, 'user_message', None) or 'Tente novamente.'}"}), 500
+    except Exception as e:
+        print(f"Erro cancel-scheduled: {e}"); traceback.print_exc()
+        return jsonify({"msg": "Erro interno."}), 500
 
 
 def sync_user_billing_cycle(user_email):

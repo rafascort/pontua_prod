@@ -85,18 +85,15 @@ class ApiClient {
     email: string,
     password: string,
     refCode?: string | null,
-    profile?: { first_name?: string; last_name?: string; phone?: string; company_name?: string },
+    name?: string,
   ): Promise<{ msg: string }> {
     return this.request("/api/register", {
       method: "POST",
       body: JSON.stringify({
         email,
         password,
+        ...(name ? { name } : {}),
         ...(refCode ? { ref_code: refCode } : {}),
-        ...(profile?.first_name   ? { first_name:   profile.first_name }   : {}),
-        ...(profile?.last_name    ? { last_name:    profile.last_name }    : {}),
-        ...(profile?.phone        ? { phone:        profile.phone }        : {}),
-        ...(profile?.company_name ? { company_name: profile.company_name } : {}),
       }),
     });
   }

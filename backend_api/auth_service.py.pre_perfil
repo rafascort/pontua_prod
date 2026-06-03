@@ -98,6 +98,9 @@ if not all(k for k in PLAN_NAME_TO_EXTRA_PRICE_ID.values() if k):
      print("\n\n*** AVISO (auth_service): IDs de preço EXTRA (STRIPE_PRICE_ID_*_EXTRA) não encontrados no .env! Cobrança de extras não funcionará. ***\n\n")
 # --- FIM COPIAR CONFIGS ---
 
+# Ranking de planos para distinguir upgrade de downgrade
+PLAN_RANK = {'basic': 1, 'standard': 2, 'premium': 3}
+
 
 # --- Modelos do Banco de Dados ---
 class User(db.Model):
@@ -425,6 +428,7 @@ def get_user_details():
     stripe_customer_id=user.stripe_customer_id,
     referral_code=user.referral_code,
     discount_credits=user.discount_credits or 0,
+    extras_reported=user.extras_reported or 0,
 ), 200
 
 @app.route('/api/user/password', methods=['PUT'])
@@ -814,6 +818,254 @@ def create_portal_session():
     except Exception as e:
         print(f"Erro portal: {e}"); traceback.print_exc()
         return jsonify({"msg": "Erro interno portal."}), 500
+
+@app.route('/api/change-plan', methods=['POST'])
+@jwt_required()
+def change_plan():
+    """ Troca de plano para assinaturas multi-item (licensed + metered).
+        Upgrade  -> imediato, proração na próxima fatura (preserva cupom).
+        Downgrade -> agendado para o fim do ciclo (Subscription Schedule). """
+    data = request.get_json() or {}
+    new_price_id = data.get('priceId')
+    when = data.get('when') or 'now'  # 'now' (proração imediata) ou 'period_end' (agendado)
+    if when not in ('now', 'period_end'):
+        when = 'now'
+    if not new_price_id or new_price_id not in PRICE_ID_TO_PLAN_NAME:
+        return jsonify({"msg": "Price ID inválido."}), 400
+
+    new_plan  = PRICE_ID_TO_PLAN_NAME[new_price_id]
+    new_extra = PLAN_NAME_TO_EXTRA_PRICE_ID.get(new_plan)
+    if not new_extra:
+        return jsonify({"msg": f"Preço extra do plano {new_plan} não configurado."}), 500
+
+    email = get_jwt_identity()
+    user  = User.query.filter_by(email=email).first()
+    if not user or not user.stripe_customer_id:
+        return jsonify({"msg": "Cliente Stripe não encontrado."}), 404
+
+    try:
+        subs = stripe.Subscription.list(
+            customer=user.stripe_customer_id, status='active', limit=1
+        )
+        if not subs.data:
+            return jsonify({"msg": "Nenhuma assinatura ativa."}), 404
+        sub = subs.data[0]
+
+        lic = next((it for it in sub['items']['data']
+                    if (it['price'].get('recurring') or {}).get('usage_type') != 'metered'), None)
+        met = next((it for it in sub['items']['data']
+                    if (it['price'].get('recurring') or {}).get('usage_type') == 'metered'), None)
+        current_plan = PRICE_ID_TO_PLAN_NAME.get(lic['price']['id']) if lic else None
+
+        if current_plan == new_plan:
+            return jsonify({"msg": "Você já está neste plano."}), 400
+
+        cur_rank = PLAN_RANK.get(current_plan, 0)
+        new_rank = PLAN_RANK.get(new_plan, 0)
+        is_upgrade = new_rank > cur_rank
+
+        # UPGRADE imediato (proração) — só se o cliente escolheu "agora".
+        # Se for upgrade com when='period_end', cai no fluxo de schedule abaixo.
+        if is_upgrade and when == 'now':
+            items = [{'id': lic['id'], 'price': new_price_id, 'quantity': 1}]
+            if met:
+                items.append({'id': met['id'], 'price': new_extra})
+
+            stripe.Subscription.modify(
+                sub.id,
+                items=items,
+                proration_behavior='create_prorations',
+                metadata={'app_user_id': user.id, 'plan_name': new_plan},
+            )
+            if user.plan_status != new_plan:
+                user.plan_status = new_plan
+                db.session.commit()
+
+            return jsonify({"msg": f"Upgrade para {new_plan} aplicado imediatamente.",
+                            "type": "upgrade", "plan": new_plan, "effective": "now"})
+
+        # DOWNGRADE: fim do ciclo
+        if sub.get('schedule'):
+            return jsonify({"msg": "Já existe uma troca agendada. Aguarde o próximo ciclo."}), 409
+
+        schedule = stripe.SubscriptionSchedule.create(from_subscription=sub.id)
+        phase0   = schedule['phases'][0]
+
+        cur_items = []
+        for it in sub['items']['data']:
+            usage = (it['price'].get('recurring') or {}).get('usage_type')
+            cur_items.append({'price': it['price']['id']} if usage == 'metered'
+                             else {'price': it['price']['id'], 'quantity': 1})
+
+        new_items = [{'price': new_price_id, 'quantity': 1}, {'price': new_extra}]
+
+        try:
+            stripe.SubscriptionSchedule.modify(
+                schedule.id,
+                end_behavior='release',
+                phases=[
+                    {'items': cur_items, 'start_date': phase0['start_date'],
+                     'end_date': phase0['end_date'], 'proration_behavior': 'none'},
+                    {'items': new_items, 'proration_behavior': 'none'},
+                ],
+            )
+        except stripe.StripeError:
+            # modify falhou -> libera o schedule recem-criado para nao
+            # deixar um schedule orfao travando o usuario em 409.
+            try:
+                stripe.SubscriptionSchedule.release(schedule.id)
+            except stripe.StripeError:
+                pass
+            raise
+        op_type = "upgrade" if is_upgrade else "downgrade"
+        return jsonify({"msg": f"Mudança para {new_plan} agendada para o fim do ciclo atual.",
+                        "type": op_type, "plan": new_plan, "effective": "period_end"})
+
+    except stripe.StripeError as e:
+        print(f"Stripe Error change-plan: {e}"); traceback.print_exc()
+        return jsonify({"msg": f"Erro: {getattr(e, 'user_message', None) or 'Tente novamente.'}"}), 500
+    except Exception as e:
+        print(f"Erro change-plan: {e}"); traceback.print_exc()
+        return jsonify({"msg": "Erro interno ao trocar plano."}), 500
+
+
+@app.route('/api/preview-change-plan', methods=['POST'])
+@jwt_required()
+def preview_change_plan():
+    """Prévia de fatura para upgrade imediato (proração). Não cobra nada."""
+    data = request.get_json() or {}
+    new_price_id = data.get('priceId')
+    if not new_price_id or new_price_id not in PRICE_ID_TO_PLAN_NAME:
+        return jsonify({"msg": "Price ID inválido."}), 400
+
+    new_plan  = PRICE_ID_TO_PLAN_NAME[new_price_id]
+    new_extra = PLAN_NAME_TO_EXTRA_PRICE_ID.get(new_plan)
+    if not new_extra:
+        return jsonify({"msg": "Plano não configurado."}), 500
+
+    email = get_jwt_identity()
+    user  = User.query.filter_by(email=email).first()
+    if not user or not user.stripe_customer_id:
+        return jsonify({"msg": "Cliente Stripe não encontrado."}), 404
+
+    try:
+        subs = stripe.Subscription.list(
+            customer=user.stripe_customer_id, status='active', limit=1
+        )
+        if not subs.data:
+            return jsonify({"msg": "Nenhuma assinatura ativa."}), 404
+        sub = subs.data[0]
+
+        lic = next((it for it in sub['items']['data']
+                    if (it['price'].get('recurring') or {}).get('usage_type') != 'metered'), None)
+        met = next((it for it in sub['items']['data']
+                    if (it['price'].get('recurring') or {}).get('usage_type') == 'metered'), None)
+        if not lic:
+            return jsonify({"msg": "Item licenciado não encontrado."}), 500
+
+        items = [{'id': lic['id'], 'price': new_price_id, 'quantity': 1}]
+        if met:
+            items.append({'id': met['id'], 'price': new_extra})
+
+        # API nova (stripe>=8) tem create_preview; versões antigas, Invoice.upcoming
+        try:
+            prev = stripe.Invoice.create_preview(
+                customer=user.stripe_customer_id,
+                subscription=sub.id,
+                subscription_details={
+                    "items": items,
+                    "proration_behavior": "create_prorations",
+                },
+            )
+        except AttributeError:
+            prev = stripe.Invoice.upcoming(
+                customer=user.stripe_customer_id,
+                subscription=sub.id,
+                subscription_items=items,
+                subscription_proration_behavior="create_prorations",
+            )
+
+        return jsonify({
+            "amount_due": prev.get("amount_due", 0),
+            "currency":   prev.get("currency", "brl"),
+        })
+    except stripe.StripeError as e:
+        print(f"Stripe Error preview-change-plan: {e}")
+        return jsonify({"msg": f"Erro: {getattr(e, 'user_message', None) or 'Tente novamente.'}"}), 500
+    except Exception as e:
+        import traceback
+        print(f"Erro preview-change-plan: {e}"); traceback.print_exc()
+        return jsonify({"msg": "Erro interno na prévia."}), 500
+
+
+@app.route('/api/subscription-status', methods=['GET'])
+@jwt_required()
+def subscription_status():
+    """ Plano atual + troca agendada (downgrade pendente), se houver. """
+    email = get_jwt_identity()
+    user  = User.query.filter_by(email=email).first()
+    if not user or not user.stripe_customer_id:
+        return jsonify({"current_plan": (user.plan_status if user else "free"),
+                        "scheduled_change": None})
+    try:
+        subs = stripe.Subscription.list(
+            customer=user.stripe_customer_id, status='active', limit=1
+        )
+        if not subs.data:
+            return jsonify({"current_plan": user.plan_status, "scheduled_change": None})
+        sub = subs.data[0]
+
+        lic = next((it for it in sub['items']['data']
+                    if (it['price'].get('recurring') or {}).get('usage_type') != 'metered'), None)
+        current_plan = PRICE_ID_TO_PLAN_NAME.get(lic['price']['id']) if lic else user.plan_status
+
+        scheduled = None
+        sched_id = sub.get('schedule')
+        if sched_id:
+            sched  = stripe.SubscriptionSchedule.retrieve(sched_id)
+            phases = sched.get('phases') or []
+            if len(phases) >= 2:
+                future = phases[1]
+                target_plan = None
+                for it in future.get('items', []):
+                    pid = it['price'] if isinstance(it['price'], str) else it['price'].get('id')
+                    if pid in PRICE_ID_TO_PLAN_NAME:
+                        target_plan = PRICE_ID_TO_PLAN_NAME[pid]
+                        break
+                effective_ts = phases[0].get('end_date') or future.get('start_date')
+                scheduled = {"plan": target_plan, "effective_date": effective_ts}
+        return jsonify({"current_plan": current_plan, "scheduled_change": scheduled})
+    except stripe.StripeError as e:
+        print(f"Stripe Error subscription-status: {e}")
+        return jsonify({"current_plan": user.plan_status, "scheduled_change": None})
+
+
+@app.route('/api/cancel-scheduled-change', methods=['POST'])
+@jwt_required()
+def cancel_scheduled_change():
+    """ Cancela um downgrade agendado (libera o schedule). Mantém o plano atual. """
+    email = get_jwt_identity()
+    user  = User.query.filter_by(email=email).first()
+    if not user or not user.stripe_customer_id:
+        return jsonify({"msg": "Cliente Stripe não encontrado."}), 404
+    try:
+        subs = stripe.Subscription.list(
+            customer=user.stripe_customer_id, status='active', limit=1
+        )
+        if not subs.data:
+            return jsonify({"msg": "Nenhuma assinatura ativa."}), 404
+        sched_id = subs.data[0].get('schedule')
+        if not sched_id:
+            return jsonify({"msg": "Nenhuma troca agendada para cancelar."}), 400
+        stripe.SubscriptionSchedule.release(sched_id)
+        return jsonify({"msg": "Troca de plano cancelada. Você permanece no plano atual."})
+    except stripe.StripeError as e:
+        print(f"Stripe Error cancel-scheduled: {e}"); traceback.print_exc()
+        return jsonify({"msg": f"Erro: {getattr(e, 'user_message', None) or 'Tente novamente.'}"}), 500
+    except Exception as e:
+        print(f"Erro cancel-scheduled: {e}"); traceback.print_exc()
+        return jsonify({"msg": "Erro interno."}), 500
+
 
 def sync_user_billing_cycle(user_email):
     """Versão 13.0.1+ Robusta: Busca a data de renovação sem quebrar se campos forem nulos."""

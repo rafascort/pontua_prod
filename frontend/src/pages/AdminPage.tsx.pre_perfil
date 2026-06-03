@@ -13,7 +13,7 @@ import {
   Edit3, ChevronUp, ChevronDown, ChevronsUpDown, ChevronLeft,
   ChevronRight, Shield, LogOut, LayoutDashboard, X, Check,
   AlertTriangle, RotateCcw, UserCheck, UserX, Loader2,
-  Gift, UserPlus, Megaphone, Wrench, Building, Eye, Phone,
+  Gift, UserPlus, Megaphone, Wrench, Building,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
@@ -29,10 +29,6 @@ interface AdminUser {
   id: number;
   email: string;
   name?: string;
-  first_name?: string | null;
-  last_name?: string | null;
-  phone?: string | null;
-  company_name?: string | null;
   is_active: boolean;
   role: string;
   plan_status: string;
@@ -114,59 +110,11 @@ function ModalOverlay({ children, onClose }: { children: React.ReactNode; onClos
 }
 
 /* ═══════════════════ Edit User Modal ═══════════════════ */
-/* ═══════════════════ User Details Modal ═══════════════════ */
-function UserDetailsModal({ user, onClose, onEdit }: { user: AdminUser; onClose: () => void; onEdit: () => void }) {
-  const fullName = [user.first_name, user.last_name].filter(Boolean).join(" ").trim() || user.name || "";
-  const display = fullName || user.email;
-  const initials = (fullName ? fullName.split(/\s+/) : user.email.split(/[.@]/))
-    .filter(Boolean).slice(0, 2).map((p) => p[0].toUpperCase()).join("");
-  const rows: { icon: JSX.Element; label: string; value: string; muted?: boolean }[] = [
-    { icon: <Phone className="w-4 h-4" />, label: "Telefone", value: user.phone || "Não informado", muted: !user.phone },
-    { icon: <Building className="w-4 h-4" />, label: "Empresa", value: user.company_name || "Não informado", muted: !user.company_name },
-    { icon: <Shield className="w-4 h-4" />, label: "Plano", value: PLAN_LABELS[user.plan_status] || user.plan_status },
-    { icon: <LayoutDashboard className="w-4 h-4" />, label: "Páginas usadas", value: String(user.page_count) },
-    { icon: <Check className="w-4 h-4" />, label: "Status", value: user.is_active ? "Ativo" : "Inativo", muted: !user.is_active },
-    { icon: <UserCheck className="w-4 h-4" />, label: "Role", value: user.role },
-    { icon: <Gift className="w-4 h-4" />, label: "ID", value: String(user.id) },
-  ];
-  return (
-    <ModalOverlay onClose={onClose}>
-      <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-xl">
-        <div className="flex items-center justify-between p-5 border-b border-border/50">
-          <div className="flex items-center gap-3">
-            <div className="w-11 h-11 rounded-full bg-primary/10 border border-primary/20 text-primary flex items-center justify-center font-semibold">{initials}</div>
-            <div>
-              <p className="text-foreground font-semibold leading-tight">{display}</p>
-              <p className="text-sm text-primary">{user.email}</p>
-            </div>
-          </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-all"><X className="w-4 h-4" /></button>
-        </div>
-        <div className="p-5">
-          {rows.map((r) => (
-            <div key={r.label} className="flex items-center justify-between py-2.5 border-b border-border/30 last:border-0">
-              <span className="flex items-center gap-2 text-sm text-muted-foreground">{r.icon}{r.label}</span>
-              <span className={`text-sm font-medium ${r.muted ? "italic text-muted-foreground" : "text-foreground"}`}>{r.value}</span>
-            </div>
-          ))}
-          <button onClick={onEdit} className="mt-5 w-full gradient-primary text-primary-foreground py-2.5 rounded-lg font-medium flex items-center justify-center gap-2 hover:shadow-lg hover:shadow-primary/25 transition-all">
-            <Edit3 className="w-4 h-4" /> Editar usuário
-          </button>
-        </div>
-      </div>
-    </ModalOverlay>
-  );
-}
-
 function EditUserModal({ user, onClose, onSuccess }: { user: AdminUser; onClose: () => void; onSuccess: () => void }) {
   const [email, setEmail] = useState(user.email);
   const [role, setRole] = useState(user.role);
   const [planStatus, setPlanStatus] = useState(user.plan_status);
   const [pageCount, setPageCount] = useState(String(user.page_count));
-  const [firstName, setFirstName] = useState(user.first_name || "");
-  const [lastName, setLastName] = useState(user.last_name || "");
-  const [phone, setPhone] = useState(user.phone || "");
-  const [company, setCompany] = useState(user.company_name || "");
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -177,7 +125,7 @@ function EditUserModal({ user, onClose, onSuccess }: { user: AdminUser; onClose:
     try {
       const res = await adminFetch(`/api/admin/users/${user.id}`, {
         method: "PUT",
-        body: JSON.stringify({ email, role, plan_status: planStatus, page_count: count, first_name: firstName, last_name: lastName, phone, company_name: company }),
+        body: JSON.stringify({ email, role, plan_status: planStatus, page_count: count }),
       });
       const data = await res.json();
       if (res.ok) { toast.success(data.msg || "Usuário atualizado!"); onSuccess(); onClose(); }
@@ -201,30 +149,6 @@ function EditUserModal({ user, onClose, onSuccess }: { user: AdminUser; onClose:
           </button>
         </div>
         <form onSubmit={handleSubmit} className="p-5 space-y-4">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-sm font-medium text-foreground mb-1.5 block">Nome</label>
-              <input type="text" value={firstName} onChange={(e) => setFirstName(e.target.value)} disabled={loading}
-                className="w-full px-3 py-2.5 rounded-lg bg-background/50 border border-border/50 text-foreground text-sm focus:outline-none focus:border-primary/60 focus:ring-1 focus:ring-primary/20 transition-all" />
-            </div>
-            <div>
-              <label className="text-sm font-medium text-foreground mb-1.5 block">Sobrenome</label>
-              <input type="text" value={lastName} onChange={(e) => setLastName(e.target.value)} disabled={loading}
-                className="w-full px-3 py-2.5 rounded-lg bg-background/50 border border-border/50 text-foreground text-sm focus:outline-none focus:border-primary/60 focus:ring-1 focus:ring-primary/20 transition-all" />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-sm font-medium text-foreground mb-1.5 block">Telefone</label>
-              <input type="text" value={phone} onChange={(e) => setPhone(e.target.value)} disabled={loading}
-                className="w-full px-3 py-2.5 rounded-lg bg-background/50 border border-border/50 text-foreground text-sm focus:outline-none focus:border-primary/60 focus:ring-1 focus:ring-primary/20 transition-all" />
-            </div>
-            <div>
-              <label className="text-sm font-medium text-foreground mb-1.5 block">Empresa</label>
-              <input type="text" value={company} onChange={(e) => setCompany(e.target.value)} disabled={loading}
-                className="w-full px-3 py-2.5 rounded-lg bg-background/50 border border-border/50 text-foreground text-sm focus:outline-none focus:border-primary/60 focus:ring-1 focus:ring-primary/20 transition-all" />
-            </div>
-          </div>
           <div>
             <label className="text-sm font-medium text-foreground mb-1.5 block">E-mail</label>
             <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required disabled={loading}
@@ -384,7 +308,6 @@ function UsersManagementSection({ authUserEmail }: { authUserEmail: string | und
   const [sortOrder, setSortOrder] = useState("asc");
 
   const [editUser, setEditUser] = useState<AdminUser | null>(null);
-  const [detailUser, setDetailUser] = useState<AdminUser | null>(null);
   const [resetPwUser, setResetPwUser] = useState<AdminUser | null>(null);
   const [deleteUser, setDeleteUser] = useState<AdminUser | null>(null);
   const [resetPageUser, setResetPageUser] = useState<AdminUser | null>(null);
@@ -571,7 +494,6 @@ function UsersManagementSection({ authUserEmail }: { authUserEmail: string | und
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1">
-                        <button onClick={() => setDetailUser(u)} title="Detalhes" className="p-1.5 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all"><Eye className="w-4 h-4" /></button>
                         <button onClick={() => setEditUser(u)} title="Editar" className="p-1.5 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all"><Edit3 className="w-4 h-4" /></button>
                         <button onClick={() => setResetPwUser(u)} title="Resetar senha" className="p-1.5 rounded-lg text-muted-foreground hover:text-amber-400 hover:bg-amber-400/10 transition-all"><KeyRound className="w-4 h-4" /></button>
                         <button onClick={() => handleToggleStatus(u)} disabled={u.email === authUserEmail} title={u.is_active ? "Desativar" : "Ativar"}
@@ -619,7 +541,6 @@ function UsersManagementSection({ authUserEmail }: { authUserEmail: string | und
 
       {/* Modals */}
       {editUser && <EditUserModal user={editUser} onClose={() => setEditUser(null)} onSuccess={fetchUsers} />}
-      {detailUser && <UserDetailsModal user={detailUser} onClose={() => setDetailUser(null)} onEdit={() => { setEditUser(detailUser); setDetailUser(null); }} />}
       {resetPwUser && <ResetPasswordModal user={resetPwUser} onClose={() => setResetPwUser(null)} onSuccess={fetchUsers} />}
       {deleteUser && <ConfirmModal title="Excluir Usuário" message={`Tem certeza que deseja excluir ${deleteUser.email}? Esta ação é irreversível.`} confirmLabel="Excluir" onClose={() => setDeleteUser(null)} onConfirm={handleDelete} loading={actionLoading} />}
       {resetPageUser && <ConfirmModal title="Zerar Contagem" message={`Zerar contagem de páginas de ${resetPageUser.email}?`} confirmLabel="Zerar" onClose={() => setResetPageUser(null)} onConfirm={handleResetPageCount} loading={actionLoading} danger={false} />}

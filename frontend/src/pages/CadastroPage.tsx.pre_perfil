@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Mail, Lock, Sparkles, UserPlus, ArrowLeft, MessageCircle, CheckCircle, RefreshCw, Users, User, Phone, Building } from "lucide-react";
+import { Mail, Lock, Sparkles, UserPlus, ArrowLeft, MessageCircle, CheckCircle, RefreshCw, Users } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import {
@@ -14,15 +14,6 @@ import {
 const WHATSAPP_URL =
   "https://wa.me/5554999427282?text=Olá! Tenho dúvidas sobre o Sistema Ponto.";
 
-function formatPhoneBR(v: string): string {
-  const d = v.replace(/\D/g, "").slice(0, 11);
-  if (!d) return "";
-  if (d.length <= 2) return `(${d}`;
-  if (d.length <= 6) return `(${d.slice(0, 2)}) ${d.slice(2)}`;
-  if (d.length <= 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
-  return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
-}
-
 const CadastroPage = () => {
   // Captura ?ref=CODIGO da URL se presente
   useReferralCapture();
@@ -30,10 +21,6 @@ const CadastroPage = () => {
   const [email,           setEmail]           = useState("");
   const [password,        setPassword]        = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [firstName,       setFirstName]       = useState("");
-  const [lastName,        setLastName]        = useState("");
-  const [phone,           setPhone]           = useState("");
-  const [company,         setCompany]         = useState("");
   const [isLoading,       setIsLoading]       = useState(false);
   const [emailSent,       setEmailSent]       = useState(false);        // estado pós-cadastro
   const [resending,       setResending]       = useState(false);
@@ -43,19 +30,11 @@ const CadastroPage = () => {
 
   const handleCadastro = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!firstName.trim()) { toast.error("Informe seu nome."); return; }
-    if (!lastName.trim())  { toast.error("Informe seu sobrenome."); return; }
-    if (phone.replace(/\D/g, "").length < 10) { toast.error("Informe um telefone válido com DDD."); return; }
     if (password !== confirmPassword) { toast.error("As senhas não coincidem."); return; }
     if (password.length < 6) { toast.error("A senha deve ter pelo menos 6 caracteres."); return; }
     setIsLoading(true);
     try {
-      await register(email, password, refCode, {
-        first_name:   firstName.trim(),
-        last_name:    lastName.trim(),
-        phone:        phone.trim(),
-        company_name: company.trim() || undefined,
-      });
+      await register(email, password, refCode);
       clearStoredReferralCode();
       // Não faz mais auto-login — aguarda confirmação de email
       setEmailSent(true);
@@ -205,36 +184,6 @@ const CadastroPage = () => {
 
         <form onSubmit={handleCadastro} className="flex flex-col gap-4">
           <div>
-            <label className="text-sm font-medium text-foreground mb-2 block">Nome</label>
-            <div className="relative">
-              <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <input
-                type="text"
-                value={firstName}
-                onChange={(e) => setFirstName(e.target.value)}
-                placeholder="João"
-                className="w-full pl-10 pr-4 py-3 bg-background/60 border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
-                required
-                autoComplete="given-name"
-              />
-            </div>
-          </div>
-          <div>
-            <label className="text-sm font-medium text-foreground mb-2 block">Sobrenome</label>
-            <div className="relative">
-              <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <input
-                type="text"
-                value={lastName}
-                onChange={(e) => setLastName(e.target.value)}
-                placeholder="Pereira"
-                className="w-full pl-10 pr-4 py-3 bg-background/60 border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
-                required
-                autoComplete="family-name"
-              />
-            </div>
-          </div>
-          <div>
             <label className="text-sm font-medium text-foreground mb-2 block">E-mail</label>
             <div className="relative">
               <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -246,36 +195,6 @@ const CadastroPage = () => {
                 className="w-full pl-10 pr-4 py-3 bg-background/60 border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
                 required
                 autoComplete="email"
-              />
-            </div>
-          </div>
-          <div>
-            <label className="text-sm font-medium text-foreground mb-2 block">Telefone</label>
-            <div className="relative">
-              <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <input
-                type="text"
-                inputMode="tel"
-                value={phone}
-                onChange={(e) => setPhone(formatPhoneBR(e.target.value))}
-                placeholder="(54) 99999-9999"
-                className="w-full pl-10 pr-4 py-3 bg-background/60 border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
-                required
-                autoComplete="tel"
-              />
-            </div>
-          </div>
-          <div>
-            <label className="text-sm font-medium text-foreground mb-2 block">Empresa <span className="text-muted-foreground font-normal">(opcional)</span></label>
-            <div className="relative">
-              <Building className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <input
-                type="text"
-                value={company}
-                onChange={(e) => setCompany(e.target.value)}
-                placeholder="Onde você trabalha"
-                className="w-full pl-10 pr-4 py-3 bg-background/60 border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
-                autoComplete="organization"
               />
             </div>
           </div>

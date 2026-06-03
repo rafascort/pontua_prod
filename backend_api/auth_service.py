@@ -135,6 +135,12 @@ class User(db.Model):
     org_role        = db.Column(db.String(20), nullable=True)   # 'admin' | 'member' | None
     can_process     = db.Column(db.Boolean, nullable=False, default=True)
 
+
+    # Perfil do usuario (cadastro)
+    first_name   = db.Column(db.String(80),  nullable=True)
+    last_name    = db.Column(db.String(80),  nullable=True)
+    phone        = db.Column(db.String(30),  nullable=True)
+    company_name = db.Column(db.String(150), nullable=True)
 # ═══════════════════════════════════════════════════════════════════════════
 # Classe Organization (multi-tenancy / empresas)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -352,6 +358,10 @@ def register():
         email_verification_token   = token,
         email_verification_sent_at = datetime.now(timezone.utc),
     )
+    new_user.first_name   = (request.json.get('first_name')   or '').strip() or None
+    new_user.last_name    = (request.json.get('last_name')    or '').strip() or None
+    new_user.phone        = (request.json.get('phone')        or '').strip() or None
+    new_user.company_name = (request.json.get('company_name')  or '').strip() or None
     db.session.add(new_user)
     try:
         db.session.commit()
@@ -481,7 +491,7 @@ def get_users():
             query = query.order_by(sort_column.asc())
         pagination = query.paginate(page=page, per_page=per_page, error_out=False)
         users = pagination.items
-        return jsonify({"users": [{"id": user.id, "email": user.email, "role": user.role, "is_active": user.is_active, "page_count": user.page_count, "plan_status": user.plan_status or 'free'} for user in users], "total_pages": pagination.pages, "current_page": page, "total_users": pagination.total}), 200
+        return jsonify({"users": [{"id": user.id, "email": user.email, "name": ((user.first_name or '') + ' ' + (user.last_name or '')).strip() or None, "first_name": user.first_name, "last_name": user.last_name, "phone": user.phone, "company_name": user.company_name, "role": user.role, "is_active": user.is_active, "page_count": user.page_count, "plan_status": user.plan_status or 'free'} for user in users], "total_pages": pagination.pages, "current_page": page, "total_users": pagination.total}), 200
     except Exception as e:
         print(f"Erro ao buscar usuários: {e}")
         traceback.print_exc()
@@ -606,6 +616,16 @@ def update_user_details(user_id):
     # Atualizar Plano
     if 'plan_status' in data:
         user.plan_status = data['plan_status']
+
+    # Atualizar dados de perfil (cadastro)
+    if 'first_name' in data:
+        user.first_name = (data.get('first_name') or '').strip() or None
+    if 'last_name' in data:
+        user.last_name = (data.get('last_name') or '').strip() or None
+    if 'phone' in data:
+        user.phone = (data.get('phone') or '').strip() or None
+    if 'company_name' in data:
+        user.company_name = (data.get('company_name') or '').strip() or None
 
     # Atualizar Senha
     if 'new_password' in data and data['new_password']:
@@ -827,6 +847,9 @@ def change_plan():
         Downgrade -> agendado para o fim do ciclo (Subscription Schedule). """
     data = request.get_json() or {}
     new_price_id = data.get('priceId')
+    when = data.get('when') or 'now'  # 'now' (proração imediata) ou 'period_end' (agendado)
+    if when not in ('now', 'period_end'):
+        when = 'now'
     if not new_price_id or new_price_id not in PRICE_ID_TO_PLAN_NAME:
         return jsonify({"msg": "Price ID inválido."}), 400
 
@@ -859,9 +882,11 @@ def change_plan():
 
         cur_rank = PLAN_RANK.get(current_plan, 0)
         new_rank = PLAN_RANK.get(new_plan, 0)
+        is_upgrade = new_rank > cur_rank
 
-        # UPGRADE: imediato
-        if new_rank > cur_rank:
+        # UPGRADE imediato (proração) — só se o cliente escolheu "agora".
+        # Se for upgrade com when='period_end', cai no fluxo de schedule abaixo.
+        if is_upgrade and when == 'now':
             items = [{'id': lic['id'], 'price': new_price_id, 'quantity': 1}]
             if met:
                 items.append({'id': met['id'], 'price': new_extra})
@@ -894,17 +919,27 @@ def change_plan():
 
         new_items = [{'price': new_price_id, 'quantity': 1}, {'price': new_extra}]
 
-        stripe.SubscriptionSchedule.modify(
-            schedule.id,
-            end_behavior='release',
-            phases=[
-                {'items': cur_items, 'start_date': phase0['start_date'],
-                 'end_date': phase0['end_date'], 'proration_behavior': 'none'},
-                {'items': new_items, 'iterations': 1, 'proration_behavior': 'none'},
-            ],
-        )
-        return jsonify({"msg": f"Downgrade para {new_plan} agendado para o fim do ciclo atual.",
-                        "type": "downgrade", "plan": new_plan, "effective": "period_end"})
+        try:
+            stripe.SubscriptionSchedule.modify(
+                schedule.id,
+                end_behavior='release',
+                phases=[
+                    {'items': cur_items, 'start_date': phase0['start_date'],
+                     'end_date': phase0['end_date'], 'proration_behavior': 'none'},
+                    {'items': new_items, 'proration_behavior': 'none'},
+                ],
+            )
+        except stripe.StripeError:
+            # modify falhou -> libera o schedule recem-criado para nao
+            # deixar um schedule orfao travando o usuario em 409.
+            try:
+                stripe.SubscriptionSchedule.release(schedule.id)
+            except stripe.StripeError:
+                pass
+            raise
+        op_type = "upgrade" if is_upgrade else "downgrade"
+        return jsonify({"msg": f"Mudança para {new_plan} agendada para o fim do ciclo atual.",
+                        "type": op_type, "plan": new_plan, "effective": "period_end"})
 
     except stripe.StripeError as e:
         print(f"Stripe Error change-plan: {e}"); traceback.print_exc()
@@ -912,6 +947,75 @@ def change_plan():
     except Exception as e:
         print(f"Erro change-plan: {e}"); traceback.print_exc()
         return jsonify({"msg": "Erro interno ao trocar plano."}), 500
+
+
+@app.route('/api/preview-change-plan', methods=['POST'])
+@jwt_required()
+def preview_change_plan():
+    """Prévia de fatura para upgrade imediato (proração). Não cobra nada."""
+    data = request.get_json() or {}
+    new_price_id = data.get('priceId')
+    if not new_price_id or new_price_id not in PRICE_ID_TO_PLAN_NAME:
+        return jsonify({"msg": "Price ID inválido."}), 400
+
+    new_plan  = PRICE_ID_TO_PLAN_NAME[new_price_id]
+    new_extra = PLAN_NAME_TO_EXTRA_PRICE_ID.get(new_plan)
+    if not new_extra:
+        return jsonify({"msg": "Plano não configurado."}), 500
+
+    email = get_jwt_identity()
+    user  = User.query.filter_by(email=email).first()
+    if not user or not user.stripe_customer_id:
+        return jsonify({"msg": "Cliente Stripe não encontrado."}), 404
+
+    try:
+        subs = stripe.Subscription.list(
+            customer=user.stripe_customer_id, status='active', limit=1
+        )
+        if not subs.data:
+            return jsonify({"msg": "Nenhuma assinatura ativa."}), 404
+        sub = subs.data[0]
+
+        lic = next((it for it in sub['items']['data']
+                    if (it['price'].get('recurring') or {}).get('usage_type') != 'metered'), None)
+        met = next((it for it in sub['items']['data']
+                    if (it['price'].get('recurring') or {}).get('usage_type') == 'metered'), None)
+        if not lic:
+            return jsonify({"msg": "Item licenciado não encontrado."}), 500
+
+        items = [{'id': lic['id'], 'price': new_price_id, 'quantity': 1}]
+        if met:
+            items.append({'id': met['id'], 'price': new_extra})
+
+        # API nova (stripe>=8) tem create_preview; versões antigas, Invoice.upcoming
+        try:
+            prev = stripe.Invoice.create_preview(
+                customer=user.stripe_customer_id,
+                subscription=sub.id,
+                subscription_details={
+                    "items": items,
+                    "proration_behavior": "create_prorations",
+                },
+            )
+        except AttributeError:
+            prev = stripe.Invoice.upcoming(
+                customer=user.stripe_customer_id,
+                subscription=sub.id,
+                subscription_items=items,
+                subscription_proration_behavior="create_prorations",
+            )
+
+        return jsonify({
+            "amount_due": prev.get("amount_due", 0),
+            "currency":   prev.get("currency", "brl"),
+        })
+    except stripe.StripeError as e:
+        print(f"Stripe Error preview-change-plan: {e}")
+        return jsonify({"msg": f"Erro: {getattr(e, 'user_message', None) or 'Tente novamente.'}"}), 500
+    except Exception as e:
+        import traceback
+        print(f"Erro preview-change-plan: {e}"); traceback.print_exc()
+        return jsonify({"msg": "Erro interno na prévia."}), 500
 
 
 @app.route('/api/subscription-status', methods=['GET'])

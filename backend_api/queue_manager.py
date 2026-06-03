@@ -534,6 +534,7 @@ def get_progress(task_id):
         progress_data['status'] = internal_status
         if internal_status == 'completed':
             progress_data['result'] = job.result
+            progress_data.setdefault('warnings', progress_data.get('avisos', []))
         elif internal_status == 'error':
             progress_data['error']  = job.meta.get('error', 'Erro interno.')
     elif status_rq == 'queued':

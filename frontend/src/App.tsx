@@ -15,6 +15,7 @@ import EmailVerificationPage from "./pages/EmailVerificationPage";
 import ServiceSelectionPage from "./pages/ServiceSelectionPage";
 import PontoExtractorPage from "./pages/PontoExtractorPage";
 import HoleriteExtractorPage from "./pages/HoleriteExtractorPage";
+import AssinaturaPage from "./pages/AssinaturaPage";
 import PaymentSuccessPage from "./pages/PaymentSuccessPage";
 import TermosPage from "./pages/TermosPage";
 import AdminPage from "./pages/AdminPage";
@@ -81,6 +82,17 @@ const App = () => (
               }
             />
 
+            {/* Gerenciamento de assinatura (plano + pagamento/faturas) */}
+            <Route path="/assinatura"
+              element={
+                <ProtectedRoute>
+                  <MaintenanceGuard>
+                    <AssinaturaPage />
+                  </MaintenanceGuard>
+                </ProtectedRoute>
+              }
+            />
+
             {/* Indicações e Promoções — também bloqueadas */}
             <Route path="/indicacoes"
               element={
@@ -105,8 +117,7 @@ const App = () => (
             <Route path="/payment-success"
               element={<ProtectedRoute><PaymentSuccessPage /></ProtectedRoute>} />
 
-            {/* Admin — NÃO usa MaintenanceGuard (admin sempre acessa) */}
-{/* Área da empresa — admin da empresa (org_role='admin') */}
+            {/* Área da empresa — admin da empresa (org_role='admin') */}
             <Route path="/empresa"
               element={
                 <ProtectedRoute>
@@ -114,7 +125,7 @@ const App = () => (
                 </ProtectedRoute>
               }
             />
-	   {/* Pos-checkout Stripe da empresa */}
+            {/* Pos-checkout Stripe da empresa */}
             <Route path="/empresa/payment-success"
               element={
                 <ProtectedRoute>
@@ -124,7 +135,7 @@ const App = () => (
             />
 
             {/* Aceite de convite (publico - token e a credencial) */}
-            <Route path="/definir-senha" element={<DefinirSenhaPage />} /> 
+            <Route path="/definir-senha" element={<DefinirSenhaPage />} />
             <Route path="/admin" element={<AdminPage />} />
 
             {/* 404 */}
