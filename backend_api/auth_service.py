@@ -1258,17 +1258,33 @@ def handle_checkout_session_completed(session):
 
 # --- FUNÇÃO ATUALIZADA ---
 
+def _invoice_subscription_id(invoice):
+    """ID da assinatura — compativel com schema novo (parent) e antigo (topo)."""
+    sid = invoice.get('subscription')
+    if sid:
+        return sid
+    parent = invoice.get('parent') or {}
+    return (parent.get('subscription_details') or {}).get('subscription')
+
+
 def _invoice_period_end_date(invoice):
-    """Data (date) do fim do período coberto pela fatura. Sinal de 'novo ciclo'."""
+    """Maior fim de periodo entre as linhas de assinatura. Sinal de 'novo ciclo'.
+    Compativel com API 2025-09-30.clover (subscription/price em parent/pricing)."""
+    ends = []
     try:
         for line in (invoice.get('lines', {}) or {}).get('data', []):
+            parent   = line.get('parent') or {}
+            sub_item = parent.get('subscription_item_details') or {}
+            is_sub   = bool(sub_item.get('subscription') or line.get('subscription'))
             recurring = (line.get('price', {}) or {}).get('recurring')
-            if line.get('subscription') or recurring:
+            if is_sub or recurring:
                 ts = (line.get('period', {}) or {}).get('end')
                 if ts:
-                    return datetime.fromtimestamp(ts).date()
+                    ends.append(ts)
     except Exception:
         pass
+    if ends:
+        return datetime.fromtimestamp(max(ends)).date()
     ts = invoice.get('period_end')
     if ts:
         return datetime.fromtimestamp(ts).date()
@@ -1277,7 +1293,7 @@ def _invoice_period_end_date(invoice):
 
 def handle_invoice_payment_succeeded(invoice):
     stripe_customer_id = invoice.get('customer')
-    subscription_id    = invoice.get('subscription')
+    subscription_id    = _invoice_subscription_id(invoice)
     billing_reason     = invoice.get('billing_reason')
     user = find_user_by_stripe_customer_id(stripe_customer_id)
     if not user:

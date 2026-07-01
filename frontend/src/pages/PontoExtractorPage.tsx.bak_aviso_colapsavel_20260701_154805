@@ -104,7 +104,6 @@ function PeriodConfirmationModal({
     }))
   );
   const [loading, setLoading] = useState(false);
-  const [mostrarPares, setMostrarPares] = useState(false);
 
   const activeCount = items.filter((p) => p.is_active).length;
 
@@ -372,45 +371,21 @@ function PeriodConfirmationModal({
 
           {/* Footer */}
           <div className="p-6 border-t border-border/50 shrink-0">
-            {/* Aviso de sobreposição — compacto e colapsável */}
+            {/* Aviso de sobreposição — aparece em tempo real */}
             {overlapPairs.length > 0 && (
-              <div className="mb-3 rounded-lg border border-yellow-500/50 bg-yellow-500/10 overflow-hidden">
-                <div
-                  className="flex items-center gap-2 px-4 py-2.5 cursor-pointer select-none"
-                  onClick={() => setMostrarPares((v) => !v)}
-                >
-                  <span className="text-base">⚠</span>
-                  <span className="text-sm font-semibold text-yellow-600 dark:text-yellow-400">
-                    Sobreposição de períodos detectada
-                  </span>
-                  <span className="text-xs font-medium text-yellow-900 bg-yellow-400 rounded-full px-2 py-0.5 whitespace-nowrap">
-                    {overlapPairs.length} {overlapPairs.length === 1 ? "par" : "pares"}
-                  </span>
-                  <span className="flex-1" />
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); setMostrarPares((v) => !v); }}
-                    className="flex items-center gap-1 text-xs text-yellow-600 dark:text-yellow-400 border border-yellow-500/40 rounded-lg px-2.5 py-1 hover:bg-yellow-500/10 transition-all whitespace-nowrap"
-                    aria-expanded={mostrarPares}
-                  >
-                    {mostrarPares ? "Ocultar" : "Ver pares"}
-                    <ChevronRight className={`w-3.5 h-3.5 transition-transform ${mostrarPares ? "rotate-90" : ""}`} />
-                  </button>
-                </div>
-                <p className="px-4 pb-2.5 text-xs text-yellow-700 dark:text-yellow-300 leading-snug">
-                  Esses pares cobrem datas em comum e misturam dados no mesmo dia. Corrija antes de processar.
+              <div className="mb-3 rounded-lg border border-yellow-500/50 bg-yellow-500/10 px-4 py-3">
+                <p className="text-sm font-semibold text-yellow-600 dark:text-yellow-400 mb-1">
+                  ⚠ Sobreposição de períodos detectada
                 </p>
-                {mostrarPares && (
-                  <div className="border-t border-yellow-500/25 max-h-32 overflow-y-auto">
-                    <div className="grid grid-cols-3 gap-x-4 gap-y-0.5 px-4 py-2.5">
-                      {overlapPairs.map(({ aPag, bPag }, i) => (
-                        <span key={i} className="text-xs text-yellow-700 dark:text-yellow-300 whitespace-nowrap">
-                          Pág {aPag} ↔ {bPag}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                <p className="text-xs text-yellow-700 dark:text-yellow-300 mb-2">
+                  Os pares abaixo cobrem datas em comum. Isso mistura dados de páginas diferentes
+                  no mesmo dia e gera resultados incorretos. Corrija os períodos antes de processar.
+                </p>
+                <ul className="text-xs text-yellow-700 dark:text-yellow-300 space-y-0.5">
+                  {overlapPairs.map(({ aPag, bPag }, i) => (
+                    <li key={i}>• Página {aPag} e Página {bPag}</li>
+                  ))}
+                </ul>
               </div>
             )}
 

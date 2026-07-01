@@ -1168,11 +1168,28 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
                     n = _parse_day_number(raw_dia)
                     if n is not None:
                         day_str   = f"{n:02d}"
-                        # Procura primeira data do período da página com esse dia
-                        day_match = next(
-                            (d for d in page_dates if d.startswith(day_str + '/')),
-                            None
-                        )
+                        # CORREÇÃO multi-mês: o nº do dia (1-31) repete quando a
+                        # página cobre mais de um mês (ex.: "24" = 24/dez E 24/jan).
+                        # As entidades chegam em ordem cronológica (spatial_sort por Y),
+                        # então casamos o dia A PARTIR do cursor (page_row_ptr), e não
+                        # do início da página — assim 24/dez -> 1º "24" e 24/jan -> 2º.
+                        day_match = None
+                        # (a) continuação do mesmo dia (linha extra de marcações):
+                        #     nº do dia == dia da última data preenchida -> fica nela.
+                        if page_row_ptr > 0 and page_dates[page_row_ptr - 1].startswith(day_str + '/'):
+                            day_match = page_dates[page_row_ptr - 1]
+                        # (b) caso normal: próxima data com esse dia a partir do cursor.
+                        if day_match is None:
+                            day_match = next(
+                                (d for d in page_dates[page_row_ptr:] if d.startswith(day_str + '/')),
+                                None
+                            )
+                        # (c) último recurso (entidade fora de ordem): busca do início.
+                        if day_match is None:
+                            day_match = next(
+                                (d for d in page_dates if d.startswith(day_str + '/')),
+                                None
+                            )
                         if day_match and day_match in date_to_row:
                             target_date = day_match
                             fallback_day_hits += 1
@@ -1256,18 +1273,6 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
             except Exception as e:
                 LOG('erro no pareamento noturno', str(e), 'WARN')
 
-        # 4.6. Avisos gerais de validacao (rodam em TODOS os jobs)
-        try:
-            from avisos_ponto import coletar_avisos, ordenar_avisos
-            datas_ja_sinalizadas = {a.get('data') for a in avisos_noturno}
-            avisos_gerais = coletar_avisos(master_df, datas_ignorar=datas_ja_sinalizadas)
-            avisos = ordenar_avisos(avisos_noturno + avisos_gerais)
-            LOG('avisos de jornada', str(len(avisos_gerais)))
-            LOG('avisos totais',     str(len(avisos)))
-        except Exception as e:
-            LOG('erro ao coletar avisos gerais', str(e), 'WARN')
-            avisos = list(avisos_noturno)
-
         # ── 5. Salvar CSV ─────────────────────────────────────────────────────
         random_id      = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
         final_filename = f"Ponto_Extraido_{random_id}.csv"
@@ -1320,7 +1325,7 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
             'status':     'completed',
             'file_path':  out_path,
             'filename':   final_filename,
-            'avisos':     avisos,
+            'avisos':     avisos_noturno,
             'total_dias': total_dias,
             'pareados':   pareados_noturno,
         })
