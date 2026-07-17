@@ -13,7 +13,7 @@ import {
   Edit3, ChevronUp, ChevronDown, ChevronsUpDown, ChevronLeft,
   ChevronRight, Shield, LogOut, LayoutDashboard, X, Check,
   AlertTriangle, RotateCcw, UserCheck, UserX, Loader2,
-  Gift, UserPlus, Megaphone, Wrench, Building, Eye, Phone, History,
+  Gift, UserPlus, Megaphone, Wrench, Building, Eye, Phone,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
@@ -22,7 +22,6 @@ import AdminPromotionsTab from "@/components/admin/AdminPromotionsTab";
 import AdminAnnouncementsTab from "@/components/admin/AdminAnnouncementsTab";
 import AdminMaintenanceTab from "@/components/admin/AdminMaintenanceTab";
 import AdminOrganizationsTab from "@/components/admin/AdminOrganizationsTab";
-import UserHistoryModal from "@/components/admin/UserHistoryModal";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -386,7 +385,6 @@ function UsersManagementSection({ authUserEmail }: { authUserEmail: string | und
 
   const [editUser, setEditUser] = useState<AdminUser | null>(null);
   const [detailUser, setDetailUser] = useState<AdminUser | null>(null);
-  const [historyUser, setHistoryUser] = useState<AdminUser | null>(null);
   const [resetPwUser, setResetPwUser] = useState<AdminUser | null>(null);
   const [deleteUser, setDeleteUser] = useState<AdminUser | null>(null);
   const [resetPageUser, setResetPageUser] = useState<AdminUser | null>(null);
@@ -575,7 +573,6 @@ function UsersManagementSection({ authUserEmail }: { authUserEmail: string | und
                       <div className="flex items-center gap-1">
                         <button onClick={() => setDetailUser(u)} title="Detalhes" className="p-1.5 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all"><Eye className="w-4 h-4" /></button>
                         <button onClick={() => setEditUser(u)} title="Editar" className="p-1.5 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all"><Edit3 className="w-4 h-4" /></button>
-                        <button onClick={() => setHistoryUser(u)} title="Historico de uso" className="p-1.5 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all"><History className="w-4 h-4" /></button>
                         <button onClick={() => setResetPwUser(u)} title="Resetar senha" className="p-1.5 rounded-lg text-muted-foreground hover:text-amber-400 hover:bg-amber-400/10 transition-all"><KeyRound className="w-4 h-4" /></button>
                         <button onClick={() => handleToggleStatus(u)} disabled={u.email === authUserEmail} title={u.is_active ? "Desativar" : "Ativar"}
                           className={`p-1.5 rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed ${u.is_active ? "text-muted-foreground hover:text-destructive hover:bg-destructive/10" : "text-muted-foreground hover:text-emerald-400 hover:bg-emerald-400/10"}`}>
@@ -623,7 +620,6 @@ function UsersManagementSection({ authUserEmail }: { authUserEmail: string | und
       {/* Modals */}
       {editUser && <EditUserModal user={editUser} onClose={() => setEditUser(null)} onSuccess={fetchUsers} />}
       {detailUser && <UserDetailsModal user={detailUser} onClose={() => setDetailUser(null)} onEdit={() => { setEditUser(detailUser); setDetailUser(null); }} />}
-      {historyUser && <UserHistoryModal user={historyUser} onClose={() => setHistoryUser(null)} />}
       {resetPwUser && <ResetPasswordModal user={resetPwUser} onClose={() => setResetPwUser(null)} onSuccess={fetchUsers} />}
       {deleteUser && <ConfirmModal title="Excluir Usuário" message={`Tem certeza que deseja excluir ${deleteUser.email}? Esta ação é irreversível.`} confirmLabel="Excluir" onClose={() => setDeleteUser(null)} onConfirm={handleDelete} loading={actionLoading} />}
       {resetPageUser && <ConfirmModal title="Zerar Contagem" message={`Zerar contagem de páginas de ${resetPageUser.email}?`} confirmLabel="Zerar" onClose={() => setResetPageUser(null)} onConfirm={handleResetPageCount} loading={actionLoading} danger={false} />}

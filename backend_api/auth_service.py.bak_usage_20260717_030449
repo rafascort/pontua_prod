@@ -690,7 +690,6 @@ def reset_user_page_count(user_id):
     if not user: return jsonify({"msg": "Usuário não encontrado"}), 404
 
     old_page_count = user.page_count
-    snapshot_usage(user, 'manual')
     user.page_count = 0
     try:
         db.session.commit()
@@ -1323,7 +1322,6 @@ def handle_invoice_payment_succeeded(invoice):
         if is_new_cycle:
             print(f"Webhook: NOVO CICLO {old_reset_date} -> {new_period_end}. "
                   f"Zerando {user.email} (era {user.page_count}).")
-            snapshot_usage(user, 'renewal', period_end=old_reset_date)
             user.page_count = 0
             user.extras_reported = 0
         else:
@@ -1832,106 +1830,3 @@ def reset_password():
 
 # ─── Multi-tenancy: registrar APOS admin_required estar definido ───
 init_organization_routes(app, db, User, Organization, admin_required, org_admin_required)
-
-
-# ===================================================================
-# [usage_snapshot patch] Historico de uso mensal por usuario
-# ===================================================================
-class UsageSnapshot(db.Model):
-    __tablename__ = 'usage_snapshot'
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, index=True)
-    reference_month = db.Column(db.Date, nullable=False)
-    plan_status = db.Column(db.String(50), nullable=False)
-    pages_used = db.Column(db.Integer, nullable=False, default=0)
-    pages_included = db.Column(db.Integer, nullable=False, default=0)
-    extras = db.Column(db.Integer, nullable=False, default=0)
-    period_end = db.Column(db.Date, nullable=True)
-    snapshot_reason = db.Column(db.String(20), nullable=False, default='renewal')
-    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-    __table_args__ = (db.UniqueConstraint('user_id', 'reference_month', name='uq_usage_user_month'),)
-
-
-def snapshot_usage(user, reason='renewal', period_end=None):
-    # Grava 1 linha de historico ANTES de zerar page_count.
-    # Idempotente por (user, mes). Nunca levanta excecao (nao pode quebrar o reset).
-    try:
-        ref = period_end or user.next_reset_date or datetime.utcnow().date()
-        ref_month = datetime(ref.year, ref.month, 1).date()
-        exists = UsageSnapshot.query.filter_by(user_id=user.id, reference_month=ref_month).first()
-        if exists:
-            return
-        plan = user.plan_status or 'free'
-        included = PLAN_LIMITS.get(plan, 0)
-        used = user.page_count or 0
-        extras = max(0, used - included)
-        snap = UsageSnapshot(
-            user_id=user.id, reference_month=ref_month, plan_status=plan,
-            pages_used=used, pages_included=included, extras=extras,
-            period_end=ref, snapshot_reason=reason,
-        )
-        nested = db.session.begin_nested()
-        try:
-            db.session.add(snap)
-            db.session.flush()
-            nested.commit()
-            print(f"[usage_snapshot] {user.email}: {plan} {used}pg mes {ref_month} ({reason})")
-        except Exception as e_inner:
-            nested.rollback()
-            print(f"[usage_snapshot] rollback {user.email}: {e_inner}")
-    except Exception as e:
-        print(f"[usage_snapshot] erro {getattr(user, 'email', '?')}: {e}")
-
-
-_MESES_PT = ['', 'jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez']
-_PLAN_LABEL_HIST = {'free': 'Free Trial', 'basic': 'Basico', 'standard': 'Padrao', 'premium': 'Premium', 'past_due': 'Pend.', 'inactive': 'Inativo', 'awaiting_setup': 'Config.'}
-
-
-@app.route('/api/admin/users/<int:user_id>/usage-history', methods=['GET'])
-@admin_required()
-def get_user_usage_history(user_id):
-    user = User.query.get(user_id)
-    if not user:
-        return jsonify({"msg": "Usuario nao encontrado"}), 404
-
-    rows = (UsageSnapshot.query
-            .filter_by(user_id=user.id)
-            .order_by(UsageSnapshot.reference_month.desc())
-            .all())
-
-    def _fmt(d):
-        return f"{_MESES_PT[d.month]}/{d.year}"
-
-    history = []
-    plan_now = user.plan_status or 'free'
-    incl_now = PLAN_LIMITS.get(plan_now, 0)
-    used_now = user.page_count or 0
-    ref_now = user.next_reset_date or datetime.utcnow().date()
-    ref_now_month = datetime(ref_now.year, ref_now.month, 1).date()
-    already_closed = any(r.reference_month == ref_now_month for r in rows)
-    if not already_closed:
-        history.append({
-            "month": ref_now_month.isoformat(),
-            "label": _fmt(ref_now_month),
-            "plan_status": plan_now,
-            "plan_label": _PLAN_LABEL_HIST.get(plan_now, plan_now),
-            "pages_used": used_now,
-            "pages_included": incl_now,
-            "extras": max(0, used_now - incl_now),
-            "in_progress": True,
-        })
-
-    for r in rows:
-        history.append({
-            "month": r.reference_month.isoformat(),
-            "label": _fmt(r.reference_month),
-            "plan_status": r.plan_status,
-            "plan_label": _PLAN_LABEL_HIST.get(r.plan_status, r.plan_status),
-            "pages_used": r.pages_used,
-            "pages_included": r.pages_included,
-            "extras": r.extras,
-            "in_progress": False,
-        })
-
-    return jsonify({"email": user.email, "history": history}), 200
-# [usage_snapshot patch] fim

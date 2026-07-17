@@ -13,7 +13,6 @@ import string
 from io import BytesIO
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import hashlib
 
 import redis as redis_lib
 from rq import get_current_job
@@ -38,10 +37,6 @@ _redis = redis_lib.Redis(host='localhost', port=6379, db=0)
 
 _gemini = genai.Client(api_key=os.getenv('GEMINI_API_KEY'))
 GEMINI_MODEL = 'gemini-2.5-flash'
-
-# FALLBACK deterministico (rede de seguranca sobre o Document AI)
-FALLBACK_CAPTURE_DIR = '/opt/pontua/fallback_capture'
-FALLBACK_CAPTURE_MAX = 2
 
 
 # ─── LOG CENTRAL ─────────────────────────────────────────────────────────────
@@ -228,93 +223,6 @@ class ExtractorGeralAI:
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
-
-def _recuperar_dias_do_texto(master_df, date_to_row, doc_text, page_dates):
-    """
-    FALLBACK deterministico - rede de seguranca sobre o Document AI.
-    Preenche SO dias vazios, usando as linhas 'DD DiaSem ...' do doc.text.
-    Travas: (1) so dia vazio; (2) ancora DD DiaSem; (3) so HH:MM da propria
-    linha; (4) quantidade par e <=8 e cada horario valido. Nunca lanca excecao.
-    """
-    if not doc_text:
-        return []
-
-    linhas_por_dia = {}
-    for ln in doc_text.split("\n"):
-        m = re.match(r'^\s*(\d{2})\s+(Seg|Ter|Qua|Qui|Sex|Sab|Dom)\b(.*)$', ln)
-        if not m:
-            continue
-        dnum = int(m.group(1))
-        pares_hhmm = re.findall(r'\b(\d{2}):(\d{2})\b', m.group(3))
-        validos = []
-        ok = True
-        for hh, mm in pares_hhmm:
-            if _is_valid_time(int(hh), int(mm)):
-                validos.append(f"{hh}:{mm}")
-            else:
-                ok = False
-                break
-        if ok and dnum not in linhas_por_dia:
-            linhas_por_dia[dnum] = validos
-
-    recuperados = []
-    for data_str in page_dates:
-        idx = date_to_row.get(data_str)
-        if idx is None:
-            continue
-        if master_df.at[idx, 'Entrada1'] != "0" or master_df.at[idx, 'Saida1'] != "0":
-            continue
-        try:
-            dnum = int(data_str[:2])
-        except (ValueError, TypeError):
-            continue
-        horas = linhas_por_dia.get(dnum)
-        if not horas:
-            continue
-        if len(horas) % 2 != 0 or len(horas) > 8:
-            continue
-        slot = 1
-        for i in range(0, len(horas), 2):
-            if slot > 11:
-                break
-            master_df.at[idx, f'Entrada{slot}'] = horas[i]
-            master_df.at[idx, f'Saida{slot}']   = horas[i + 1]
-            slot += 1
-        recuperados.append(data_str)
-    return recuperados
-
-
-def _capturar_pagina_para_treino(pdf_path, page_idx, job_id, user_id, periodo, dias_recuperados):
-    """Salva a pagina que disparou o fallback p/ retreino. Nunca lanca excecao."""
-    try:
-        os.makedirs(FALLBACK_CAPTURE_DIR, exist_ok=True)
-        reader = PdfReader(pdf_path)
-        writer = PdfWriter()
-        writer.add_page(reader.pages[page_idx])
-        buf = BytesIO()
-        writer.write(buf)
-        page_bytes = buf.getvalue()
-
-        h8 = hashlib.sha256(page_bytes).hexdigest()[:8]
-        if any(h8 in f for f in os.listdir(FALLBACK_CAPTURE_DIR)):
-            return
-
-        ts        = datetime.now().strftime('%Y%m%d_%H%M%S')
-        user_slug = re.sub(r'[^A-Za-z0-9]+', '_', str(user_id or 'anon'))[:30]
-        fname     = f"{ts}_{job_id}_{user_slug}_pag{page_idx + 1}_{h8}.pdf"
-        with open(os.path.join(FALLBACK_CAPTURE_DIR, fname), 'wb') as f:
-            f.write(page_bytes)
-
-        idx_path = os.path.join(FALLBACK_CAPTURE_DIR, '_index.csv')
-        novo = not os.path.exists(idx_path)
-        with open(idx_path, 'a', encoding='utf-8') as f:
-            if novo:
-                f.write("data;job;user;pagina;periodo;dias_recuperados;arquivo\n")
-            f.write(f"{ts};{job_id};{user_slug};{page_idx + 1};{periodo};"
-                    f"{'|'.join(dias_recuperados)};{fname}\n")
-    except Exception as ex:
-        print(f"[WARN] captura de pagina p/ treino falhou (ignorado): {ex}", flush=True)
-
 
 def get_text_safely(prop, shard_text=""):
     if prop.mention_text:
@@ -1138,7 +1046,6 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
         valores_invalidos     = 0  # contador de horários impossíveis rejeitados
 
         _infer_warn: dict[int, list] = {}
-        doctext_por_pagina = {}
 
         for region_idx, p_info in enumerate(pages_validas):
             page_idx = p_info['page_index']
@@ -1146,8 +1053,7 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
             if order is None:
                 continue
 
-            entities_pag_all, doc_text_pag = results_by_order.get(order, ([], ""))
-            doctext_por_pagina[page_idx] = doc_text_pag
+            entities_pag_all, _ = results_by_order.get(order, ([], ""))
 
             # ── ALTERAÇÃO: filtra por DATA do dia (não por bbox) ──────────────
             # Se a página tem múltiplas regiões (mesma page_index aparece >1 vez),
@@ -1352,36 +1258,6 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
             LOG('horários inválidos rejeitados',
                 f"{valores_invalidos} (OCR retornou valores impossíveis tipo 20:70, 40:74)", 'WARN')
 
-        # 4.4 FALLBACK deterministico: recupera dias que o DocAI nao rotulou
-        # Roda ANTES do noturno, pra que dias recuperados tambem entrem no plantao.
-        recuperados_fallback = 0
-        try:
-            paginas_capturadas = 0
-            for p_info in pages_validas:
-                page_idx_fb = p_info['page_index']
-                doc_text_fb = doctext_por_pagina.get(page_idx_fb, "")
-                if not doc_text_fb:
-                    continue
-                page_dr_fb    = pd.date_range(start=p_info['start_dt'],
-                                              end=p_info['end_dt'], freq='D')
-                page_dates_fb = [d.strftime('%d/%m/%Y') for d in page_dr_fb]
-                recuperados_pag = _recuperar_dias_do_texto(
-                    master_df, date_to_row, doc_text_fb, page_dates_fb)
-                if recuperados_pag:
-                    recuperados_fallback += len(recuperados_pag)
-                    LOG(f"fallback pag {page_idx_fb + 1}",
-                        f"{len(recuperados_pag)} dia(s) recuperado(s) do texto: "
-                        f"{', '.join(recuperados_pag)}", 'WARN')
-                    if paginas_capturadas < FALLBACK_CAPTURE_MAX:
-                        periodo_fb = (f"{p_info['start_dt'].strftime('%d/%m/%Y')}"
-                                      f"-{p_info['end_dt'].strftime('%d/%m/%Y')}")
-                        _capturar_pagina_para_treino(
-                            pdf_path, page_idx_fb, job.id, user_id,
-                            periodo_fb, recuperados_pag)
-                        paginas_capturadas += 1
-        except Exception as _fb_ex:
-            LOG('fallback', f'ignorado por erro (extracao segue normal): {_fb_ex}', 'WARN')
-
         # ── 4.5. Pareamento noturno ───────────────────────────────────────────
         avisos_noturno = []
         pareados_noturno = 0
@@ -1419,8 +1295,6 @@ def process_pdf_task(pdf_path, pages_json, model_type, user_id):
         LOG('resolução nº do dia (DocAI)', f"{fallback_day_hits}  (campo `data` extraído pelo DocAI)")
         LOG('inferidas por posição Y', f"{inferidas_por_y}  (último fallback, quando DocAI não extraiu nº)")
         LOG('continuações mescladas', f"{continuacoes_mescladas}")
-        LOG('recuperados pelo fallback',
-            f"{recuperados_fallback}  (texto bruto - DocAI nao rotulou)")
         LOG('duplicados ignorados', f"{skip_duplicado}")
         LOG('skip fora do range',   str(skip_no_row))
         LOG('skip sem data',        str(skip_no_date))
