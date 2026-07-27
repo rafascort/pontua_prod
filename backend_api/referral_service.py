@@ -339,10 +339,11 @@ def apply_discount_to_next_invoice(user) -> Optional[dict]:
         return None
 
     try:
-        stripe.Subscription.modify(
-            sub.id,
-            discounts=[{'coupon': coupon.id}],
-        )
+        # Composicao central: preserva descontos ja existentes na assinatura.
+        # Antes, esta lista SUBSTITUIA tudo e apagava o cupom de boas-vindas.
+        from discount_service import merge_subscription_discount
+        if not merge_subscription_discount(sub.id, coupon.id):
+            raise RuntimeError(f"Falha ao anexar cupom {coupon.id} em {sub.id}")
         print(f"[REFERRAL] Cupom anexado à assinatura {sub.id}")
     except Exception as e:
         print(f"[REFERRAL] Erro ao anexar cupom: {e}")
@@ -354,13 +355,45 @@ def apply_discount_to_next_invoice(user) -> Optional[dict]:
     }
 
 
+def _invoice_has_referral_discount(invoice) -> bool:
+    """
+    True somente se a fatura tem desconto criado pelo sistema de indicacoes.
+
+    Sem esta checagem, QUALQUER cupom na fatura (ex: boas-vindas) faz o
+    sistema consumir um credito de indicacao que o usuario nao usou.
+    """
+    if not (invoice.get('total_discount_amounts') or []):
+        return False
+
+    invoice_id = invoice.get('id')
+    if not invoice_id:
+        return True
+
+    try:
+        full = stripe.Invoice.retrieve(invoice_id, expand=['discounts'])
+    except Exception as e:
+        print(f"[REFERRAL][WARN] Nao foi possivel inspecionar a fatura "
+              f"{invoice_id}: {e}. Assumindo indicacao (comportamento anterior).")
+        return True
+
+    for d in (full.get('discounts') or []):
+        if not isinstance(d, dict):
+            continue
+        meta = ((d.get('coupon') or {}).get('metadata') or {})
+        if meta.get('source') == 'referral_system':
+            return True
+
+    print(f"[REFERRAL] Fatura {invoice_id} tem desconto, mas nenhum do sistema "
+          f"de indicacoes. Creditos preservados.")
+    return False
+
+
 def on_invoice_paid_consume_credits(user, invoice) -> None:
     """
     Consome créditos após pagamento de fatura mensal.
     Se ainda houver créditos, re-aplica cupom para o próximo ciclo.
     """
-    discount_amounts = invoice.get('total_discount_amounts') or []
-    if not discount_amounts:
+    if not _invoice_has_referral_discount(invoice):
         return
 
     credits_before = user.discount_credits or 0

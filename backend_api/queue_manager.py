@@ -612,6 +612,13 @@ def download_result(task_id):
 
                 report_usage_to_stripe(user, num_pages_processed, new_total_page_count)
 
+                # Ciclo de vida: marca atividade e avisa sobre uso.
+                try:
+                    from lifecycle_hooks import on_download_completed
+                    on_download_completed(user)
+                except Exception as _e:
+                    print(f"[CICLO] Erro no gancho de download: {_e}")
+
                 job.meta['usage_counted'] = True
                 job.save_meta()
 

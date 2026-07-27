@@ -14,7 +14,9 @@ import {
   ChevronRight, Shield, LogOut, LayoutDashboard, X, Check,
   AlertTriangle, RotateCcw, UserCheck, UserX, Loader2,
   Gift, UserPlus, Megaphone, Wrench, Building, Eye, Phone, History,
+  Mail,
 } from "lucide-react";
+import AdminEmailsTab from "../components/AdminEmailsTab";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import AdminReferralsTab from "@/components/admin/AdminReferralsTab";
@@ -633,7 +635,7 @@ function UsersManagementSection({ authUserEmail }: { authUserEmail: string | und
 }
 
 /* ═══════════════════ Main AdminPage (com abas) ═══════════════════ */
-type AdminTab = "users" | "referrals" | "promotions" | "announcements" | "maintenance" | "organizations";
+type AdminTab = "users" | "referrals" | "promotions" | "announcements" | "maintenance" | "organizations" | "emails";
 
 export default function AdminPage() {
   const navigate = useNavigate();
@@ -712,6 +714,13 @@ export default function AdminPage() {
           >
             Empresas
           </TabButton>
+          <TabButton
+            active={activeTab === "emails"}
+            onClick={() => setActiveTab("emails")}
+            icon={<Mail className="w-4 h-4" />}
+          >
+            E-mails
+          </TabButton>
         </div>
 
         {/* ═══ Conteúdo da aba ativa ═══ */}
@@ -721,6 +730,7 @@ export default function AdminPage() {
 	{activeTab === "announcements"  && <AdminAnnouncementsTab />}
 	{activeTab === "maintenance"   && <AdminMaintenanceTab />}
 	{activeTab === "organizations" && <AdminOrganizationsTab />}
+	{activeTab === "emails" && <AdminEmailsTab />}
       </main>
     </div>
   );

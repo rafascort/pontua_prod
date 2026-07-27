@@ -19,6 +19,7 @@ import AssinaturaPage from "./pages/AssinaturaPage";
 import PaymentSuccessPage from "./pages/PaymentSuccessPage";
 import TermosPage from "./pages/TermosPage";
 import AdminPage from "./pages/AdminPage";
+import AdminEmailsPage from "./pages/AdminEmailsPage";
 import EmpresaPage from "./pages/EmpresaPage";
 import DefinirSenhaPage from "./pages/DefinirSenhaPage";
 import EmpresaPaymentSuccessPage from "./pages/EmpresaPaymentSuccessPage";
@@ -137,6 +138,7 @@ const App = () => (
             {/* Aceite de convite (publico - token e a credencial) */}
             <Route path="/definir-senha" element={<DefinirSenhaPage />} />
             <Route path="/admin" element={<AdminPage />} />
+            <Route path="/admin/emails" element={<AdminEmailsPage />} />
 
             {/* 404 */}
             <Route path="*" element={<NotFound />} />

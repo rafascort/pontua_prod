@@ -1,0 +1,258 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Régua diária de e-mails — Sistema Ponto
+
+Roda 1x por dia e cuida do que depende de TEMPO (o que depende de evento
+está em lifecycle_hooks.py):
+
+  1. Régua de inatividade  — dias 1, 2, 4, 6 e 10 sem processar nada
+  2. Cupom expirando       — 5 dias após receber, se não resgatou
+  3. Assinante ocioso      — dia 15 do ciclo sem processar nada
+
+LINHA DE CORTE: só entra na régua quem se cadastrou depois de
+LIFECYCLE_CUTOFF_DATE. A base antiga (created_at nulo) fica de fora
+automaticamente e recebe apenas o envio único do backfill.
+
+Máximo de UM e-mail por pessoa por execução.
+"""
+from __future__ import annotations
+
+import os
+import sys
+import json
+import time
+from datetime import datetime, timezone, timedelta
+
+import lifecycle_email_service as mailer
+from lifecycle_hooks import emails_ligados
+
+CUTOFF = os.getenv('LIFECYCLE_CUTOFF_DATE', '2026-07-22')
+PAUSA_ENTRE_ENVIOS = 2.0     # segundos — gentileza com o SMTP
+MAX_POR_EXECUCAO = 200       # válvula de segurança
+
+# (dias parado, tipo, variante) — do topo para a base
+ESCADA = [
+    (10, 'last_call', None),
+    (6,  'reminder',  2),
+    (4,  'reminder',  1),
+    (2,  'reminder',  0),
+    (1,  'nudge_d1',  None),
+]
+
+DIAS_ATE_LEMBRAR_CUPOM = 5
+DIAS_ATE_OCIOSO = 15
+PLANOS_PAGOS = ('basic', 'standard', 'premium')
+
+APLICAR = '--aplicar' in sys.argv or os.getenv('LIFECYCLE_TIMER_AUTO') == '1'
+SECO = '--dry-run' in sys.argv or not APLICAR
+
+
+def agora():
+    return datetime.now(timezone.utc)
+
+
+def _naive(dt):
+    """Compara datas do banco (naive) com as nossas (aware)."""
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=None) if dt.tzinfo else dt
+
+
+def dias_desde(dt):
+    d = _naive(dt)
+    if d is None:
+        return None
+    return (agora().replace(tzinfo=None) - d).total_seconds() / 86400
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 1 · Régua de inatividade
+# ══════════════════════════════════════════════════════════════════════
+
+def regua_inatividade(User, envios):
+    corte = datetime.strptime(CUTOFF, '%Y-%m-%d')
+    candidatos = User.query.filter(
+        User.plan_status == 'free',
+        User.role != 'admin',
+        User.organization_id.is_(None),
+        User.email_opt_out.is_(False),
+        User.email_verified.is_(True),
+        User.created_at.isnot(None),
+        User.created_at >= corte,
+    ).all()
+
+    print(f"\n[1] RÉGUA DE INATIVIDADE — {len(candidatos)} candidato(s) "
+          f"(cadastro >= {CUTOFF})")
+
+    for u in candidatos:
+        base = u.last_activity_at or u.created_at
+        parado = dias_desde(base)
+        if parado is None:
+            continue
+
+        for dias, tipo, variante in ESCADA:
+            if parado < dias:
+                continue
+            ciclo = f"v{variante}" if variante is not None else None
+            if mailer.already_sent(u.id, tipo, ciclo):
+                break            # já está em dia — não desce a escada
+            ctx = {'variante': variante} if variante is not None else {}
+            envios.append((u, tipo, ctx, ciclo,
+                           f"{parado:.1f}d parado"))
+            break
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 2 · Cupom expirando
+# ══════════════════════════════════════════════════════════════════════
+
+def cupom_expirando(User, EmailEvent, envios):
+    limite = agora().replace(tzinfo=None) - timedelta(days=DIAS_ATE_LEMBRAR_CUPOM)
+    eventos = EmailEvent.query.filter(
+        EmailEvent.email_type == 'trial_end_coupon',
+        EmailEvent.status == 'sent',
+        EmailEvent.sent_at <= limite,
+    ).all()
+
+    print(f"\n[2] CUPOM EXPIRANDO — {len(eventos)} cupom(ns) com "
+          f"{DIAS_ATE_LEMBRAR_CUPOM}+ dias")
+
+    for ev in eventos:
+        u = User.query.get(ev.user_id)
+        if not u or u.email_opt_out:
+            continue
+        if (u.plan_status or 'free').lower() != 'free':
+            continue                       # já assinou
+        if mailer.already_sent(u.id, 'coupon_expiring'):
+            continue
+
+        try:
+            meta = json.loads(ev.meta or '{}')
+        except Exception:
+            continue
+        codigo = meta.get('codigo')
+        if not codigo:
+            continue
+
+        exp_ts = meta.get('expira_em_ts')
+        if exp_ts and exp_ts < int(agora().timestamp()):
+            print(f"    {u.email}: cupom {codigo} já expirou; sem lembrete.")
+            continue
+
+        if not _cupom_ainda_vale(codigo, u.email):
+            continue
+
+        envios.append((u, 'coupon_expiring', meta, None,
+                       f"cupom {codigo}"))
+
+
+def _cupom_ainda_vale(codigo, email) -> bool:
+    """False se já foi resgatado. Em caso de erro, assume que vale."""
+    try:
+        import stripe
+        achados = stripe.PromotionCode.list(code=codigo, limit=3)
+        for p in achados.data:
+            if p.get('times_redeemed', 0) > 0:
+                print(f"    {email}: cupom {codigo} já resgatado; sem lembrete.")
+                return False
+        return True
+    except Exception as e:
+        print(f"    [aviso] não consegui checar {codigo} no Stripe: {e}")
+        return True
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 3 · Assinante ocioso
+# ══════════════════════════════════════════════════════════════════════
+
+def assinante_ocioso(User, envios):
+    limite = agora().replace(tzinfo=None) - timedelta(days=DIAS_ATE_OCIOSO)
+    candidatos = User.query.filter(
+        User.plan_status.in_(PLANOS_PAGOS),
+        User.role != 'admin',
+        User.organization_id.is_(None),
+        User.email_opt_out.is_(False),
+        User.last_renewal_at.isnot(None),
+        User.last_renewal_at <= limite,
+    ).all()
+
+    print(f"\n[3] ASSINANTE OCIOSO — {len(candidatos)} candidato(s) "
+          f"({DIAS_ATE_OCIOSO}+ dias de ciclo)")
+
+    for u in candidatos:
+        ren = _naive(u.last_renewal_at)
+        ativ = _naive(u.last_activity_at)
+        if ativ and ren and ativ >= ren:
+            continue                       # já usou neste ciclo
+
+        ciclo = ren.strftime('%Y-%m') if ren else agora().strftime('%Y-%m')
+        if mailer.already_sent(u.id, 'idle_subscriber', ciclo):
+            continue
+
+        restantes = ''
+        if u.next_reset_date:
+            restantes = max(0, (u.next_reset_date - agora().date()).days)
+
+        envios.append((u, 'idle_subscriber', {'dias_restantes': restantes},
+                       ciclo, f"{dias_desde(ren):.0f}d de ciclo sem uso"))
+
+
+# ══════════════════════════════════════════════════════════════════════
+
+def main():
+    from auth_service import app, User, EmailEvent
+
+    ligado = emails_ligados()
+    print("=" * 72)
+    print(f" RÉGUA DIÁRIA — {agora():%d/%m/%Y %H:%M} UTC")
+    print("=" * 72)
+    print(f" Envio automático : {'LIGADO' if ligado else 'DESLIGADO'}")
+    print(f" Modo             : {'SIMULAÇÃO' if SECO else 'ENVIO REAL'}")
+    print(f" Linha de corte   : {CUTOFF}")
+
+    with app.app_context():
+        envios = []
+        regua_inatividade(User, envios)
+        cupom_expirando(User, EmailEvent, envios)
+        assinante_ocioso(User, envios)
+
+        print("\n" + "-" * 72)
+        if not envios:
+            print(" Nada a enviar hoje.")
+            print("=" * 72)
+            return
+
+        print(f" {len(envios)} e-mail(s) na fila:\n")
+        for u, tipo, _, _, motivo in envios:
+            print(f"   {u.email[:36]:38} {tipo:20} ({motivo})")
+        print("-" * 72)
+
+        if SECO:
+            print(" SIMULAÇÃO — nada foi enviado.")
+            print(" Para enviar de verdade:  python lifecycle_timer.py --aplicar")
+            print("=" * 72)
+            return
+
+        if not ligado:
+            print(" Envio automático DESLIGADO no .env. Nada foi enviado.")
+            print(" Para ligar:  LIFECYCLE_EMAILS_ENABLED=true")
+            print("=" * 72)
+            return
+
+        ok = falhas = 0
+        for i, (u, tipo, ctx, ciclo, _) in enumerate(envios[:MAX_POR_EXECUCAO]):
+            if mailer.send(u, tipo, ctx, ciclo):
+                ok += 1
+            else:
+                falhas += 1
+            if i < len(envios) - 1:
+                time.sleep(PAUSA_ENTRE_ENVIOS)
+
+        print("-" * 72)
+        print(f" Enviados: {ok}  |  Falhas: {falhas}")
+        print("=" * 72)
+
+
+if __name__ == "__main__":
+    main()

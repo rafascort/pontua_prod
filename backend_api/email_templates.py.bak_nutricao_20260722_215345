@@ -1,0 +1,567 @@
+# /opt/pontua/AutoPonto/backend_api/email_templates.py
+"""
+Templates de e-mail do ciclo de vida — Sistema Ponto
+
+Mesmo visual dos e-mails de verificação/reset: tabelas com CSS inline,
+que é o único jeito de não quebrar no Gmail e no Outlook.
+
+Cada template devolve uma "spec" e o _shell monta o HTML final.
+
+IMPORTANTE: nenhum texto pode sugerir que documentos ou histórico ficam
+armazenados. O produto exclui tudo após o download.
+"""
+from __future__ import annotations
+import os
+
+FRONTEND = os.getenv('FRONTEND_URL', 'https://sistemaponto.com')
+
+BG, CARD, LINE, LINE2 = "#0d1117", "#161b22", "#30363d", "#21262d"
+ACC, H, P, MUT = "#4a9eff", "#e6edf3", "#8b949e", "#6e7681"
+WARM_BG, WARM_LN, WARM = "#1c1410", "#5a3a1f", "#d4924a"
+
+TRIAL_PAGES = 50
+PLANOS = {
+    'basic':    {'nome': 'Básico',  'paginas': 200,  'preco': 'R$ 179,90', 'extra': 'R$ 1,00'},
+    'standard': {'nome': 'Padrão',  'paginas': 500,  'preco': 'R$ 349,90', 'extra': 'R$ 0,85'},
+    'premium':  {'nome': 'Premium', 'paginas': 1500, 'preco': 'R$ 824,90', 'extra': 'R$ 0,70'},
+}
+
+
+# ── Helpers de conteúdo ───────────────────────────────────────────────
+
+def _nome(u):
+    n = (getattr(u, 'first_name', None) or '').strip()
+    return n.split(' ')[0] if n else ''
+
+
+def _ola(u):
+    return _nome(u)
+
+
+def p(txt, cor=None):
+    return (f'<p style="margin:0 0 16px;color:{cor or P};font-size:15px;'
+            f'line-height:1.6;">{txt}</p>')
+
+
+def forte(txt, cor=None):
+    return f'<strong style="color:{cor or ACC};">{txt}</strong>'
+
+
+def btn(texto, url):
+    return (f'<table cellpadding="0" cellspacing="0" style="margin:28px auto 8px;">'
+            f'<tr><td style="background:linear-gradient(135deg,#1a6bd6,#4a9eff);'
+            f'border-radius:8px;"><a href="{url}" style="display:inline-block;'
+            f'padding:14px 34px;color:#ffffff;text-decoration:none;font-size:15px;'
+            f'font-weight:700;">{texto}</a></td></tr></table>')
+
+
+def barra(usadas, total, cor=None):
+    pct = max(2, min(100, int((usadas / total) * 100))) if total else 2
+    c = cor or ACC
+    return (f'<table width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 20px;">'
+            f'<tr><td style="padding:0 0 7px;color:{P};font-size:13px;">Usado</td>'
+            f'<td align="right" style="padding:0 0 7px;color:{H};font-size:13px;'
+            f'font-weight:700;">{usadas}/{total}</td></tr>'
+            f'<tr><td colspan="2" style="background:{BG};border:1px solid {LINE};'
+            f'border-radius:6px;padding:2px;"><table width="{pct}%" cellpadding="0" '
+            f'cellspacing="0"><tr><td style="background:{c};height:8px;'
+            f'border-radius:4px;font-size:0;">&nbsp;</td></tr></table>'
+            f'</td></tr></table>')
+
+
+def tabela_planos():
+    linhas = ''
+    for k in ('basic', 'standard', 'premium'):
+        d = PLANOS[k]
+        linhas += (f'<tr><td style="padding:12px 15px;border-bottom:1px solid {LINE2};'
+                   f'color:{H};font-size:14px;font-weight:600;">{d["nome"]}</td>'
+                   f'<td style="padding:12px 15px;border-bottom:1px solid {LINE2};'
+                   f'color:{MUT};font-size:13px;">{d["paginas"]} páginas/mês</td>'
+                   f'<td align="right" style="padding:12px 15px;border-bottom:1px solid '
+                   f'{LINE2};color:{H};font-size:14px;">{d["preco"]}</td></tr>')
+    return (f'<table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid '
+            f'{LINE};border-radius:8px;margin:0 0 20px;">{linhas}</table>')
+
+
+def caixa_cupom(codigo, validade=None):
+    exp = (f'<p style="margin:10px 0 0;color:{WARM};font-size:13px;">Válido até '
+           f'<strong style="color:#f0b877;">{validade}</strong> &middot; uso único</p>'
+           ) if validade else ''
+    return (f'<table width="100%" cellpadding="0" cellspacing="0" style="background:{WARM_BG};'
+            f'border:1px solid {WARM_LN};border-radius:8px;margin:0 0 20px;">'
+            f'<tr><td align="center" style="padding:18px;">'
+            f'<p style="margin:0 0 9px;color:{WARM};font-size:12px;font-weight:600;'
+            f'letter-spacing:.5px;">SEU CUPOM PESSOAL</p>'
+            f'<div style="font-size:22px;font-weight:700;color:#e8b877;'
+            f'letter-spacing:3px;font-family:monospace;">{codigo}</div>{exp}'
+            f'</td></tr></table>')
+
+
+def numeros(itens):
+    tds = ''
+    for valor, rotulo in itens:
+        tds += (f'<td width="50%" style="padding:6px;"><table width="100%" cellpadding="0" '
+                f'cellspacing="0" style="background:{BG};border:1px solid {LINE};'
+                f'border-radius:8px;"><tr><td align="center" style="padding:16px 10px;">'
+                f'<div style="font-size:22px;font-weight:700;color:{ACC};">{valor}</div>'
+                f'<div style="margin-top:6px;color:{MUT};font-size:12px;">{rotulo}</div>'
+                f'</td></tr></table></td>')
+    return (f'<table width="100%" cellpadding="0" cellspacing="0" '
+            f'style="margin:0 0 16px;"><tr>{tds}</tr></table>')
+
+
+# ── Shell ─────────────────────────────────────────────────────────────
+
+def _shell(spec, unsub_url=None):
+    corpo = ''.join(spec.get('body', []))
+    if spec.get('cta'):
+        corpo += btn(spec['cta'][0], spec['cta'][1])
+    if spec.get('rodape_interno'):
+        corpo += (f'<p style="margin:16px 0 0;color:{MUT};font-size:13px;'
+                  f'text-align:center;">{spec["rodape_interno"]}</p>')
+
+    if spec.get('transacional') or not unsub_url:
+        rodape = (f'<p style="margin:0;color:{MUT};font-size:12px;">Sistema Ponto '
+                  f'&middot; sistemaponto.com</p>')
+    else:
+        rodape = (f'<p style="margin:0 0 6px;color:{MUT};font-size:12px;">Sistema Ponto '
+                  f'&middot; Arquivos processados temporariamente e excluídos após o '
+                  f'download</p>'
+                  f'<p style="margin:0;color:{MUT};font-size:12px;">'
+                  f'<a href="{unsub_url}" style="color:{MUT};">Não quero mais receber '
+                  f'estes e-mails</a></p>')
+
+    return f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:{BG};font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:{BG};padding:40px 20px;">
+    <tr><td align="center">
+      <table width="560" cellpadding="0" cellspacing="0"
+             style="background:{CARD};border-radius:12px;border:1px solid {LINE};max-width:560px;width:100%;">
+        <tr><td style="background:linear-gradient(135deg,#1a3a5c,#0d2137);padding:32px 40px;text-align:center;">
+          <h1 style="margin:0;color:{ACC};font-size:22px;font-weight:700;">Sistema Ponto</h1>
+          <p style="margin:8px 0 0;color:#8b9dc3;font-size:13px;">{spec.get('subtitulo','')}</p>
+        </td></tr>
+        <tr><td style="padding:40px;">
+          <h2 style="margin:0 0 18px;color:{H};font-size:20px;">{spec.get('titulo','')}</h2>
+          {corpo}
+        </td></tr>
+        <tr><td style="padding:24px 40px;border-top:1px solid {LINE2};text-align:center;">
+          {rodape}
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+
+
+def _texto(spec):
+    linhas = [spec.get('titulo', ''), '']
+    linhas.append(spec.get('texto', 'Acesse sistemaponto.com para continuar.'))
+    if spec.get('cta'):
+        linhas += ['', f"{spec['cta'][0]}: {spec['cta'][1]}"]
+    linhas += ['', '-- ', 'Sistema Ponto  |  sistemaponto.com']
+    return '\n'.join(linhas)
+
+
+# ── Templates ─────────────────────────────────────────────────────────
+
+def t_welcome(u, c):
+    n = _ola(u)
+    return {
+        'assunto': 'Bem-vindo ao Sistema Ponto — suas 50 páginas grátis já estão liberadas',
+        'subtitulo': 'Automação de cartões de ponto e holerites com IA',
+        'titulo': f'Sua conta está pronta{", " + n if n else ""}!',
+        'body': [
+            p(f'Você já tem {forte("50 páginas grátis")} para transformar cartões de '
+              f'ponto e holerites em planilhas — sem digitar nada à mão.', "#c9d3de"),
+            p('São três passos: envie o PDF, confirme o que a IA detectou e baixe a planilha.'),
+        ],
+        'cta': ('Processar meu primeiro documento', f'{FRONTEND}/'),
+        'rodape_interno': 'Dúvida em qualquer etapa? É só responder este e-mail.',
+        'texto': 'Você tem 50 páginas grátis para converter cartões de ponto e holerites em planilhas.',
+    }
+
+
+def t_nudge_d1(u, c):
+    return {
+        'assunto': 'Posso te ajudar a começar?',
+        'subtitulo': 'Estamos aqui para ajudar',
+        'titulo': 'Vi que você ainda não testou',
+        'body': [
+            p('Criar a conta foi o primeiro passo. O segundo leva menos de 2 minutos: '
+              'envie um cartão de ponto (ou holerite) em PDF e receba a planilha pronta.',
+              "#c9d3de"),
+            p(f'Travou em algo — formato do arquivo, upload, períodos? '
+              f'{forte("Responda este e-mail")} que eu te ajudo pessoalmente.'),
+        ],
+        'cta': ('Testar agora — são 2 minutos', f'{FRONTEND}/'),
+        'texto': 'Envie um PDF e receba a planilha pronta em 2 minutos.',
+    }
+
+
+_LEMBRETES = [
+    ('Suas 50 páginas grátis continuam te esperando',
+     'Aquele PDF não precisa ser digitado à mão',
+     'É perito? Anexe os cartões do período e gere o CSV cronológico completo, '
+     'pronto para o PJe-Calc.'),
+    ('Quantas horas você gasta digitando cartão de ponto?',
+     'O que levava uma tarde agora leva minutos',
+     'Trabalha com RH? Extraia as verbas de dezenas de holerites e receba um Excel '
+     'com uma aba por funcionário.'),
+    ('Funciona com qualquer layout de cartão de ponto',
+     'DATASUL, Control iD, cartão manual — a IA lê todos',
+     'Não precisa configurar nada nem informar o formato. A IA interpreta o documento '
+     'visualmente, como uma pessoa faria.'),
+]
+
+
+def t_reminder(u, c):
+    i = int(c.get('variante', 0)) % len(_LEMBRETES)
+    assunto, titulo, exemplo = _LEMBRETES[i]
+    restantes = max(0, TRIAL_PAGES - (u.page_count or 0))
+    return {
+        'assunto': assunto,
+        'subtitulo': 'Sua planilha em minutos',
+        'titulo': titulo,
+        'body': [
+            p(f'O Sistema Ponto lê o documento e monta a planilha por você. '
+              f'Você ainda tem {forte(str(restantes) + " páginas grátis")}.', "#c9d3de"),
+            p(exemplo),
+        ],
+        'cta': ('Usar minhas páginas grátis', f'{FRONTEND}/'),
+        'texto': f'Você ainda tem {restantes} páginas grátis disponíveis.',
+    }
+
+
+def t_last_call(u, c):
+    restantes = max(0, TRIAL_PAGES - (u.page_count or 0))
+    n = _ola(u)
+    return {
+        'assunto': f'Última lembrança: suas {restantes} páginas grátis ainda estão aqui',
+        'subtitulo': 'Antes da gente parar de lembrar',
+        'titulo': 'Suas páginas grátis não expiram',
+        'body': [
+            p(f'Este é o último lembrete que vou te mandar{", " + n if n else ""}. '
+              f'Você ainda tem {forte(str(restantes) + " páginas grátis")} esperando.',
+              "#c9d3de"),
+            p('Se agora não é o momento, sem problema — quando precisar transformar um '
+              'cartão de ponto ou holerite em planilha, é só voltar.'),
+        ],
+        'cta': ('Usar minhas páginas grátis', f'{FRONTEND}/'),
+        'texto': f'Último lembrete: você tem {restantes} páginas grátis que não expiram.',
+    }
+
+
+def t_trial_80(u, c):
+    usadas = u.page_count or 0
+    restantes = max(0, TRIAL_PAGES - usadas)
+    return {
+        'assunto': f'Você já usou {usadas} das suas 50 páginas grátis',
+        'subtitulo': 'Seu teste está acabando',
+        'titulo': f'Faltam {restantes} páginas no seu teste',
+        'body': [
+            barra(usadas, TRIAL_PAGES),
+            p('Que bom que está usando de verdade. Antes de acabar, vale ver os planos — '
+              'o preço por página cai bastante e você não trava no meio de um lote.',
+              "#c9d3de"),
+        ],
+        'cta': ('Ver planos', f'{FRONTEND}/planos'),
+        'texto': f'Você usou {usadas} de 50 páginas. Restam {restantes}.',
+    }
+
+
+def t_trial_end_coupon(u, c):
+    pct1 = c.get('pct_mes_1', 10)
+    pct23 = c.get('pct_mes_2_3')
+    extra = (f' e {pct23}% nos meses 2 e 3.' if pct23 else '.')
+    return {
+        'assunto': (f'Suas páginas grátis acabaram — {pct1}% de desconto até '
+                    f'{c.get("validade","")}'),
+        'subtitulo': 'Continue de onde parou',
+        'titulo': 'Você usou todas as 50 páginas',
+        'body': [
+            p('Espero que tenham economizado um bom tempo de digitação. Para continuar '
+              'sem limites, escolha um plano:', "#c9d3de"),
+            tabela_planos(),
+            caixa_cupom(c.get('codigo', ''), c.get('validade')),
+            p(f'Desconto de {forte(str(pct1) + "%")} na primeira fatura{extra}'),
+        ],
+        'cta': ('Assinar com desconto', c.get('link', f'{FRONTEND}/planos')),
+        'rodape_interno': 'O desconto já vem aplicado no checkout.',
+        'texto': f'Cupom {c.get("codigo","")} — válido até {c.get("validade","")}.',
+    }
+
+
+def t_trial_end_plain(u, c):
+    return {
+        'assunto': 'Suas páginas grátis acabaram — escolha seu plano',
+        'subtitulo': 'Continue de onde parou',
+        'titulo': 'Você usou todas as 50 páginas',
+        'body': [
+            p('Para continuar processando, é só escolher um plano que caiba no seu volume:',
+              "#c9d3de"),
+            tabela_planos(),
+        ],
+        'cta': ('Ver planos', f'{FRONTEND}/planos'),
+        'rodape_interno': 'Seu desconto de indicação é aplicado automaticamente no checkout.',
+        'texto': 'Suas 50 páginas grátis acabaram. Escolha um plano em sistemaponto.com/planos',
+    }
+
+
+def t_coupon_expiring(u, c):
+    n = _ola(u)
+    return {
+        'assunto': 'Seu cupom de desconto expira em 2 dias',
+        'subtitulo': 'Últimos dias do seu desconto',
+        'titulo': f'Faltam 2 dias{", " + n if n else ""}',
+        'body': [
+            p(f'Seu cupom de {forte(str(c.get("pct_mes_1",10)) + "% de desconto")} vale até '
+              f'{forte(c.get("validade",""), "#c9d3de")}. Depois disso os planos seguem '
+              f'disponíveis, mas sem o desconto de boas-vindas.', "#c9d3de"),
+            caixa_cupom(c.get('codigo', '')),
+        ],
+        'cta': ('Usar meu desconto', c.get('link', f'{FRONTEND}/planos')),
+        'rodape_interno': 'Se não for o momento, tudo bem — este é o último e-mail sobre isso.',
+        'texto': f'Cupom {c.get("codigo","")} expira em 2 dias.',
+    }
+
+
+def t_subscribed(u, c):
+    d = PLANOS.get((u.plan_status or '').lower(), {})
+    return {
+        'assunto': 'Obrigado por assinar o Sistema Ponto',
+        'subtitulo': f'Bem-vindo ao plano {d.get("nome","")}',
+        'titulo': f'Bem-vindo ao plano {d.get("nome","")}',
+        'body': [
+            p(f'Você tem {forte(str(d.get("paginas","")) + " páginas por mês")} e nunca fica '
+              f'bloqueado — páginas extras entram automaticamente na próxima fatura.',
+              "#c9d3de"),
+            p(f'{forte("Dica:", "#c9d3de")} processe lotes grandes de uma vez. O sistema roda '
+              f'várias páginas em paralelo, então 50 ou 300 páginas saem quase no mesmo tempo.'),
+        ],
+        'cta': ('Ir para o painel', f'{FRONTEND}/'),
+        'transacional': True,
+        'texto': f'Assinatura confirmada: {d.get("paginas","")} páginas por mês.',
+    }
+
+
+def t_renewal(u, c):
+    d = PLANOS.get((u.plan_status or '').lower(), {})
+    return {
+        'assunto': f'Seu ciclo renovou — {d.get("paginas","")} páginas disponíveis',
+        'subtitulo': 'Ciclo renovado',
+        'titulo': 'Suas páginas foram renovadas',
+        'body': [
+            p(f'O plano {forte(d.get("nome",""))} foi renovado e você já tem o saldo cheio '
+              f'para este mês.', "#c9d3de"),
+            numeros([(str(d.get('paginas', '')), 'páginas neste ciclo'),
+                     (str(c.get('usadas_anterior', 0)), 'processadas no mês passado')]),
+            p('As páginas não acumulam de um mês para o outro — então vale usar o que '
+              'precisar dentro do ciclo.'),
+        ],
+        'cta': ('Processar documentos', f'{FRONTEND}/'),
+        'transacional': True,
+        'texto': f'Ciclo renovado: {d.get("paginas","")} páginas disponíveis.',
+    }
+
+
+def t_idle_subscriber(u, c):
+    d = PLANOS.get((u.plan_status or '').lower(), {})
+    total = d.get('paginas', 0)
+    return {
+        'assunto': f'Suas {total} páginas deste mês ainda não foram usadas',
+        'subtitulo': 'Seu plano está parado',
+        'titulo': f'Você tem {total} páginas esperando',
+        'body': [
+            barra(u.page_count or 0, total),
+            p(f'Faltam {forte(str(c.get("dias_restantes","alguns")) + " dias")} para o ciclo '
+              f'virar — e as páginas não acumulam para o mês seguinte.', "#c9d3de"),
+            p('Se travou em algum documento ou formato que não saiu como esperava, responda '
+              'este e-mail que a gente olha junto.'),
+        ],
+        'cta': ('Processar agora', f'{FRONTEND}/'),
+        'texto': f'Você tem {total} páginas não usadas neste ciclo.',
+    }
+
+
+def t_high_usage(u, c):
+    plano = (u.plan_status or '').lower()
+    d = PLANOS.get(plano, {})
+    total = d.get('paginas', 0)
+    usadas = u.page_count or 0
+    sugestao = {'basic': 'Padrão', 'standard': 'Premium'}.get(plano)
+    extra = [p(f'Se esse volume virou rotina, o plano {forte(sugestao)} sai mais barato '
+               f'por página do que pagar extras.')] if sugestao else []
+    return {
+        'assunto': f'Você usou {usadas} das {total} páginas do seu plano',
+        'subtitulo': 'Aviso de uso',
+        'titulo': f'Restam {max(0, total - usadas)} páginas no ciclo',
+        'body': [
+            barra(usadas, total, WARM),
+            p(f'Você não vai ser bloqueado: ao passar do limite, as páginas extras são '
+              f'cobradas a {forte(d.get("extra","") + " por página")} na próxima fatura.',
+              "#c9d3de"),
+        ] + extra,
+        'cta': ('Comparar planos', f'{FRONTEND}/planos'),
+        'transacional': True,
+        'texto': f'Você usou {usadas} de {total} páginas. Extras a {d.get("extra","")}.',
+    }
+
+
+def t_payment_failed(u, c):
+    d = PLANOS.get((u.plan_status or '').lower(), {})
+    return {
+        'assunto': 'Não conseguimos processar seu pagamento — atualize seu cartão',
+        'subtitulo': 'Ação necessária na sua assinatura',
+        'titulo': 'Houve um problema com seu pagamento',
+        'body': [
+            p('A cobrança da sua assinatura não passou. Para não perder o acesso ao '
+              'sistema, atualize sua forma de pagamento.', "#c9d3de"),
+            (f'<table width="100%" cellpadding="0" cellspacing="0" style="background:{BG};'
+             f'border:1px solid {WARM_LN};border-radius:8px;margin:0 0 20px;">'
+             f'<tr><td style="padding:15px;color:{H};font-size:14px;font-weight:600;">'
+             f'Plano {d.get("nome","")} &middot; mensal</td>'
+             f'<td align="right" style="padding:15px;color:#f0776c;font-size:14px;'
+             f'font-weight:700;">{c.get("valor", d.get("preco",""))} pendente</td>'
+             f'</tr></table>'),
+            p('Vamos tentar de novo automaticamente nos próximos dias. Se preferir, '
+              'resolva agora:'),
+        ],
+        'cta': ('Atualizar forma de pagamento', f'{FRONTEND}/planos'),
+        'rodape_interno': 'Já atualizou? Pode ignorar este e-mail.',
+        'transacional': True,
+        'texto': 'Sua cobrança não passou. Atualize o pagamento em sistemaponto.com/planos',
+    }
+
+
+def t_subscription_ended(u, c):
+    return {
+        'assunto': 'Sua assinatura do Sistema Ponto foi encerrada',
+        'subtitulo': 'Sua conta continua ativa',
+        'titulo': 'Assinatura encerrada',
+        'body': [
+            p('Sua assinatura chegou ao fim e o processamento está pausado. Sua conta '
+              'segue ativa e você pode reativar um plano quando precisar.', "#c9d3de"),
+            tabela_planos(),
+        ],
+        'cta': ('Reativar meu plano', f'{FRONTEND}/planos'),
+        'transacional': True,
+        'texto': 'Sua assinatura foi encerrada. Reative em sistemaponto.com/planos',
+    }
+
+
+def t_winback(u, c):
+    n = _ola(u)
+    return {
+        'assunto': 'Sentimos sua falta no Sistema Ponto',
+        'subtitulo': 'Que bom te ver de volta',
+        'titulo': f'Faz um tempo por aqui{", " + n if n else ""}',
+        'body': [
+            p('Desde sua última visita, seguimos melhorando a precisão da leitura de '
+              'cartões de ponto e holerites — mais layouts reconhecidos e menos '
+              'correção manual.', "#c9d3de"),
+        ],
+        'cta': ('Voltar a processar', f'{FRONTEND}/'),
+        'texto': 'Seguimos melhorando a leitura de cartões de ponto e holerites.',
+    }
+
+
+def t_winback_ex(u, c):
+    """Win-back de quem já foi assinante e cancelou.
+
+    Diferente do winback genérico: essa pessoa conhece o produto e pagou
+    por ele. Não menciona dados guardados (tudo é excluído após o
+    download) nem fala de fidelidade — o gancho é o que melhorou.
+    """
+    return {
+        'assunto': 'O que mudou no Sistema Ponto desde a sua última assinatura',
+        'subtitulo': 'Novidades por aqui',
+        'titulo': 'Algumas coisas melhoraram desde que você saiu',
+        'body': [
+            p('Você já foi assinante do Sistema Ponto, então talvez valha saber no que '
+              'trabalhamos desde então.', "#c9d3de"),
+            p(f'O foco foi {forte("precisão de leitura")}: mais layouts de cartão de ponto '
+              f'reconhecidos, melhor tratamento de turnos que viram a noite e menos '
+              f'correção manual nas marcações de entrada e saída.'),
+            p('Se aparecer um novo volume de cartões de ponto ou holerites para converter, '
+              'é só escolher um plano:'),
+            tabela_planos(),
+        ],
+        'cta': ('Ver planos', f'{FRONTEND}/planos'),
+        'rodape_interno': ('Se alguma coisa deixou a desejar quando você usou, me conta '
+                           'respondendo este e-mail.'),
+        'texto': ('Seguimos melhorando a precisão da leitura de cartões de ponto e '
+                  'holerites. Planos em sistemaponto.com/planos'),
+    }
+
+
+def t_reactivate_partial(u, c):
+    usadas = u.page_count or 0
+    restantes = max(0, TRIAL_PAGES - usadas)
+    n = _ola(u)
+    return {
+        'assunto': f'Você ainda tem {restantes} páginas grátis no Sistema Ponto',
+        'subtitulo': 'Seu saldo continua disponível',
+        'titulo': f'Sobraram {restantes} páginas{", " + n if n else ""}',
+        'body': [
+            barra(usadas, TRIAL_PAGES),
+            p(f'Você chegou a processar {usadas} páginas e parou. O saldo '
+              f'{forte("não expira")} — está lá quando precisar.', "#c9d3de"),
+            p('Desde então melhoramos bastante a leitura de cartões e holerites: mais '
+              'layouts reconhecidos e mais precisão nas marcações.'),
+        ],
+        'cta': ('Usar minhas páginas', f'{FRONTEND}/'),
+        'texto': f'Você ainda tem {restantes} páginas grátis disponíveis.',
+    }
+
+
+def t_reactivate_never(u, c):
+    return {
+        'assunto': 'Suas 50 páginas grátis nunca foram usadas — posso ajudar?',
+        'subtitulo': 'Vamos começar juntos?',
+        'titulo': 'Você criou a conta, mas nunca chegou a testar',
+        'body': [
+            p(f'Suas {forte("50 páginas grátis")} continuam intactas. Só quero entender se '
+              f'algo atrapalhou — formato do arquivo, upload, alguma dúvida no meio do '
+              f'caminho.', "#c9d3de"),
+            p('Se preferir, me manda um PDF de exemplo respondendo este e-mail que eu '
+              'processo e te devolvo a planilha pronta, sem custo.'),
+        ],
+        'cta': ('Fazer meu primeiro teste', f'{FRONTEND}/'),
+        'texto': ('Suas 50 páginas grátis continuam disponíveis. Responda este e-mail se '
+                  'precisar de ajuda.'),
+    }
+
+
+TEMPLATES = {
+    'welcome': t_welcome,
+    'nudge_d1': t_nudge_d1,
+    'reminder': t_reminder,
+    'last_call': t_last_call,
+    'trial_80': t_trial_80,
+    'trial_end_coupon': t_trial_end_coupon,
+    'trial_end_plain': t_trial_end_plain,
+    'coupon_expiring': t_coupon_expiring,
+    'subscribed': t_subscribed,
+    'renewal': t_renewal,
+    'idle_subscriber': t_idle_subscriber,
+    'high_usage': t_high_usage,
+    'payment_failed': t_payment_failed,
+    'subscription_ended': t_subscription_ended,
+    'winback': t_winback,
+    'winback_ex': t_winback_ex,
+    'reactivate_partial': t_reactivate_partial,
+    'reactivate_never': t_reactivate_never,
+}
+
+
+def render(tipo, user, contexto=None, unsub_url=None):
+    """Devolve (assunto, html, texto) para um tipo de e-mail."""
+    if tipo not in TEMPLATES:
+        raise ValueError(f"Template desconhecido: '{tipo}'. "
+                         f"Disponíveis: {', '.join(sorted(TEMPLATES))}")
+    spec = TEMPLATES[tipo](user, contexto or {})
+    return spec['assunto'], _shell(spec, unsub_url), _texto(spec)

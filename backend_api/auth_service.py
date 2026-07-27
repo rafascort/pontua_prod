@@ -105,6 +105,14 @@ PLAN_RANK = {'basic': 1, 'standard': 2, 'premium': 3}
 # --- Modelos do Banco de Dados ---
 class User(db.Model):
     __tablename__ = 'user'
+
+    # --- Ciclo de vida de e-mails ---
+    created_at       = db.Column(db.DateTime, nullable=True,
+                                 server_default=db.func.now())
+    last_activity_at = db.Column(db.DateTime, nullable=True)
+    last_renewal_at  = db.Column(db.DateTime, nullable=True)
+    email_opt_out    = db.Column(db.Boolean, nullable=False,
+                                 default=False, server_default='false')
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(256), nullable=True)
@@ -144,6 +152,37 @@ class User(db.Model):
 # ═══════════════════════════════════════════════════════════════════════════
 # Classe Organization (multi-tenancy / empresas)
 # ═══════════════════════════════════════════════════════════════════════════
+class EmailEvent(db.Model):
+    """Historico de e-mails do ciclo de vida.
+
+    Fonte unica para tres coisas: idempotencia (nunca reenviar o mesmo
+    e-mail), decisao de qual e-mail vem a seguir na regua, e a coluna
+    "ultimo e-mail enviado" do painel admin.
+    """
+    __tablename__ = 'email_event'
+
+    id         = db.Column(db.Integer, primary_key=True)
+    user_id    = db.Column(db.Integer,
+                           db.ForeignKey('user.id', ondelete='CASCADE'),
+                           nullable=False, index=True)
+    email_type = db.Column(db.String(50), nullable=False)
+    status     = db.Column(db.String(20), nullable=False,
+                           default='sent', server_default='sent')
+    sent_at    = db.Column(db.DateTime, nullable=False,
+                           default=db.func.now(), server_default=db.func.now())
+    meta       = db.Column(db.Text, nullable=True)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'email_type': self.email_type,
+            'status': self.status,
+            'sent_at': self.sent_at.isoformat() if self.sent_at else None,
+            'meta': self.meta,
+        }
+
+
 class Organization(db.Model):
     __tablename__ = 'organization'
 
@@ -223,6 +262,15 @@ from organization_service import init_organization_routes
 
 Referral = init_referral_routes(app, db, User)
 Promotion, PromotionMetric = init_promotions_routes(app, db, User)
+
+# ── Painel de e-mails do ciclo de vida ────────────────────────────────
+# Envolvido em try/except de proposito: se algo falhar aqui, a aplicacao
+# continua subindo normalmente e o erro fica visivel no log.
+try:
+    from email_admin_api import register_email_admin_routes
+    register_email_admin_routes(app)
+except Exception as _e:
+    print(f"[EMAIL-ADMIN] NAO carregado: {_e}")
 Announcement, AnnouncementAck = init_announcements_routes(app, db, User)
 MaintenanceWindow = init_maintenance_routes(app, db, User, Announcement=Announcement)
 
@@ -786,6 +834,32 @@ def create_checkout_session():
         else:
             print(f"AVISO: Preço extra não encontrado para {plan_name}.")
 
+        # ── Descontos ─────────────────────────────────────────────
+        # O Stripe NAO aceita 'discounts' e 'allow_promotion_codes' na
+        # mesma sessao: retorna erro e o checkout nem abre. Dai a
+        # alternancia. Prioridade: cupom do e-mail > indicacao > nada.
+        promo_kwargs = {'allow_promotion_codes': True}
+        _codigo = ((data.get('promoCode') or data.get('cupom') or '') or '').strip()
+        try:
+            from discount_service import (find_promotion_code,
+                                          referral_coupon_if_eligible)
+            _promo_id = (find_promotion_code(_codigo, stripe_customer_id)
+                         if _codigo else None)
+            if _promo_id:
+                promo_kwargs = {'discounts': [{'promotion_code': _promo_id}]}
+                print(f"[CHECKOUT] Cupom {_codigo} aplicado para {user.email}")
+            else:
+                if _codigo:
+                    print(f"[CHECKOUT] Cupom {_codigo} invalido ou expirado "
+                          f"para {user.email}.")
+                _ref = referral_coupon_if_eligible(user)
+                if _ref:
+                    promo_kwargs = {'discounts': [{'coupon': _ref}]}
+                    print(f"[CHECKOUT] Indicacao: 10% na 1a fatura de {user.email}")
+        except Exception as e:
+            # Falha aqui nunca pode impedir a assinatura.
+            print(f"[CHECKOUT] Erro ao montar desconto: {e}")
+
         checkout_session = stripe.checkout.Session.create(
             payment_method_types=['card'],
             line_items=line_items,
@@ -793,7 +867,7 @@ def create_checkout_session():
             customer=stripe_customer_id,
             success_url=success_url,
             cancel_url=cancel_url,
-            allow_promotion_codes=True,
+            **promo_kwargs,
             metadata={ 'app_user_id': user.id },
             subscription_data={ 'metadata': { 'app_user_id': user.id, 'plan_name': plan_name } }
         )
@@ -1212,7 +1286,7 @@ def update_user_plan_from_subscription(user, subscription):
     elif status in ['past_due', 'unpaid', 'incomplete']:
         new_plan_status = 'past_due'
     elif status in ['canceled', 'incomplete_expired']:
-        new_plan_status = 'free'
+        new_plan_status = 'inactive'
     else:
         print(f"Webhook Aux: Status não mapeado '{status}' para {user.email}");
         return
@@ -1246,7 +1320,22 @@ def handle_checkout_session_completed(session):
 
             # ── Sistema de indicações: marca conversão ────────────
             try:
+                # Boas-vindas + indicacao: o checkout aplicou 20% na 1a
+                # fatura; aqui entram os 10% dos meses 2 e 3.
+                try:
+                    from discount_service import maybe_apply_welcome_remainder
+                    maybe_apply_welcome_remainder(user, subscription.id)
+                except Exception as e:
+                    print(f"[DESCONTO] Erro no complemento de boas-vindas: {e}")
+
                 on_subscription_created(user, subscription)
+
+                # Ciclo de vida: e-mail de obrigado + marca o inicio do ciclo.
+                try:
+                    from lifecycle_hooks import on_subscription_started
+                    on_subscription_started(user)
+                except Exception as _e:
+                    print(f"[CICLO] Erro no gancho de assinatura: {_e}")
             except Exception as e:
                 print(f"[REFERRAL] Erro no hook on_subscription_created: {e}")
                 traceback.print_exc()
@@ -1324,6 +1413,7 @@ def handle_invoice_payment_succeeded(invoice):
             print(f"Webhook: NOVO CICLO {old_reset_date} -> {new_period_end}. "
                   f"Zerando {user.email} (era {user.page_count}).")
             snapshot_usage(user, 'renewal', period_end=old_reset_date)
+            _usadas_ciclo_anterior = user.page_count or 0   # antes de zerar
             user.page_count = 0
             user.extras_reported = 0
         else:
@@ -1334,6 +1424,14 @@ def handle_invoice_payment_succeeded(invoice):
         subscription = stripe.Subscription.retrieve(subscription_id)
         update_user_plan_from_subscription(user, subscription)   # commita
         sync_user_billing_cycle(user.email)                      # commita + grava next_reset_date
+
+        # Ciclo de vida: e-mail de renovacao (so em ciclo novo).
+        if is_new_cycle:
+            try:
+                from lifecycle_hooks import on_renewal
+                on_renewal(user, _usadas_ciclo_anterior)
+            except Exception as _e:
+                print(f"[CICLO] Erro no gancho de renovacao: {_e}")
 
         # Indicações: só consome créditos / reaplica cupom em ciclo novo.
         if is_new_cycle and billing_reason in ('subscription_cycle', 'subscription_update'):
@@ -1352,10 +1450,23 @@ def handle_invoice_payment_succeeded(invoice):
         db.session.rollback()
 
 def handle_invoice_payment_failed(invoice):
-    stripe_customer_id = invoice.get('customer'); subscription_id = invoice.get('subscription')
-    user = find_user_by_stripe_customer_id(stripe_customer_id);
+    stripe_customer_id = invoice.get('customer')
+    # Schema 2025-09-30.clover moveu 'subscription' para
+    # invoice.parent.subscription_details.subscription. Com o caminho antigo
+    # o id vinha None e o plano nunca ia para 'past_due'.
+    subscription_id = _invoice_subscription_id(invoice)
+    user = find_user_by_stripe_customer_id(stripe_customer_id)
     if not user: return
     print(f"Webhook: Pagamento FALHOU - User: {user.email}, Razão: {invoice.get('billing_reason')}")
+
+    # Ciclo de vida: avisa o cliente para atualizar o cartao.
+    try:
+        from lifecycle_hooks import on_payment_failed
+        _v = invoice.get('amount_due')
+        on_payment_failed(user,
+                          f"R$ {_v/100:.2f}".replace('.', ',') if _v else None)
+    except Exception as _e:
+        print(f"[CICLO] Erro no gancho de pagamento falhou: {_e}")
     if subscription_id:
          try: subscription = stripe.Subscription.retrieve(subscription_id); update_user_plan_from_subscription(user, subscription)
          except stripe.StripeError as e: print(f"Erro Stripe buscando sub (falha) {subscription_id}: {e}") # Correção aqui
@@ -1369,10 +1480,21 @@ def handle_customer_subscription_updated(subscription):
 def handle_customer_subscription_deleted(subscription):
     stripe_customer_id = subscription.get('customer'); user = find_user_by_stripe_customer_id(stripe_customer_id)
     if not user: return
-    print(f"Webhook: Assinatura EXCLUÍDA - User: {user.email}. Revertendo para 'free'.")
-    if user.plan_status != 'free': user.plan_status = 'free'
-    try: db.session.commit(); print(f"Webhook: Plano de {user.email} salvo como 'free'.")
-    except Exception as e: print(f"Erro ao salvar status 'free' {user.email}: {e}"); db.session.rollback()
+    print(f"Webhook: Assinatura EXCLUÍDA - User: {user.email}. Marcando como 'inactive'.")
+    if user.plan_status != 'inactive': user.plan_status = 'inactive'
+    try:
+        db.session.commit()
+        print(f"Webhook: Plano de {user.email} salvo como 'inactive'.")
+
+        # Ciclo de vida: avisa que a assinatura terminou e oferece reativacao.
+        try:
+            from lifecycle_hooks import on_subscription_ended
+            on_subscription_ended(user)
+        except Exception as _e:
+            print(f"[CICLO] Erro no gancho de assinatura encerrada: {_e}")
+    except Exception as e:
+        print(f"Erro ao salvar status 'inactive' {user.email}: {e}")
+        db.session.rollback()
 def send_verification_email(user_email: str, token: str) -> bool:
     smtp_host     = os.getenv("SMTP_HOST")
     smtp_port     = int(os.getenv("SMTP_PORT", "587"))
@@ -1493,6 +1615,17 @@ def verify_email():
         user.email_verification_sent_at = None
         db.session.commit()
         print(f"[EMAIL] Verificado com sucesso: {user.email}")
+
+        # Ciclo de vida: boas-vindas so aqui, nunca no /api/register.
+        # No cadastro a conta ainda esta bloqueada e o usuario acabou de
+        # receber o e-mail de verificacao — dois e-mails ao mesmo tempo se
+        # contradiriam ("confirme para ganhar" x "voce ja tem").
+        try:
+            from lifecycle_hooks import on_user_registered
+            on_user_registered(user)
+        except Exception as _e:
+            print(f"[CICLO] Erro no gancho de boas-vindas: {_e}")
+
         return jsonify({"msg": "Email verificado! Sua conta está ativa.", "success": True}), 200
     except Exception as e:
         db.session.rollback()
