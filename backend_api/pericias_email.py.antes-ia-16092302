@@ -1,0 +1,309 @@
+# /opt/pontua/AutoPonto/backend_api/pericias_email.py
+"""
+Entrada de trabalho particular por e-mail.
+
+  POST /api/pericias/entrada/testar   le' um e-mail e mostra o que entendeu,
+                                      SEM gravar nada
+  POST /api/pericias/entrada          le' e guarda na fila
+  GET  /api/pericias/entrada          a fila
+  PUT  /api/pericias/entrada/<id>     aceitar ou descartar
+
+POR QUE ISTO EXISTE
+
+  Medido na agenda real do Lucas: de 27 itens de uma semana, **12 nao existem no
+  PJe e nunca vao existir** — sao calculos contratados direto por advogado, sem
+  nomeacao, sem numero de processo no controle dele. A origem previu isso sem
+  uma excecao: tudo que veio de vara (3a, 4a, Marau, Carazinho) esta' no PJe;
+  tudo que veio de escritorio (IGF, Drinho, Sara/Eunice) nao esta'.
+
+  Nenhuma leitura de tribunal alcanca esse trabalho. So' o e-mail do advogado.
+
+PRIMEIRO PASSO, DE PROPOSITO
+
+  Esta versao ainda NAO recebe e-mail de verdade — nao mexe em DNS, nao cria
+  endereco, nao tem Worker. Ela expoe o leitor para o perito COLAR e-mails
+  reais e ver o que o sistema entende. Provar o leitor com o material dele
+  antes de mexer no DNS custa uma tela e evita descobrir erro de leitura
+  depois que o correio ja' esta' desviado.
+
+O QUE NAO SE GUARDA
+
+  O conteudo dos anexos nunca entra. Guarda-se o NOME do arquivo. O corpo da
+  mensagem fica 30 dias e e' apagado — tempo de o perito conferir um descarte,
+  e nada alem disso. E' correspondencia de terceiro dentro do nosso banco;
+  quanto menos tempo ficar, melhor.
+"""
+from __future__ import annotations
+
+import json
+from datetime import date, datetime, timedelta, timezone
+
+from flask import jsonify, request
+from flask_jwt_extended import get_jwt_identity, jwt_required
+from sqlalchemy import text
+
+from pericias_email_leitor import ler
+
+DIAS_GUARDA_CORPO = 30
+LIMITE_CORPO = 100_000
+ESTADOS = {"novo", "aceito", "descartado"}
+
+SQL_TABELA = """
+create table if not exists pericia_entrada (
+    id           bigserial primary key,
+    user_id      integer not null references "user"(id) on delete cascade,
+    faixa        text not null,
+    estado       text not null default 'novo',
+    numero       text,
+    justica      text,
+    prazo        date,
+    reclamante   text,
+    reclamado    text,
+    tarefas      text not null default '[]',
+    sinais       text not null default '[]',
+    contra       text not null default '[]',
+    remetente    text,
+    assunto      text,
+    corpo        text,
+    anexos       text not null default '[]',
+    origem       text not null default 'colado',
+    no_acervo    boolean not null default false,
+    recebido_em  timestamptz not null default now(),
+    decidido_em  timestamptz
+)
+"""
+
+SQL_INDICE = """
+create index if not exists pericia_entrada_fila_idx
+    on pericia_entrada (user_id, estado, recebido_em desc)
+"""
+
+
+def _hoje():
+    return (datetime.now(timezone.utc) - timedelta(hours=3)).date()
+
+
+def _txt(v, n=400):
+    return (str(v).strip()[:n] or None) if v not in (None, "") else None
+
+
+def register_pericias_email_routes(app):
+    from auth_service import User, db
+
+    _pronta = {"ok": False}
+
+    def _tabela():
+        if not _pronta["ok"]:
+            db.session.execute(text(SQL_TABELA))
+            db.session.execute(text(SQL_INDICE))
+            db.session.commit()
+            _pronta["ok"] = True
+
+    def _admin():
+        _tabela()
+        ident = get_jwt_identity()
+        u = User.query.filter_by(email=str(ident)).first() if ident is not None else None
+        if not u:
+            try:
+                u = User.query.get(int(ident))
+            except (TypeError, ValueError):
+                u = None
+        if not u:
+            return None, (jsonify({"msg": "Sessão inválida."}), 401)
+        if (u.role or "") != "admin":
+            return None, (jsonify({"msg": "Módulo em testes: acesso restrito."}), 403)
+        return u, None
+
+    def _corpo_do_pedido():
+        d = request.get_json(silent=True) or {}
+        anexos = d.get("anexos") or []
+        if isinstance(anexos, str):
+            anexos = [x.strip() for x in anexos.split(",") if x.strip()]
+        anexos = [str(a)[:200] for a in anexos][:20]
+        return {
+            "assunto": str(d.get("assunto") or "")[:2000],
+            "corpo": str(d.get("corpo") or "")[:LIMITE_CORPO],
+            "remetente": str(d.get("remetente") or "")[:400],
+            "anexos": anexos,
+        }
+
+    def _no_acervo(user_id, numero):
+        """O numero ja' e' um processo em que ele foi nomeado? Muda o
+        significado: nao e' servico particular, e' o mesmo processo chegando por
+        outro caminho (assistente tecnico, ou o advogado avisando antes do
+        tribunal)."""
+        if not numero:
+            return False
+        try:
+            return bool(db.session.execute(
+                text("select 1 from pericia_processo where user_id = :u and processo = :p limit 1"),
+                {"u": user_id, "p": numero},
+            ).first())
+        except Exception:
+            # O painel pode nao ter subido ainda, ou a tabela nao existir. Os
+            # dois modulos sao independentes de proposito: nao saber se o
+            # numero esta' no acervo nao pode derrubar a leitura do e-mail.
+            db.session.rollback()
+            return False
+
+    def _limpar_corpos_velhos(user_id):
+        """Correspondencia de terceiro nao fica guardada para sempre."""
+        db.session.execute(
+            text("update pericia_entrada set corpo = null"
+                 " where user_id = :u and corpo is not null"
+                 "   and recebido_em < now() - interval '%d days'" % DIAS_GUARDA_CORPO),
+            {"u": user_id},
+        )
+        db.session.commit()
+
+    # ------------------------------------------------------------- provar
+
+    @app.route("/api/pericias/entrada/testar", methods=["POST"])
+    @jwt_required()
+    def pericias_entrada_testar():
+        """Le' e devolve, sem gravar. E' com isto que se prova o leitor contra
+        e-mails de verdade antes de desviar correio nenhum."""
+        u, erro = _admin()
+        if erro:
+            return erro
+        e = _corpo_do_pedido()
+        r = ler(assunto=e["assunto"], corpo=e["corpo"],
+                remetente=e["remetente"], anexos=e["anexos"], hoje=_hoje())
+        r["no_acervo"] = _no_acervo(u.id, r.get("numero"))
+        return jsonify(r), 200
+
+    # ------------------------------------------------------------- guardar
+
+    @app.route("/api/pericias/entrada", methods=["POST"])
+    @jwt_required()
+    def pericias_entrada_gravar():
+        u, erro = _admin()
+        if erro:
+            return erro
+        e = _corpo_do_pedido()
+        if not (e["assunto"] or e["corpo"]):
+            return jsonify({"msg": "Cole o e-mail antes."}), 400
+
+        r = ler(assunto=e["assunto"], corpo=e["corpo"],
+                remetente=e["remetente"], anexos=e["anexos"], hoje=_hoje())
+        no_acervo = _no_acervo(u.id, r.get("numero"))
+
+        # Reenvio: mesmo numero e mesmo prazo em 7 dias e' a mesma coisa
+        # chegando de novo. Mesma janela que o dinheiro.py usa.
+        if r.get("numero"):
+            igual = db.session.execute(
+                text("select id from pericia_entrada where user_id = :u and numero = :n"
+                     "   and coalesce(prazo, date '1900-01-01') = coalesce(cast(:p as date), date '1900-01-01')"
+                     "   and recebido_em > now() - interval '7 days' limit 1"),
+                {"u": u.id, "n": r["numero"], "p": r.get("prazo")},
+            ).first()
+            if igual:
+                return jsonify({"ok": True, "repetido": True, "id": igual.id, **r}), 200
+
+        novo = db.session.execute(
+            text("""
+                insert into pericia_entrada
+                    (user_id, faixa, numero, justica, prazo, reclamante, reclamado,
+                     tarefas, sinais, contra, remetente, assunto, corpo, anexos,
+                     origem, no_acervo)
+                values
+                    (:u, :f, :n, :j, cast(:p as date), :rc, :rd,
+                     :ta, :si, :co, :re, :as, :cp, :an, :og, :na)
+                returning id
+            """),
+            {"u": u.id, "f": r["faixa"], "n": r.get("numero"), "j": r.get("justica"),
+             "p": r.get("prazo"), "rc": _txt(r.get("reclamante")), "rd": _txt(r.get("reclamado")),
+             "ta": json.dumps(r.get("tarefas") or [], ensure_ascii=False),
+             "si": json.dumps(r.get("sinais") or [], ensure_ascii=False),
+             "co": json.dumps(r.get("contra") or [], ensure_ascii=False),
+             "re": _txt(e["remetente"]), "as": _txt(e["assunto"], 2000),
+             "cp": e["corpo"] or None,
+             "an": json.dumps(e["anexos"], ensure_ascii=False),
+             "og": str((request.get_json(silent=True) or {}).get("origem") or "colado")[:20],
+             "na": no_acervo},
+        ).scalar()
+        db.session.commit()
+        return jsonify({"ok": True, "id": novo, "no_acervo": no_acervo, **r}), 200
+
+    # ---------------------------------------------------------------- fila
+
+    @app.route("/api/pericias/entrada", methods=["GET"])
+    @jwt_required()
+    def pericias_entrada_listar():
+        u, erro = _admin()
+        if erro:
+            return erro
+        _limpar_corpos_velhos(u.id)
+
+        estado = request.args.get("estado")
+        onde = "user_id = :u"
+        if estado in ESTADOS:
+            onde += " and estado = '%s'" % estado
+
+        linhas = db.session.execute(
+            text("select id, faixa, estado, numero, justica, prazo, reclamante, reclamado,"
+                 " tarefas, sinais, contra, remetente, assunto, corpo, anexos, origem,"
+                 " no_acervo, recebido_em, decidido_em"
+                 " from pericia_entrada where %s order by recebido_em desc limit 200" % onde),
+            {"u": u.id},
+        ).all()
+
+        def fora(l):
+            d = dict(l._mapping)
+            for c in ("tarefas", "sinais", "contra", "anexos"):
+                try:
+                    d[c] = json.loads(d[c] or "[]")
+                except (ValueError, TypeError):
+                    d[c] = []
+            for c in ("prazo",):
+                if d.get(c) is not None:
+                    d[c] = d[c].isoformat()
+            for c in ("recebido_em", "decidido_em"):
+                if d.get(c) is not None:
+                    d[c] = d[c].isoformat()
+            if d.get("corpo"):
+                d["corpo"] = d["corpo"][:4000]
+            return d
+
+        c = db.session.execute(
+            text("select count(*) filter (where estado = 'novo') as novo,"
+                 " count(*) filter (where estado = 'novo' and faixa = 'entra') as entra,"
+                 " count(*) filter (where estado = 'novo' and faixa = 'confirmar') as confirmar,"
+                 " count(*) filter (where estado = 'novo' and faixa = 'ignorar') as ignorar,"
+                 " count(*) filter (where estado = 'aceito') as aceito,"
+                 " count(*) as total"
+                 " from pericia_entrada where user_id = :u"),
+            {"u": u.id},
+        ).first()
+
+        return jsonify({
+            "contagem": {"novo": c.novo, "entra": c.entra, "confirmar": c.confirmar,
+                         "ignorar": c.ignorar, "aceito": c.aceito, "total": c.total},
+            "guarda_corpo_dias": DIAS_GUARDA_CORPO,
+            "entradas": [fora(l) for l in linhas],
+        }), 200
+
+    @app.route("/api/pericias/entrada/<int:eid>", methods=["PUT"])
+    @jwt_required()
+    def pericias_entrada_decidir(eid):
+        """Aceitar vira trabalho; descartar sai da fila mas fica no log. O
+        sistema nunca some com nada sem deixar rastro — se ele comer um prazo,
+        o perito precisa poder ver que comeu."""
+        u, erro = _admin()
+        if erro:
+            return erro
+        d = request.get_json(silent=True) or {}
+        estado = str(d.get("estado") or "")
+        if estado not in ESTADOS:
+            return jsonify({"msg": "Estado inválido."}), 400
+
+        r = db.session.execute(
+            text("update pericia_entrada set estado = :e,"
+                 " decidido_em = case when :e = 'novo' then null else now() end"
+                 " where id = :i and user_id = :u returning id"),
+            {"e": estado, "i": eid, "u": u.id},
+        ).first()
+        db.session.commit()
+        if not r:
+            return jsonify({"msg": "Entrada não encontrada."}), 404
+        return jsonify({"ok": True, "id": eid, "estado": estado}), 200

@@ -1,0 +1,462 @@
+# /opt/pontua/AutoPonto/backend_api/pericias_painel.py
+"""
+Transforma o retrato cru do PJe na tabela que o painel le'.
+
+  pericia_processo   uma linha por PERICIA (nao por processo)
+  pericia_marcacao   o que o PERITO escreveu: baixa e observacao
+  GET  /api/pericias/painel            o que o painel mostra
+  PUT  /api/pericias/pericia/<id>      baixa e observacao
+  POST /api/pericias/painel/refazer    re-deriva o ultimo retrato guardado
+
+O PJE E' A FONTE DA VERDADE. O SISTEMA NAO OPINA.
+
+  Versao anterior tentava adivinhar "de quem e' a bola" cruzando o campo
+  `tarefa` com uma lista de palavras. Errou feio no acervo real:
+
+    - "Elaborar despacho" e "Assinar despacho" sao tarefas do CARTORIO. Estavam
+      na lista de "e' com o perito".
+    - `prazoEntrega` nao e' prazo vivo: e' fixado uma vez no aceite (aceite +
+      ~20 dias) e nunca mais se mexe. Pericias abertas desde 2025 apareciam
+      como atraso de 335 dias.
+    - Chips automaticos ("confira", "prioridade") viravam ruido: o sistema
+      opinando sobre o processo do perito.
+
+  Agora nao ha' classificacao de bola nenhuma. So' o que o PJe declara:
+
+    entregue   situacaoTexto "Laudo Juntado" ou "Finalizada", sem permissao
+               pendente de juntar laudo ou esclarecimentos
+    encerrada  "Cancelada" ou "Redesignada" — saiu das maos dele
+    aberta     todo o resto
+
+  O que separa o prazo de 2025 do prazo de sexta e' o HORIZONTE, nao um
+  palpite: por padrao o painel mostra vencidos dos ultimos 60 dias e o que
+  vence nos proximos 15 — exatamente o recorte do painel que o perito ja'
+  usava. O resto continua existindo e fica a um clique.
+
+  Juizo de valor so' vem do perito, e a mao: baixa ("ja' fiz", "nao e' meu") e
+  observacao livre.
+
+DUAS ARMADILHAS DO RETRATO, MEDIDAS EM 2.173 REGISTROS DO TRT4
+
+  1. `arquivadas` NAO e' estado, e' filtro: 631 pericias vem em
+     arquivadas+finalizadas, 78 em arquivadas+vivas. Somar as listas conta
+     2.173 onde existem 1.464. As copias sao identicas campo a campo, entao
+     de-duplicar por idPericia nao perde nada.
+  2. `processo` NAO serve de chave: 137 processos tem mais de uma pericia
+     distinta, um deles tem sete. A chave e' idPericia.
+"""
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta, timezone
+
+from flask import jsonify, request
+from flask_jwt_extended import get_jwt_identity, jwt_required
+from sqlalchemy import text
+
+ENTREGUE = {"laudo juntado", "finalizada"}
+
+# Saiu das maos do perito sem ele entregar. Cuidado com o par de nomes:
+#   "Redesignada"     = tiraram dele          -> encerrada
+#   "Nova designação" = deram para ele agora  -> aberta
+ENCERRADA = {"cancelada", "redesignada"}
+
+BAIXAS = {"fiz", "nao_meu", "mandaram_nao_fazer", "encerrado"}
+
+# Horizonte padrao, copiado do painel que o perito ja' usava:
+# "vencidos sem baixa - ultimos 60 dias" e "vencendo em 5 dias uteis".
+DIAS_ATRAS_PADRAO = 60
+DIAS_FRENTE_PADRAO = 15
+
+SQL_TABELA = """
+create table if not exists pericia_processo (
+    id                bigserial primary key,
+    user_id           integer not null references "user"(id) on delete cascade,
+    id_pericia        bigint  not null,
+    id_processo       bigint,
+    processo          text    not null,
+    tribunal          text    not null default '',
+    situacao          text,
+    situacao_texto    text,
+    tarefa            text,
+    classe            text,
+    orgao             text,
+    partes            text,
+    fase              text,
+    prazo_entrega     date,
+    data_aceite       date,
+    data_criacao      date,
+    expediente_aberto boolean not null default false,
+    ciencia_pendente  boolean not null default false,
+    prioridade        boolean not null default false,
+    arquivado         boolean not null default false,
+    finalizada        boolean not null default false,
+    laudo_juntado     boolean not null default false,
+    pode_laudo        boolean not null default false,
+    pode_esclarecimentos boolean not null default false,
+    entregue          boolean not null default false,
+    bola              text    not null default 'aberta',
+    tarefa_conhecida  boolean not null default true,
+    envio_id          bigint,
+    atualizado_em     timestamptz not null default now(),
+    unique (user_id, id_pericia)
+)
+"""
+
+SQL_COLUNAS = [
+    "alter table pericia_processo add column if not exists laudo_juntado boolean not null default false",
+    "alter table pericia_processo add column if not exists pode_laudo boolean not null default false",
+    "alter table pericia_processo add column if not exists pode_esclarecimentos boolean not null default false",
+]
+
+# O que o PERITO escreveu. Fica FORA de pericia_processo de proposito: aquela
+# tabela e' apagada e refeita a cada retrato novo do PJe, e o que ele escreveu
+# nao pode sumir junto.
+SQL_MARCACAO = """
+create table if not exists pericia_marcacao (
+    user_id       integer not null references "user"(id) on delete cascade,
+    id_pericia    bigint  not null,
+    baixa         text,
+    observacao    text,
+    atualizado_em timestamptz not null default now(),
+    primary key (user_id, id_pericia)
+)
+"""
+
+SQL_INDICE = """
+create index if not exists pericia_processo_painel_idx
+    on pericia_processo (user_id, bola, prazo_entrega)
+"""
+
+SQL_INSERE = """
+insert into pericia_processo
+    (user_id, id_pericia, id_processo, processo, tribunal, situacao, situacao_texto,
+     tarefa, classe, orgao, partes, fase, prazo_entrega, data_aceite, data_criacao,
+     expediente_aberto, ciencia_pendente, prioridade, arquivado, finalizada,
+     laudo_juntado, pode_laudo, pode_esclarecimentos,
+     entregue, bola, tarefa_conhecida, envio_id, atualizado_em)
+values
+    (:user_id, :id_pericia, :id_processo, :processo, :tribunal, :situacao, :situacao_texto,
+     :tarefa, :classe, :orgao, :partes, :fase, :prazo_entrega, :data_aceite, :data_criacao,
+     :expediente_aberto, :ciencia_pendente, :prioridade, :arquivado, :finalizada,
+     :laudo_juntado, :pode_laudo, :pode_esclarecimentos,
+     :entregue, :bola, true, :envio_id, now())
+"""
+
+
+def _hoje():
+    """Hoje em Brasilia. O servidor roda em UTC; entre 21h e meia-noite a data
+    UTC ja' virou e a daqui nao — diferenca suficiente para um prazo aparecer
+    vencido um dia antes."""
+    return (datetime.now(timezone.utc) - timedelta(hours=3)).date()
+
+
+def _data(s):
+    try:
+        return date.fromisoformat(str(s)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _txt(v, n=200):
+    return (str(v).strip()[:n] or None) if v not in (None, "") else None
+
+
+def preparar(dados, user_id, envio_id=None):
+    """Retrato cru -> uma linha por idPericia. Sem banco, da' para testar com
+    um JSON na mao."""
+    juntas = {}
+
+    def entra(lista, marca):
+        for x in (dados.get(lista) or []):
+            pid = x.get("idPericia")
+            if pid is None:
+                continue
+            linha = juntas.get(pid)
+            if linha is None:
+                linha = juntas[pid] = dict(x)
+                linha["_arquivado"] = False
+                linha["_finalizada"] = False
+                linha["_ciencia"] = False
+            if marca:
+                linha["_" + marca] = True
+            if x.get("cienciaPendente"):
+                linha["_ciencia"] = True
+
+    entra("vivas", None)
+    entra("finalizadas", "finalizada")
+    entra("arquivadas", "arquivado")
+    # A lista de intimacoes traz as mesmas pericias; o que ela acrescenta e' o
+    # sinal de ciencia pendente. Nao cria linha nova por conta propria.
+    entra("intimacoes", None)
+
+    tribunal = _txt(dados.get("tribunal"), 40) or ""
+    saida = []
+
+    for pid, x in juntas.items():
+        situacao_texto = _txt(x.get("situacaoTexto"))
+        st = (situacao_texto or "").lower()
+
+        finalizada = bool(x["_finalizada"])
+        pode_laudo = bool(x.get("podeJuntarLaudo"))
+        pode_esclar = bool(x.get("podeJuntarEsclarecimentos"))
+
+        # Tres estados, todos declarados pelo PJe. Nenhum palpite.
+        if st in ENCERRADA:
+            bola = "encerrada"
+        elif (st in ENTREGUE or finalizada) and not (pode_laudo or pode_esclar):
+            bola = "entregue"
+        else:
+            bola = "aberta"
+
+        saida.append({
+            "user_id": user_id,
+            "id_pericia": int(pid),
+            "id_processo": x.get("idProcesso") if isinstance(x.get("idProcesso"), int) else None,
+            "processo": _txt(x.get("processo"), 30) or "",
+            "tribunal": tribunal,
+            "situacao": _txt(x.get("situacao"), 4),
+            "situacao_texto": situacao_texto,
+            "tarefa": _txt(x.get("tarefa")),
+            "classe": _txt(x.get("classe"), 20),
+            "orgao": _txt(x.get("orgao"), 200),
+            "partes": _txt(x.get("partes"), 400),
+            "fase": _txt(x.get("fase"), 80),
+            "prazo_entrega": _data(x.get("prazoEntrega")),
+            "data_aceite": _data(x.get("dataAceite")),
+            "data_criacao": _data(x.get("dataCriacao")),
+            "expediente_aberto": bool(x.get("expedienteAberto")),
+            "ciencia_pendente": bool(x["_ciencia"]),
+            "prioridade": bool(x.get("prioridadeProcessual") or x.get("prioridade")),
+            "arquivado": bool(x["_arquivado"]),
+            "finalizada": finalizada,
+            "laudo_juntado": bool(x.get("laudoJuntado")),
+            "pode_laudo": pode_laudo,
+            "pode_esclarecimentos": pode_esclar,
+            "entregue": bola == "entregue",
+            "bola": bola,
+            "envio_id": envio_id,
+        })
+
+    return [l for l in saida if l["processo"]]
+
+
+CAMPOS = ("p.id_pericia, p.processo, p.tribunal, p.situacao_texto, p.tarefa, p.classe,"
+          " p.orgao, p.partes, p.fase, p.prazo_entrega, p.data_aceite,"
+          " p.expediente_aberto, p.ciencia_pendente, p.laudo_juntado,"
+          " p.pode_laudo, p.pode_esclarecimentos,"
+          " m.baixa, m.observacao,"
+          " (p.prazo_entrega - (now() at time zone 'America/Sao_Paulo')::date) as dias")
+
+DE = ("from pericia_processo p"
+      " left join pericia_marcacao m"
+      "   on m.user_id = p.user_id and m.id_pericia = p.id_pericia")
+
+
+def register_pericias_painel_routes(app):
+    from auth_service import User, db
+
+    _pronta = {"ok": False}
+
+    def _tabela():
+        if not _pronta["ok"]:
+            db.session.execute(text(SQL_TABELA))
+            for c in SQL_COLUNAS:
+                db.session.execute(text(c))
+            db.session.execute(text(SQL_MARCACAO))
+            db.session.execute(text(SQL_INDICE))
+            db.session.commit()
+            _pronta["ok"] = True
+
+    def _admin():
+        _tabela()
+        ident = get_jwt_identity()
+        u = User.query.filter_by(email=str(ident)).first() if ident is not None else None
+        if not u:
+            try:
+                u = User.query.get(int(ident))
+            except (TypeError, ValueError):
+                u = None
+        if not u:
+            return None, (jsonify({"msg": "Sessão inválida."}), 401)
+        if (u.role or "") != "admin":
+            return None, (jsonify({"msg": "Módulo em testes: acesso restrito."}), 403)
+        return u, None
+
+    def gravar(user_id, dados, envio_id=None):
+        """Troca inteira: o retrato novo substitui o anterior. `pericia_marcacao`
+        nao e' tocada — o que o perito escreveu sobrevive."""
+        _tabela()
+        linhas = preparar(dados, user_id, envio_id)
+        db.session.execute(text("delete from pericia_processo where user_id = :u"),
+                           {"u": user_id})
+        if linhas:
+            db.session.execute(text(SQL_INSERE), linhas)
+        db.session.commit()
+        return len(linhas)
+
+    app.extensions.setdefault("pericias", {})["gravar_painel"] = gravar
+
+    def _lista(user_id, onde, ordem, limite=300):
+        saida = []
+        for r in db.session.execute(
+            text("select %s %s where p.user_id = :u and %s order by %s limit %d"
+                 % (CAMPOS, DE, onde, ordem, limite)),
+            {"u": user_id},
+        ).all():
+            d = dict(r._mapping)
+            for c in ("prazo_entrega", "data_aceite"):
+                if d.get(c) is not None:
+                    d[c] = d[c].isoformat()
+            saida.append(d)
+        return saida
+
+    @app.route("/api/pericias/painel", methods=["GET"])
+    @jwt_required()
+    def pericias_painel():
+        u, erro = _admin()
+        if erro:
+            return erro
+
+        try:
+            atras = min(max(int(request.args.get("atras", DIAS_ATRAS_PADRAO)), 0), 3650)
+            frente = min(max(int(request.args.get("frente", DIAS_FRENTE_PADRAO)), 1), 3650)
+        except (TypeError, ValueError):
+            atras, frente = DIAS_ATRAS_PADRAO, DIAS_FRENTE_PADRAO
+
+        cab = db.session.execute(
+            text("select tribunal, perito_pje, recebido_em, via from pericia_pje_envio"
+                 " where user_id = :u order by recebido_em desc limit 1"),
+            {"u": u.id},
+        ).first()
+
+        n = db.session.execute(
+            text("select count(*) from pericia_processo where user_id = :u"), {"u": u.id}
+        ).scalar() or 0
+
+        # Tabela vazia com retrato guardado = derivacao que nao rodou. Refaz
+        # sozinho, se nao o painel manda configurar o que ja' esta' configurado.
+        if not n:
+            guardado = db.session.execute(
+                text("select id, dados from pericia_pje_envio where user_id = :u"
+                     " order by recebido_em desc limit 1"),
+                {"u": u.id},
+            ).first()
+            if guardado:
+                try:
+                    n = gravar(u.id, guardado.dados, guardado.id)
+                except Exception as e:
+                    print("[PERICIAS-PAINEL] derivacao automatica falhou:", e)
+                    db.session.rollback()
+        if not n:
+            return jsonify({"tem_dados": False, "ultimo_envio": None}), 200
+
+        H = "(now() at time zone 'America/Sao_Paulo')::date"
+        ABERTA = "p.bola = 'aberta' and m.baixa is null"
+        DENTRO = "p.prazo_entrega >= {h} - {a} and p.prazo_entrega <= {h} + {f}".format(
+            h=H, a=atras, f=frente)
+
+        c = db.session.execute(
+            text("""
+                select
+                  count(*) filter (where {ab} and p.prazo_entrega <  {h} and p.prazo_entrega >= {h} - {a}) as vencido,
+                  count(*) filter (where {ab} and p.prazo_entrega >= {h} and p.prazo_entrega <= {h} + {f}) as correndo,
+                  count(*) filter (where {ab} and p.prazo_entrega is not null and not ({dentro})) as fora,
+                  count(*) filter (where {ab} and p.prazo_entrega is null) as sem_prazo,
+                  count(*) filter (where {ab} and p.pode_esclarecimentos) as esclarecimentos,
+                  count(*) filter (where p.expediente_aberto and p.bola <> 'encerrada' and m.baixa is null) as envelope,
+                  count(*) filter (where p.ciencia_pendente and m.baixa is null) as ciencia,
+                  count(*) filter (where m.baixa is not null) as com_baixa,
+                  count(*) filter (where p.bola = 'aberta') as abertas,
+                  count(*) filter (where p.bola = 'entregue') as entregue,
+                  count(*) filter (where p.bola = 'encerrada') as encerrada,
+                  count(*) as total
+                {de} where p.user_id = :u
+            """.format(ab=ABERTA, h=H, a=atras, f=frente, dentro=DENTRO, de=DE)),
+            {"u": u.id},
+        ).first()
+
+        return jsonify({
+            "tem_dados": True,
+            "horizonte": {"atras": atras, "frente": frente},
+            "ultimo_envio": {
+                "tribunal": cab.tribunal if cab else "",
+                "perito_pje": cab.perito_pje if cab else "",
+                "recebido_em": cab.recebido_em.isoformat() if cab and cab.recebido_em else None,
+                "via": cab.via if cab else "",
+            },
+            "kpi": {
+                "vencido": c.vencido, "correndo": c.correndo, "fora": c.fora,
+                "sem_prazo": c.sem_prazo, "esclarecimentos": c.esclarecimentos,
+                "envelope": c.envelope, "ciencia": c.ciencia,
+                "com_baixa": c.com_baixa, "abertas": c.abertas,
+                "entregue": c.entregue, "encerrada": c.encerrada, "total": c.total,
+            },
+            "vencido":  _lista(u.id, "%s and p.prazo_entrega < %s and p.prazo_entrega >= %s - %d"
+                                     % (ABERTA, H, H, atras), "p.prazo_entrega desc"),
+            "correndo": _lista(u.id, "%s and p.prazo_entrega >= %s and p.prazo_entrega <= %s + %d"
+                                     % (ABERTA, H, H, frente), "p.prazo_entrega asc"),
+            "sem_prazo": _lista(u.id, "%s and p.prazo_entrega is null" % ABERTA,
+                                "p.data_aceite desc nulls last"),
+            "esclarecimentos": _lista(u.id, "%s and p.pode_esclarecimentos" % ABERTA,
+                                      "p.prazo_entrega asc nulls last"),
+            "envelope": _lista(u.id, "p.expediente_aberto and p.bola <> 'encerrada' and m.baixa is null",
+                               "p.prazo_entrega desc nulls last"),
+            "ciencia": _lista(u.id, "p.ciencia_pendente and m.baixa is null",
+                              "p.prazo_entrega desc nulls last"),
+            "fora": _lista(u.id, "%s and p.prazo_entrega is not null and not (%s)" % (ABERTA, DENTRO),
+                           "p.prazo_entrega asc"),
+        }), 200
+
+    @app.route("/api/pericias/pericia/<int:id_pericia>", methods=["PUT"])
+    @jwt_required()
+    def pericias_marcar(id_pericia):
+        """Baixa e observacao. O unico lugar em que o sistema aceita juizo de
+        valor — e ele vem do perito, digitado."""
+        u, erro = _admin()
+        if erro:
+            return erro
+
+        existe = db.session.execute(
+            text("select 1 from pericia_processo where user_id = :u and id_pericia = :p"),
+            {"u": u.id, "p": id_pericia},
+        ).first()
+        if not existe:
+            return jsonify({"msg": "Perícia não encontrada."}), 404
+
+        d = request.get_json(silent=True) or {}
+
+        baixa = d.get("baixa")
+        if baixa in ("", None):
+            baixa = None
+        elif str(baixa) not in BAIXAS:
+            return jsonify({"msg": "Baixa inválida."}), 400
+
+        obs = d.get("observacao")
+        obs = None if obs in ("", None) else str(obs).strip()[:2000] or None
+
+        db.session.execute(
+            text("""
+                insert into pericia_marcacao (user_id, id_pericia, baixa, observacao, atualizado_em)
+                values (:u, :p, :b, :o, now())
+                on conflict (user_id, id_pericia) do update set
+                    baixa = :b, observacao = :o, atualizado_em = now()
+            """),
+            {"u": u.id, "p": id_pericia, "b": baixa, "o": obs},
+        )
+        db.session.commit()
+        return jsonify({"ok": True, "baixa": baixa, "observacao": obs}), 200
+
+    @app.route("/api/pericias/painel/refazer", methods=["POST"])
+    @jwt_required()
+    def pericias_painel_refazer():
+        u, erro = _admin()
+        if erro:
+            return erro
+        linha = db.session.execute(
+            text("select id, dados from pericia_pje_envio where user_id = :u"
+                 " order by recebido_em desc limit 1"),
+            {"u": u.id},
+        ).first()
+        if not linha:
+            return jsonify({"msg": "Nenhum retrato do PJe recebido ainda."}), 400
+        return jsonify({"ok": True, "pericias": gravar(u.id, linha.dados, linha.id)}), 200

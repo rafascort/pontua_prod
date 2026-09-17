@@ -28,17 +28,6 @@ import PromocoesPage from "./pages/PromocoesPage";
 import MaintenancePage from "./pages/MaintenancePage";
 import NotFound from "./pages/NotFound";
 
-// Layout novo dos extratores - so o admin ve.
-import EscolhaLayout from "@/novo/EscolhaLayout";
-import PontoNovo from "@/novo/PontoNovo";
-import HoleriteNovo from "@/novo/HoleriteNovo";
-import SomenteAdmin from "@/novo/SomenteAdmin";
-import PericiasPainel from "@/novo/PericiasPainel";
-import EntradaApp from "@/novo/EntradaApp";
-import CadastroPericias from "@/novo/CadastroPericias";
-import PjeLigar from "@/novo/PjeLigar";
-import EntradaEmail from "@/novo/EntradaEmail";
-
 const queryClient = new QueryClient();
 
 const App = () => (
@@ -70,51 +59,7 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <MaintenanceGuard>
-                    <EntradaApp />
-                  </MaintenanceGuard>
-                </ProtectedRoute>
-              }
-            />
-            <Route path="/pericias"
-              element={
-                <ProtectedRoute>
-                  <MaintenanceGuard>
-                    <SomenteAdmin>
-                      <PericiasPainel />
-                    </SomenteAdmin>
-                  </MaintenanceGuard>
-                </ProtectedRoute>
-              }
-            />
-            <Route path="/pericias/cadastro"
-              element={
-                <ProtectedRoute>
-                  <MaintenanceGuard>
-                    <SomenteAdmin>
-                      <CadastroPericias />
-                    </SomenteAdmin>
-                  </MaintenanceGuard>
-                </ProtectedRoute>
-              }
-            />
-            <Route path="/pericias/pje"
-              element={
-                <ProtectedRoute>
-                  <MaintenanceGuard>
-                    <SomenteAdmin>
-                      <PjeLigar />
-                    </SomenteAdmin>
-                  </MaintenanceGuard>
-                </ProtectedRoute>
-              }
-            />
-            <Route path="/pericias/entrada"
-              element={
-                <ProtectedRoute>
-                  <MaintenanceGuard>
-                    <SomenteAdmin>
-                      <EntradaEmail />
-                    </SomenteAdmin>
+                    <ServiceSelectionPage />
                   </MaintenanceGuard>
                 </ProtectedRoute>
               }
@@ -123,10 +68,7 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <MaintenanceGuard>
-                    <EscolhaLayout
-                      atual={<PontoExtractorPage />}
-                      novo={(voltar) => <PontoNovo aoVoltarAntigo={voltar} />}
-                    />
+                    <PontoExtractorPage />
                   </MaintenanceGuard>
                 </ProtectedRoute>
               }
@@ -135,10 +77,7 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <MaintenanceGuard>
-                    <EscolhaLayout
-                      atual={<HoleriteExtractorPage />}
-                      novo={(voltar) => <HoleriteNovo aoVoltarAntigo={voltar} />}
-                    />
+                    <HoleriteExtractorPage />
                   </MaintenanceGuard>
                 </ProtectedRoute>
               }
